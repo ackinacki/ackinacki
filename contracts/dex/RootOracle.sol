@@ -10,7 +10,7 @@ import "./libraries/DexLib.sol";
 contract RootOracle is Modifiers {
 
     /// @notice Contract semantic version.
-    string constant version = "4.0.27";
+    string constant version = "4.0.35";
 
     /// @notice Stored code of PrivateNote contract
     TvmCell _privateNoteCode;
@@ -35,9 +35,13 @@ contract RootOracle is Modifiers {
     /// @param name Oracle unique name used for deterministic address derivation.
     event OracleDeployed(address oracle, uint256 pubkey, string name);
 
-    /// @notice Root constructor
+    /// @notice Root constructor — intentionally unreachable.
+    /// @dev This root is only ever brought up via the stub + `updateCode`
+    ///      bootstrap, which installs the code and `_ownerPubkey` through
+    ///      `onCodeUpgrade` and does not run this constructor. A direct deploy is
+    ///      not a supported path, so it is rejected outright.
     constructor() {
-        tvm.accept();
+        require(false, ERR_NOT_ALLOWED_CONSTRUCTOR);
     }
 
     /// @notice Ensures minimal native balance for root operations
@@ -82,6 +86,10 @@ contract RootOracle is Modifiers {
         ensureBalance();
         tvm.resetStorage();
         (_pmpCode, _privateNoteCode, _oracleCode, _oracleEventListCode, _ownerPubkey) = abi.decode(cell, (TvmCell, TvmCell, TvmCell, TvmCell, uint256));
+        // A zero key makes `onlyOwnerPubkey` admit every unsigned message, so `updateCode` would
+        // no longer be owner-gated. Checked here rather than in the constructor: an account
+        // upgraded from a stub never runs one.
+        require(_ownerPubkey != 0, ERR_INVALID_PARAMS);
     }
 
     /// @notice Returns the deterministic address of an Oracle by name

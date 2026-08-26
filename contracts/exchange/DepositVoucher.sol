@@ -11,7 +11,7 @@ import "./eccUSDCBridge.sol";
 ///         account and the second constructor call is a no-op — natural
 ///         replay protection.
 contract DepositVoucher is eccUSDCBridgeModifiers {
-    string constant version = "1.1.0";
+    string constant version = "1.3.1";
 
     /// @notice Hash of the proof-bound deposit identity (deposit_id,
     ///         contract_addr, dapp_id, chain_id). Forms the deterministic

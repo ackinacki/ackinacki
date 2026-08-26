@@ -23,22 +23,15 @@ abstract contract Errors {
     uint16 constant ERR_ALREADY_INITIALIZED = 107;
 
     /// @notice User already claimed winnings
-    uint16 constant ERR_ALREADY_CLAIMED = 108;
 
     /// @notice Wallet or stake not yet initialized/confirmed
     uint16 constant ERR_NOT_INITIALIZED = 114;
 
-    /// @notice User is not a winner in this event
-    uint16 constant ERR_NOT_WINNER = 115;
 
     /// @notice Contract not approved by oracle
     uint16 constant ERR_NOT_APPROVED = 116;
 
-    /// @notice Contract already approved by oracle
-    uint16 constant ERR_ALREADY_APPROVED = 117;
 
-    /// @notice Insufficient network fee
-    uint16 constant ERR_INSUFFICIENT_NETWORK_FEE = 118;
 
     /// @notice Stake submission period has ended
     uint16 constant ERR_STAKE_PERIOD_ENDED = 120;
@@ -49,8 +42,6 @@ abstract contract Errors {
     /// @notice Stake candidate amount not zero
     uint16 constant ERR_STAKE_NOT_APPROVED = 122;
     
-    /// @notice Wrong PMP deadline for stake
-    uint16 constant ERR_WRONG_DEADLINE = 123;
 
     /// @notice Stake submission period has not started
     uint16 constant ERR_STAKE_NOT_STARTED = 124;
@@ -61,8 +52,6 @@ abstract contract Errors {
     /// @notice Result submission period has ended
     uint16 constant ERR_RESULT_ENDED = 126; 
     
-    /// @notice Invalid currency count
-    uint16 constant ERR_INVALID_CURRENCY_COUNT = 127;
 
     /// @notice Zero token amount provided
     uint16 constant ERR_ZERO_TOKEN_AMOUNT = 128;
@@ -73,8 +62,6 @@ abstract contract Errors {
     /// @notice Invalid outcome ID provided
     uint16 constant ERR_INVALID_OUTCOME_ID = 130;
 
-    /// @notice Outcomes not set for the event
-    uint16 constant ERR_OUTCOMES_NOT_SET = 131;
 
     /// @notice Order already cancelled
     uint16 constant ERR_ALREADY_CANCELLED = 132;
@@ -82,14 +69,9 @@ abstract contract Errors {
     /// @notice Order not cancelled
     uint16 constant ERR_NOT_CANCELLED = 133;
 
-    /// @notice Long array provided
-    uint16 constant ERR_LONG_ARRAY = 134;
 
-    /// @notice User already voted on proposal
-    uint16 constant ERR_ALREADY_VOTED = 135;
 
     /// @notice Wrong hash for oracle members
-    uint16 constant ERR_WRONG_HASH = 136;
 
     /// @notice Invalid zero-knowledge proof
     uint16 constant ERR_INVALID_ZKPROOF = 137;
@@ -97,11 +79,7 @@ abstract contract Errors {
     /// @notice Invalid token type
     uint16 constant ERR_INVALID_TOKEN_TYPE = 138;
 
-    /// @notice Not all oracle events approved
-    uint16 constant ERR_NOT_APPROVED_BY_ORACLE = 139;
 
-    /// @notice Proposal not exists
-    uint16 constant ERR_PROPOSAL_NOT_EXISTS = 140;
 
     /// @notice voucher nominal not allow
     uint16 constant ERR_NOT_ALLOWED = 141;
@@ -136,29 +114,19 @@ abstract contract Errors {
     /// @notice Invalid state for this operation
     uint16 constant ERR_INVALID_STATE = 151;
 
-    /// @notice Deployer has not staked on all outcomes before full-set window
-    uint16 constant ERR_DEPLOYER_NOT_COVERED = 152;
 
-    /// @notice Base pools not frozen yet
-    uint16 constant ERR_NOT_FROZEN = 153;
 
     /// @notice Base pools already frozen
     uint16 constant ERR_ALREADY_FROZEN = 154;
 
-    /// @notice Merge would make PMP insolvent
-    uint16 constant ERR_MERGE_SOLVENCY = 155;
 
     /// @notice Stake period has not ended yet
     uint16 constant ERR_NOT_STAKEEND = 156;
 
-    /// @notice Order book: invalid epoch
-    uint16 constant ERR_INVALID_EPOCH = 157;
 
     /// @notice Order book: order not found
     uint16 constant ERR_ORDER_NOT_FOUND = 158;
 
-    /// @notice Order book: epoch not ended yet
-    uint16 constant ERR_EPOCH_NOT_ENDED = 159;
 
     /// @notice Order book: amount below minimum order size
     uint16 constant ERR_ORDER_TOO_SMALL = 160;
@@ -178,9 +146,6 @@ abstract contract Errors {
     /// @notice OrderBook shutdown not yet complete — claim blocked
     uint16 constant ERR_ORDERBOOK_NOT_SHUTDOWN = 165;
 
-    /// @notice PMP outflow would exceed `_totalUnclaimedBalance` —
-    ///         payout / refund / fee math is inconsistent with deposits.
-    uint16 constant ERR_INSOLVENT = 166;
 
     /// @notice Open OrderBook orders prevent the requested action (e.g. coupon
     ///         issuance must wait for all orders to settle / cancel).
@@ -192,6 +157,11 @@ abstract contract Errors {
     ///         (a prior deployPMP already succeeded). Blocks a re-deploy that
     ///         would overwrite the committed stake and re-debit the balance.
     uint16 constant ERR_STAKE_EXISTS = 169;
+
+    /// @notice A root (RootPN / RootOracle) may only be brought up via the
+    ///         stub + `updateCode` bootstrap; deploying it with its own
+    ///         constructor is not a supported path and is rejected outright.
+    uint16 constant ERR_NOT_ALLOWED_CONSTRUCTOR = 170;
 
     // ===== Replay protection =====
 
@@ -218,11 +188,33 @@ abstract contract Errors {
     ///         prevent stale-stake races.
     uint16 constant ERR_NORM_REFUND_PENDING = 404;
 
-    /// @notice An inference-market stream/dispute lock is held; withdraw / split
-    ///         / merge are gated until the deal releases it (spec §4.3).
-    uint16 constant ERR_STREAM_LOCKED = 405;
+    /// @notice `postSellOffer` ttl is 0 or exceeds `MAX_SELL_TTL` (1 hour). A SELL
+    ///         offer commits no collateral at offer time, so its lifetime is
+    ///         mandatory and capped (spec §2.1.1). The note rejects an out-of-range
+    ///         ttl up front, before it can reach the book.
+    uint16 constant ERR_SELL_DEADLINE_TOO_LONG = 405;
+
     /// @notice `placeSellOffer` caller is not the canonical TokenContract for
     ///         `(sellerPubkey, nonce)` derived from the pinned code + the seller's
     ///         key, so only a canonical TC can post an offer.
-    uint16 constant ERR_BAD_TOKEN_CONTRACT = 406;
+
+    /// @notice A deposit arrived with a currency mix `generateVoucher` cannot take gas from.
+    /// @dev    Either more than two currencies, or two of which neither is SHELL, or two whose
+    ///         SHELL leg is not exactly `GAS_DEPOSIT`, or a single non-SHELL currency on a
+    ///         non-gas voucher — that last one has nothing to deduct the gas from, and quietly
+    ///         letting it through would mint a note nobody paid the gas for.
+    uint16 constant ERR_BAD_GAS_MIX = 407;
+
+    /// @notice A single-SHELL deposit smaller than `GAS_DEPOSIT`.
+    /// @dev    Checked BEFORE the subtraction, on purpose. Relying on the subtraction to revert
+    ///         means relying on what this compiler does with an underflow, which is a property of
+    ///         the toolchain rather than of the contract — and a silently wrapping subtraction
+    ///         would turn a 1-SHELL deposit into an astronomically large nominal.
+    uint16 constant ERR_BELOW_GAS_DEPOSIT = 408;
+
+    /// @notice The second leg of a two-currency deposit is SHELL_FEE (300).
+    /// @dev    Rejected because `deployPrivateNote` does not accept type 300: the voucher would be
+    ///         unspendable — money taken, note impossible to place. Better to refuse the deposit
+    ///         than to issue a claim nothing can honour.
+    uint16 constant ERR_FEE_TYPE_NOT_DEPOSITABLE = 409;
 }

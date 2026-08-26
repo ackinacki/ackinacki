@@ -1062,8 +1062,8 @@ impl BlockProducer {
             // return Ok((DidBroadcastSmth::Skip, None));
             // }
 
-            let producer_selector =
-                block.common_section().producer_selector().clone().expect("Must be set");
+            let descendant_producer_selector =
+                block.common_section().descendant_producer_selector().clone().expect("Must be set");
             let parent_height = parent_state
                 .guarded(|e| *e.block_height())
                 .expect("Parent block height must be set");
@@ -1102,7 +1102,7 @@ impl BlockProducer {
 
             produced_block_state.guarded_mut(|e| {
                 e.set_validated(true)?;
-                e.set_producer_selector_data(producer_selector)?;
+                e.set_descendant_producer_selector_data(descendant_producer_selector)?;
                 if let Some(history_cursor) = history_cursor {
                     e.set_history_cursor(history_cursor)?;
                 }
@@ -1288,20 +1288,39 @@ impl BlockProducer {
         let mut common_section = candidate_block.common_section().clone();
         common_section.set_block_attestations(aggregated_attestations);
 
+        let (descendant_bk_set, _descendant_future_bk_set) =
+            update_block_keeper_set_from_common_section(
+                candidate_block,
+                bk_set.clone(),
+                future_bk_set.clone(),
+            )?
+            .unwrap_or((bk_set.clone(), future_bk_set.clone()));
+
         // TODO: update parent_producer_selector
         // 1 step check if parent has spawned this thread
 
         let mut producer_selector = self.get_producer_selector(&candidate_block.parent())?;
 
         // 2 step: update index if we have rotated BP:
-        let find_bp = producer_selector.get_producer_node_id(&bk_set);
+        let selector_source_bk_set = if self.config_read.is_retired(match &parent_block_version {
+            BlockProtocolVersionState::CompleteTransition { to, .. } => to,
+            other => other.to_use(),
+        }) {
+            tracing::trace!(target: "monit", "selector_source_bk_set = bk_set");
+            bk_set.clone()
+        } else {
+            tracing::trace!(target: "monit", "selector_source_bk_set = descendant_bk_set");
+            descendant_bk_set.clone()
+        };
+
+        let find_bp = producer_selector.get_producer_node_id(&selector_source_bk_set);
         if find_bp.is_err() || find_bp.unwrap() != *self.node_credentials.node_id() {
-            if let Some(bp_distance_for_this_node) =
-                producer_selector.get_distance_from_bp(&bk_set, self.node_credentials.node_id())
+            if let Some(bp_distance_for_this_node) = producer_selector
+                .get_distance_from_bp(&selector_source_bk_set, self.node_credentials.node_id())
             {
                 // move index
-                producer_selector =
-                    producer_selector.move_index(bp_distance_for_this_node, bk_set.len());
+                producer_selector = producer_selector
+                    .move_index(bp_distance_for_this_node, selector_source_bk_set.len());
             } else {
                 // If previous selector was invalid (due to bk removal) generate a new one.
                 // Use parent block ID as seed — it is already finalized and stable.
@@ -1310,16 +1329,16 @@ impl BlockProducer {
                     .index(0)
                     .build();
                 let Some(bp_distance_for_this_node) = producer_selector
-                    .get_distance_from_bp(&bk_set, self.node_credentials.node_id())
+                    .get_distance_from_bp(&selector_source_bk_set, self.node_credentials.node_id())
                 else {
                     tracing::trace!("Producer: This node is not in the bk-set");
                     return Ok(UpdateCommonSectionResult::AbortNotInBKSet);
                 };
-                producer_selector =
-                    producer_selector.move_index(bp_distance_for_this_node, bk_set.len());
+                producer_selector = producer_selector
+                    .move_index(bp_distance_for_this_node, selector_source_bk_set.len());
             }
         }
-        common_section.set_producer_selector(Some(producer_selector));
+        common_section.set_descendant_producer_selector(Some(producer_selector));
 
         if should_share_state {
             tracing::trace!(
@@ -1335,14 +1354,6 @@ impl BlockProducer {
             tracing::trace!("update_candidate_common_section: parent block height is missing");
             return Ok(UpdateCommonSectionResult::AncestorIsNotReadyYet);
         };
-
-        let (descendant_bk_set, _descendant_future_bk_set) =
-            update_block_keeper_set_from_common_section(
-                candidate_block,
-                bk_set.clone(),
-                future_bk_set.clone(),
-            )?
-            .unwrap_or((bk_set.clone(), future_bk_set.clone()));
 
         // Always compute BK set Poseidon commitments for the envelope hash Merkle tree.
         // L2 = old BK set, L3 = new BK set (== old when no changes).
@@ -1553,7 +1564,7 @@ impl BlockProducer {
         } else {
             self.block_state_repository
                 .get(parent_block_id)?
-                .guarded(|e| e.producer_selector_data().clone())
+                .guarded(|e| e.descendant_producer_selector_data().clone())
                 .ok_or(anyhow::format_err!("Producer selector must be set for parent block"))
         }
     }

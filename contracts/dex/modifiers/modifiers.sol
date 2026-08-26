@@ -20,20 +20,18 @@ abstract contract Modifiers is Errors {
     uint128 constant ROOTPN_PRIVATE_NOTE_DEPLOYED = 101;
     /// @notice External event id for `RootPN.NullifierDeployed`.
     uint128 constant ROOTPN_NULLIFIER_DEPLOYED = 102;
-    /// @notice Reserved RootPN external event id for oracle deployment notifications.
-    uint128 constant ROOTPN_ORACLE_DEPLOYED = 103;
     /// @notice External event id for `RootPN.TokensWithdrawn`.
     uint128 constant ROOTPN_TOKENS_WITHDRAWN = 154;
     /// @notice External event id for `RootPN.ProtocolFeeCollected`.
     uint128 constant ROOTPN_PROTOCOL_FEE_COLLECTED = 155;
     /// @notice External event id for `RootPN.ProtocolFeeWithdrawn`.
     uint128 constant ROOTPN_PROTOCOL_FEE_WITHDRAWN = 156;
+    /// @notice External event id for `RootPN.DealWriteOffReported` (task H).
+    uint128 constant ROOTPN_DEAL_WRITE_OFF = 170;
 
     // Oracle events
     /// @notice External event id for `Oracle.OracleEventListDeployed`.
     uint128 constant ORACLE_DEPLOYED = 104;
-    /// @notice Reserved external event id for OracleEventList deployment.
-    uint128 constant ORACLE_EVENT_LIST_DEPLOYED = 105;
     /// @notice External event id for `OracleEventList.EventConfirmed`.
     uint128 constant ORACLE_EVENT_CONFIRMED = 106;
     /// @notice External event id for `OracleEventList.DescriptionUpdated`.
@@ -50,14 +48,18 @@ abstract contract Modifiers is Errors {
     uint128 constant PRIVATENOTE_INFERENCE_PLACED = 1100;
     /// @notice External event id for `PrivateNote.InferenceFilledConfirmed` (owner-facing mirror carrying the deal TC).
     uint128 constant PRIVATENOTE_INFERENCE_FILLED = 1101;
+    /// @notice External event id for `PrivateNote.InferenceOrderRejectedMirror` (owner-facing mirror of a refusal).
+    /// @dev    It had none. When the rejection mirror was added (task Q) the `emit` line was copied
+    ///         from `InferenceOrderRemoved` and brought that event's destination with it, so two
+    ///         different events left on 165. A consumer filtering by `dst` then received both, and
+    ///         the two bodies do not even have the same shape — `(address, uint128)` against
+    ///         `(address, uint64, uint8, uint128)` — so reading one as the other yields rubbish.
+    ///         1102 continues 1100/1101; the inference family sits in the 1100s deliberately.
+    uint128 constant PRIVATENOTE_INFERENCE_REJECTED = 1102;
     /// @notice External event id for `PrivateNote.ClaimAccepted`.
     uint128 constant PRIVATENOTE_CLAIM_ACCEPTED = 114;
     /// @notice External event id for `PrivateNote.StakeCancelled`.
     uint128 constant PRIVATENOTE_STAKE_CANCELLED = 115;
-    /// @notice External event id for `PrivateNote.FullSetStakeConfirmed`.
-    uint128 constant PRIVATENOTE_FULLSET_STAKE_CONFIRMED = 116;
-    /// @notice External event id for `PrivateNote.FullSetStakeCancelled`.
-    uint128 constant PRIVATENOTE_FULLSET_STAKE_CANCELLED = 117;
     // PMP events
     /// @notice External event id for `PMP.StakeAccepted`.
     uint128 constant PMP_STAKE_ACCEPTED = 118;
@@ -69,28 +71,19 @@ abstract contract Modifiers is Errors {
     uint128 constant PMP_CLAIM_PROCESSED = 121;
     /// @notice Reserved external event id for network fee burn accounting.
     uint128 constant PMP_NETWORK_FEE_BURNED = 122;
-    /// @notice Reserved external event id for legacy stake deadline updates.
-    uint128 constant PMP_STAKE_DEADLINE_SET = 123;
     /// @notice External event id for `PMP.TimingsSet`.
     uint128 constant PMP_SET_TIMINGS = 124;
-    /// @notice Reserved external event id for number-of-outcomes updates.
-    uint128 constant PMP_NUM_OUTCOMES_SET = 125;
     /// @notice External event id for `PMP.EventCancelled`.
     uint128 constant PMP_EVENT_CANCELLED = 126;
-    /// @notice Reserved external event id for per-oracle confirmation.
-    uint128 constant PMP_ORACLE_CONFIRMED = 127;
-    /// @notice Reserved external event id for full oracle confirmation.
-    uint128 constant PMP_ALL_ORACLES_CONFIRMED = 128;
-    /// @notice Reserved external event id for PMP initialization.
-    uint128 constant PMP_INITIALIZED = 129;
     /// @notice External event id for `PMP.PMPRejected`.
     uint128 constant PMP_REJECTED_BY_ORACLE = 132;
+    /// @notice External event id for `PMP.StakeForfeited` (task E) — the one place an owner
+    ///         deliberately gives up money, previously invisible from outside.
+    uint128 constant PMP_STAKE_FORFEITED = 167;
 
     // OracleList events
     /// @notice External event id for `OracleEventList.EventAdded`.
     uint128 constant ORACLE_EVENT_ADDED = 133;
-    /// @notice Reserved external event id for oracle event publishing.
-    uint128 constant ORACLE_EVENT_PUBLISHED = 134;
     /// @notice External event id for `OracleEventList.RangeEventAdded` (PMP↔OB binding).
     uint128 constant ORACLE_RANGE_EVENT_ADDED = 162;
 
@@ -122,8 +115,6 @@ abstract contract Modifiers is Errors {
     uint128 constant OB_ORDER_PLACED = 143;
     /// @notice External event id for `OrderBook.OrderCancelled`.
     uint128 constant OB_ORDER_CANCELLED = 144;
-    /// @notice External event id for `OrderBook.EpochSettled`.
-    uint128 constant OB_EPOCH_SETTLED = 145;
     /// @notice External event id for `OrderBook.OrderFilled`.
     uint128 constant OB_ORDER_FILLED = 146;
     /// @notice External event ids for OrderBook events that previously shared dst=0.
@@ -149,6 +140,19 @@ abstract contract Modifiers is Errors {
     uint128 constant PRIVATENOTE_TRANSFER_INITIATED = 149;
     /// @notice External event id for `PrivateNote.TransferReceived`.
     uint128 constant PRIVATENOTE_TRANSFER_CONFIRMED = 150;
+    /// @notice External event id for `PrivateNote.DealCredited` (generation 4.0.33).
+    /// @dev    163, the first free id past the contiguous 132-162 block; 180 is taken further down.
+    uint128 constant PRIVATENOTE_DEAL_CREDITED = 163;
+    /// @notice External event id for `PrivateNote.BookCredited` (generation 4.0.33).
+    uint128 constant PRIVATENOTE_BOOK_CREDITED = 164;
+    /// @notice External event id for `PrivateNote.InferenceOrderRemoved` (task E).
+    uint128 constant PRIVATENOTE_INFERENCE_REMOVED = 165;
+    /// @notice External event id for `PrivateNote.InferenceDealClosed` (task E).
+    uint128 constant PRIVATENOTE_INFERENCE_DEAL_CLOSED = 166;
+    /// @notice External event id for `PrivateNote.StakeForfeitConfirmed` (task E).
+    uint128 constant PRIVATENOTE_STAKE_FORFEITED = 168;
+    /// @notice External event id for `PrivateNote.StakeDroppedLocally` (task E).
+    uint128 constant PRIVATENOTE_STAKE_DROPPED = 169;
 
     /// @notice Minimum native balance required for contract operation
     uint64 constant MIN_BALANCE = 100 vmshell;
@@ -202,6 +206,19 @@ abstract contract Modifiers is Errors {
 
     /// @notice Currency ID used for USDC tokens
     uint32 constant CURRENCIES_ID_USDC = 3;
+
+    /// @notice SHELL taken from every non-gas deposit and handed to the note it deploys.
+    /// @dev    A PrivateNote is deployed CROSS-DAPP, and a plain native value does not cross a dapp
+    ///         boundary — ECC[2] does, converting to native on arrival. So this is not a courtesy:
+    ///         it is the mechanism by which a new note gets any gas at all, and without it a note
+    ///         exists but cannot act.
+    ///
+    ///         Collected in `RootPN.generateVoucher` and paid out in `RootPN.deployPrivateNote`.
+    ///         The two balance IN AGGREGATE and deliberately not per note: one non-gas voucher
+    ///         yields exactly one deploy, so as many deposits as were taken from, that many notes
+    ///         were funded. Tying a particular deposit to a particular deploy is exactly what the
+    ///         privacy of this scheme rests on NOT being possible.
+    uint128 constant GAS_DEPOSIT = 250_000_000_000;   // 250 SHELL
 
     /// @notice Fixed network fee to burn on approval
     uint64 constant NETWORK_FEE_AMOUNT = 1_000_000_000; // 1 shell tokens

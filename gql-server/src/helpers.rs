@@ -87,34 +87,36 @@ impl ToFloat for Option<i64> {
     }
 }
 
+/// Formats a value the block manager stored in hexadecimal.
 pub fn format_big_int(value: Option<String>, format: Option<BigIntFormat>) -> Option<String> {
-    // value.as_ref()?;
-    match value {
-        Some(value) if !value.is_empty() => {
-            let big_int = BigInt::from_str_radix(&value, 16).unwrap();
-            let formatted = match format {
-                Some(BigIntFormat::DEC) => big_int.to_string(),
-                _ => {
-                    let (sign, u_value) = big_int.into_parts();
-                    if sign == Sign::Minus {
-                        format!("-0x{}", u_value.to_str_radix(16))
-                    } else {
-                        format!("0x{}", u_value.to_str_radix(16))
-                    }
-                }
-            };
-
-            Some(formatted)
-        }
-        _ => None,
-    }
+    format_big_int_radix(value, format, 16)
 }
 
-pub fn format_big_int_dec(str: Option<String>, format: Option<BigIntFormat>) -> Option<String> {
-    str.as_ref()?;
+/// Formats a value the block manager stored in decimal. Most money columns of
+/// the `transactions` table are written this way (`Grams::as_u128().to_string()`),
+/// `total_fees` and the message amounts being the hexadecimal exceptions.
+pub fn format_big_int_dec(value: Option<String>, format: Option<BigIntFormat>) -> Option<String> {
+    format_big_int_radix(value, format, 10)
+}
 
-    let big_int = BigInt::from_str_radix(&str.unwrap(), 10).unwrap();
-    let formatted = match format {
+fn format_big_int_radix(
+    value: Option<String>,
+    format: Option<BigIntFormat>,
+    radix: u32,
+) -> Option<String> {
+    let value = value.filter(|value| !value.is_empty())?;
+
+    // A column that does not parse is a bug on the writing side; reporting the
+    // field as absent keeps the rest of the query answerable.
+    let big_int = match BigInt::from_str_radix(&value, radix) {
+        Ok(big_int) => big_int,
+        Err(err) => {
+            tracing::error!("failed to parse {value:?} with radix {radix}: {err}");
+            return None;
+        }
+    };
+
+    Some(match format {
         Some(BigIntFormat::DEC) => big_int.to_string(),
         _ => {
             let (sign, u_value) = big_int.into_parts();
@@ -124,9 +126,7 @@ pub fn format_big_int_dec(str: Option<String>, format: Option<BigIntFormat>) -> 
                 format!("0x{}", u_value.to_str_radix(16))
             }
         }
-    };
-
-    Some(formatted)
+    })
 }
 
 pub fn u64_to_string(value: u64) -> String {
@@ -206,6 +206,37 @@ pub fn ecc_from_bytes(bytes: Option<Vec<u8>>) -> anyhow::Result<Option<Vec<Other
     };
 
     Ok(other_currency)
+}
+
+/// Decodes the extra currencies of a transaction delta, stored by the block
+/// manager as a JSON array ordered by currency id:
+/// `[{"currency":<u32>,"value":"<signed decimal>"}]`.
+///
+/// Message and account amounts use `ecc_from_bytes` instead: those are
+/// `ExtraCurrencyCollection` BOCs, which cannot hold a negative amount. See
+/// `database::currency_collection::SignedCurrency` for the writing side.
+pub fn signed_ecc_from_json(json: Option<String>) -> anyhow::Result<Option<Vec<OtherCurrency>>> {
+    let Some(json) = json else {
+        return Ok(None);
+    };
+
+    #[derive(serde::Deserialize)]
+    struct SignedCurrency {
+        currency: u32,
+        value: String,
+    }
+
+    let currencies: Vec<SignedCurrency> = serde_json::from_str(&json)?;
+
+    Ok(Some(
+        currencies
+            .into_iter()
+            .map(|currency| OtherCurrency {
+                currency: Some(currency.currency as f64),
+                value: Some(currency.value),
+            })
+            .collect(),
+    ))
 }
 
 pub fn query_order_by_str(order_by: Option<Vec<Option<QueryOrderBy>>>) -> String {

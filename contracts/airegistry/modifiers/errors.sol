@@ -5,19 +5,11 @@ abstract contract AiRegistryErrors {
     uint16 constant ERR_INVALID_SENDER        = 302;
     uint16 constant ERR_ZERO_AMOUNT           = 303;
     uint16 constant ERR_ALREADY_REGISTERED    = 304;
-    uint16 constant ERR_NOT_INITIALIZED       = 305;
     uint16 constant ERR_INSUFFICIENT_TOKENS   = 306;
-    uint16 constant ERR_CONTRACT_LOCKED       = 307;
-    uint16 constant ERR_NOT_RESERVED          = 308;
-    uint16 constant ERR_RESERVATION_OVERFLOW  = 309;
-    uint16 constant ERR_NOT_EMPTY             = 310;
     uint16 constant ERR_NO_SHELL              = 311;
-    uint16 constant ERR_BAD_FEE_BPS           = 312;
     uint16 constant ERR_BAD_PARAM             = 313;
     uint16 constant ERR_OVERFLOW              = 314;
-    uint16 constant ERR_FIRST_BATCH_LIMIT     = 315;
     uint16 constant ERR_BAD_CODE_HASH         = 316;
-    uint16 constant ERR_SINGLE_SESSION_REQUIRED = 317;
     // Streaming deal (spec §3-4)
     uint16 constant ERR_NOT_FUNDED            = 318;
     uint16 constant ERR_ALREADY_FUNDED        = 319;
@@ -34,10 +26,12 @@ abstract contract AiRegistryErrors {
     // (330 ERR_ALREADY_SET / 331 ERR_LOW_LIQUIDITY were the standalone
     //  InferenceOracle — removed; reference price lives in InferenceOrderBook.)
     // Probe tick (spec §3.1.2)
-    uint16 constant ERR_PROBE_NOT_FUNDED      = 332;  // open() before the seller funded the probe commission
-    uint16 constant ERR_PROBE_ALREADY_FUNDED  = 333;  // fundProbeCommission() called twice
-    uint16 constant ERR_NOT_PROBE             = 334;  // op requires the Probe state (probe not yet accepted)
-    uint16 constant ERR_ALREADY_STREAMING     = 335;  // probe already accepted, Probe-only op rejected
+    uint16 constant ERR_BOND_NOT_FUNDED      = 332;  // open() before the seller funded the mirror bond
+    uint16 constant ERR_BOND_ALREADY_FUNDED  = 333;  // fundDeal() called twice
+    // 334 and 335 were ERR_NOT_PROBE / ERR_ALREADY_STREAMING, both dead — declared, never raised.
+    // They are gone rather than kept "for tidiness": InferenceOrderBook declares its OWN 334 and
+    // 335 (ERR_NO_LIQUIDITY, ERR_BAD_FLAGS) and inherits these, so a dead constant here did not sit
+    // quietly — it made a live exit code ambiguous, and a search by number answered with the
+    // meaning that never happens. That cost real diagnostic time on an exit 334.
     uint16 constant ERR_OFFER_LIVE            = 336;  // destroy blocked: a live sell offer still rests on the book
-    uint16 constant ERR_NO_PREPAID_TICK       = 337;  // advance() in streaming with no delivered tick to finalize
 }

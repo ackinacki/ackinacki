@@ -243,6 +243,8 @@ impl BlockchainQuery<'_> {
     /// events (aka outgoing external messages).
     async fn events(
         &self,
+        #[graphql(name = "src_dapp_id", desc = "Optional source dApp ID filter.")]
+        src_dapp_id: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'last'.")] first: Option<i32>,
         after: Option<String>,
         #[graphql(desc = "This field is mutually exclusive with 'first'.")] last: Option<i32>,
@@ -276,6 +278,7 @@ impl BlockchainQuery<'_> {
                 let mut messages = db::Message::blockchain_events(
                     self.ctx.data::<Arc<DBConnector>>()?,
                     &projection,
+                    src_dapp_id,
                     &pagination,
                 )
                 .await?;

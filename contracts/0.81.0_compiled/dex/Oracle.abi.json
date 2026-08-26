@@ -61,15 +61,6 @@
 			],
 			"outputs": [
 			]
-		},
-		{
-			"name": "EventPublished",
-			"inputs": [
-				{"name":"eventId","type":"uint256"},
-				{"name":"eventName","type":"string"}
-			],
-			"outputs": [
-			]
 		}
 	],
 	"fields": [

@@ -18,16 +18,40 @@ import "../airegistry/TokenContract.sol";
 interface IInferenceDeal {
     function stop() external;
     function dispute() external;
-    function reclaimOnTimeout() external;
     function cleanupUnopened() external;
-    function fundProbeCommission() external;
+    /// @notice Gas (attached ECC[2], flag 17) plus `amount` as a private-balance figure.
+    function fundDeal(uint128 amount, optional(bytes) endpointCipher) external;
+    /// @dev Added beside `fundDeal`, not as a second interface for the same contract: two
+    ///      names for one deal would let the two drift and give `abi.functionId` two answers.
+    function fundBuyerBond(uint128 amount) external;
+    /// @notice Sender check and nothing else — the answer is whether it bounces.
+    function touchDeal() external;
 }
 
 /// @notice Wallet that can deploy and interact with PMP contracts
 contract PrivateNote is Modifiers, ReplayProtection {
 
     /// @notice Contract semantic version.
-    string constant version = "4.0.27";
+    string constant version = "4.0.35";
+
+    /// @notice Max lifetime (seconds) of a resting SELL offer (spec §2.1.1). A SELL commits NO
+    ///         collateral at offer time (the seller bond is funded only after a match), so an ask
+    ///         left on the book is a free option; a mandatory, bounded expiry caps that exposure.
+    ///         Enforced HERE because the note is the seller's trusted entry and the ONLY path to
+    ///         the book — the TC posts the offer for this note, and there is no direct seller-key
+    ///         post path. The note hands the book an already-anchored ABSOLUTE deadline, so the
+    ///         book neither re-validates the bound (its clock has moved on) nor re-anchors it.
+    uint64 constant MAX_SELL_TTL = 3600;   // 1 hour
+
+    /// @notice Mirrors of the book's order-flag bits and physical bounds, needed to validate an
+    ///         order HERE before it is submitted. They are contract-local constants in
+    ///         `InferenceOrderBook` / `AiRegistryModifiers` and not reachable across contracts, so
+    ///         they are restated — keep in sync with the book if a bit is ever renumbered.
+    uint8   constant FLAG_MARKET         = 0x04;
+    uint8   constant FLAG_AON            = 0x20;
+    uint8   constant FLAG_SUBSCRIPTION   = 0x40;
+    uint8   constant SUB_WEEKS           = 4;         // a subscription is always one month
+    uint128 constant SUB_TICKS_PER_WEEK  = 10_080;    // week / MIN_SECONDS_PER_TICK (60s per tick)
 
     /// @notice Canonical-deal derivation anchors (note-funded model). The TokenContract
     ///         and RootModel code hashes/depths are NOT pinned constants here — they are
@@ -35,19 +59,14 @@ contract PrivateNote is Modifiers, ReplayProtection {
     ///         `_rootModelCodeHash` below). This keeps the pin ONE-WAY: the TokenContract
     ///         pins the note's code hash (`postFromNote` identity check); the note pinning
     ///         the TC hash back would make the two mutually recursive and the build never
-    ///         converge (same rule as the IOB code baked below). `fundDeployShell` /
-    ///         `postProbeCommission` / `postSellOffer` derive the canonical RootModel /
+    ///         converge (same rule as the IOB code baked below). `fundDeal` /
+    ///         `fundDeployShell` / `postSellOffer` derive the canonical RootModel /
     ///         TokenContract from these baked hashes + this note's own key (+nonce),
     ///         never a caller-supplied address.
     // Canonical AI SuperRoot account id (workchain 0) — anchor for the RootModel-address derivation.
     // FIXED at the vanity 0:0c0c… on LOCAL, SHELLNET and MAINNET (zerostate force-places the SuperRoot
     // here). shellnet == local, no per-version / code-derived rotation — see dexdo-specs/shellnet-update.md.
     uint256 constant SUPER_ROOT_ADDR           = 0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c;
-
-    /// @notice Owner escape hatch: stale stream/dispute locks can be force
-    ///         cleared after this many seconds since the last lock change, so the
-    ///         owner can always recover the note's withdraw path.
-    uint64 constant STREAM_LOCK_MAX = 7 days;
 
     /// @notice Unique deposit identifier hash (static)
     uint256 public static _depositIdentifierHash;
@@ -86,7 +105,7 @@ contract PrivateNote is Modifiers, ReplayProtection {
     /// @notice InferenceOrderBook code (§8) baked at deploy by RootPN. The note
     ///         deploys/derives the canonical book from THIS code — never from a
     ///         caller-supplied code or a raw address — so it cannot be tricked
-    ///         into a forged book / wrong build. (Kept in data, not as a code
+    ///         to the canonical book of the matching build. (Kept in data, not as a code
     ///         constant, so the note↔OB pin stays one-way: OB pins the note's
     ///         NOTE_CODE_HASH; pinning the OB hash in the note's CODE would make
     ///         the two hashes mutually recursive and the build never converge.)
@@ -162,6 +181,80 @@ contract PrivateNote is Modifiers, ReplayProtection {
     ///         Used to gate operations that must not proceed while orders are
     ///         in flight (e.g. `generateCoupon`).
     uint32 _openOrderCount;
+
+    /// @notice Inference orders of this note's that still rest in a book, by order id.
+    /// @notice Deals of this note's that are still alive, by order id.
+    /// @dev    TWO COUNTERS, NOT ONE, and the reason is that a match does two things at once: it
+    ///         removes an order from the book AND starts a deal. With a single quantity the result
+    ///         would depend on which of those two messages arrived first. Kept apart, the order of
+    ///         arrival cannot matter — one falls, the other rises, and neither reads the other.
+    ///         A partial fill grows the deals and leaves the order resting, which follows from the
+    ///         same separation rather than from a special case.
+    ///
+    ///         Withdrawal requires BOTH to be empty. Ids rather than addresses because a note has
+    ///         no business storing a deal's address — the removal side authenticates by DERIVING
+    ///         the caller, exactly as `creditFromDeal` does, so nothing has to be kept to compare
+    ///         against.
+    ///
+    ///         WHAT THIS IS NOT. Both mirrors arrive `bounce: false` and deliberately do not block
+    ///         execution: making them blocking would let one note stall a fill for both sides. So a
+    ///         mirror that never arrives leaves no record, and the guard then says nothing — it
+    ///         does not break, it goes quiet. This protects against an owner withdrawing too early
+    ///         by accident; it is not a guarantee, and reading it as one would be a mistake.
+    /// @dev Key = `tvm.hash(abi.encode(book, orderId))`, the same composite-key idiom this
+    ///      contract already uses for stakes. THE BOOK MUST BE INSIDE THE KEY: each book runs its
+    ///      own `_nextOrderId`, so ids from different models collide — order 7 in one book and
+    ///      order 7 in another are different orders. A flat map keyed on the id alone would merge
+    ///      them silently, and clearing one would clear the other. Composing the key closes that by
+    ///      construction rather than by whoever reads this next being careful.
+    ///
+    ///      Kept apart from the PMP order structures on purpose: the two paths are not mixed.
+    mapping(uint256 => bool) _restingInf;
+    /// @dev Keyed by the DEAL'S ADDRESS, which needs no second level: a deal address is derived
+    ///      from the seller's key and nonce and is unique on its own. It also authenticates the
+    ///      removal for free — a deal announcing its own destruction is `msg.sender`, so nothing
+    ///      has to be passed and nothing has to be compared.
+    /// @notice Requests this note has sent to a book and not yet had answered (task Q).
+    /// @dev    KEYED BY A NUMBER THIS NOTE CHOSE ITSELF, before sending, and holding the escrow it
+    ///         committed. The book assigns an order id only if the request becomes an order, which
+    ///         is precisely the case that was already covered — the uncovered ones are a request
+    ///         that is refused without ever resting and a request whose message bounces. Neither
+    ///         has a book-side id, so nothing but a number of our own can name them.
+    ///
+    ///         It holds the AMOUNT, not just a flag, because every answer has to undo the
+    ///         subtraction this note made before sending. Carrying the figure back in each answer
+    ///         would work for three of the four and not for the bounce, where only the leading bits
+    ///         of the body survive.
+    ///
+    ///         AND IT GATES WITHDRAWAL, like the other two maps. Between the debit and the answer
+    ///         the money is neither here nor there: subtracted from `_balance`, not yet recorded
+    ///         anywhere else. A withdrawal in that window would take a balance that is missing the
+    ///         escrow and can never be topped up again, because the answer credits a note that has
+    ///         already latched `_hasWithdrawn`.
+    mapping(uint64 => uint128) _pendingInf;
+    /// @notice Source of the numbers above. Monotonic, never reused within this note.
+    /// @dev    Uniqueness only has to hold PER NOTE: the book stores what it was given and echoes
+    ///         it back to the same note, so two notes choosing the same number never meet.
+    uint64 _nextClientOrderId;
+    mapping(address => bool) _liveDeals;
+    /// @notice When the last touch went out. One stamp for the note, not one per deal.
+    uint32 _lastDealTouch;
+    /// @notice How rarely a touch may be sent.
+    /// @dev    CHOSEN FROM WHAT THE TOUCH IS FOR, not picked. It is a diagnostic for a contract
+    ///         believed dead, never part of trading, so it needs no throughput at all — one probe
+    ///         a minute clears a stale record within a minute of the owner noticing it, which is
+    ///         faster than any human notices. What the limit is really guarding is the other
+    ///         direction: without it, anyone holding the owner key could burn the note's gas by
+    ///         probing in a loop, and a note pays for its own sends.
+    ///
+    ///         60s rather than a new number because the deal's own pacing already uses it —
+    ///         `MIN_SECONDS_PER_TICK` and `MIN_CLAIM_INTERVAL` are both a minute — and inventing a
+    ///         second cadence for the same system means two things to keep in step later.
+    uint32 constant DEAL_TOUCH_INTERVAL = 60;
+    // NO PARALLEL COUNTERS. A count kept beside a map is a second source of truth about the same
+    // fact, and the two drift silently: the map says one thing, the counter another, and the
+    // withdraw gate reads the counter. `.empty()` asks the map itself, which is how the note
+    // already gates on `_stakes` in `initTransfer`. One truth, one check.
 
     /// @notice Per-PMP-event open-order counter.
     ///         Key = tvm.hash(abi.encode(eventId, oracleListHash, tokenType))
@@ -256,20 +349,6 @@ contract PrivateNote is Modifiers, ReplayProtection {
     /// @notice Coupon type (used for tracking which token type the coupon is for)
     uint32 _couponsTokenType;
 
-    // ── Inference-market stream locks (spec §4.3) ───────────────────────────
-    // A `token_contract` (streaming deal) that this note is party to can lock
-    // the note while a stream is live, and dispute-lock it while a dispute is
-    // open. While any lock is held the note cannot withdraw / split / merge —
-    // this caps demand-side hopping and stops a party fleeing mid-dispute.
-    // Auth is locker-only: only the deal that set a lock can clear it, so a lock
-    // can at most freeze withdraw (never touch funds); an owner escape hatch
-    // clears stale locks after `STREAM_LOCK_MAX`.
-    mapping(address => bool) _streamLocks;   // deal => stream lock held
-    mapping(address => bool) _disputeLocks;  // deal => dispute lock held
-    uint32 _streamLockCount;
-    uint32 _disputeLockCount;
-    uint64 _lastStreamLockChange;
-
     // Events
 
     /// @notice Emitted when owner pubkey is changed
@@ -359,6 +438,20 @@ contract PrivateNote is Modifiers, ReplayProtection {
     /// @notice Emitted when an inbound transfer is received and credited
     event TransferReceived(address from, uint32 tokenType, uint128 amount);
 
+    /// @notice Emitted when a TokenContract credits this note (generation 4.0.33).
+    /// @dev    Separate from `TransferReceived` on purpose: that one is note-to-note and its
+    ///         counterparty is a note, this one's is a deal. Off-chain reconciliation pairs each
+    ///         credit against the deal's own subtraction, and one event carrying two different
+    ///         kinds of counterparty would make that pairing guesswork.
+    event DealCredited(address deal, uint128 amount);
+
+    /// @notice Emitted when an InferenceOrderBook credits this note (generation 4.0.33).
+    /// @dev    Distinct from `DealCredited` for the same reason that one is distinct from
+    ///         `TransferReceived`: the counterparty is a different KIND of contract, verified by a
+    ///         different derivation, and an event that blurred them would make an audit of who paid
+    ///         whom depend on guessing.
+    event BookCredited(address book, uint128 amount);
+
     /// @notice PrivateNote constructor
     /// @param value Initial token balance
     /// @param ephemeralPubkey Ephemeral public key for authorization
@@ -396,8 +489,14 @@ contract PrivateNote is Modifiers, ReplayProtection {
 
     /// @notice Changes the owner public key
     /// @param newPubkey New public key
-    function changeOwner(uint256 newPubkey) public accept saveMsg {
-        require(msg.pubkey() == _ephemeralPubkey, ERR_INVALID_SENDER);
+    /// @dev Authenticated by the MODIFIER, not in the body, so the check runs BEFORE `accept`.
+    ///      Modifiers execute in declaration order: with `accept` first, the note paid the compute
+    ///      for every external message that reached this entry point and only then discovered the
+    ///      sender was a stranger. The self-funding floor does not cover that case — `ensureBalance`
+    ///      sat after the check, so on exactly the path being abused it was never reached, and a
+    ///      revert would have undone it anyway while the gas stayed spent. Every other owner-gated
+    ///      method here already reads `onlyOwnerPubkey(_ephemeralPubkey) accept`; this one did not.
+    function changeOwner(uint256 newPubkey) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
         // Refuse to demote ownership to pubkey=0 — every onlyOwnerPubkey-gated
         // PN method would then accept msg.pubkey()==0, i.e. any unsigned tx.
         require(newPubkey != 0, ERR_INVALID_PARAMS);
@@ -416,54 +515,6 @@ contract PrivateNote is Modifiers, ReplayProtection {
         gosh.mintshellq(MIN_BALANCE);
     }
 
-    // ── Inference-market stream locks (spec §4.3) ───────────────────────────
-
-    /// @notice Reverts if any stream/dispute lock is held — gate for value-
-    ///         extracting / state-restructuring ops (withdraw, split, merge).
-    function _requireNotStreamLocked() private view {
-        require(_streamLockCount == 0 && _disputeLockCount == 0, ERR_STREAM_LOCKED);
-    }
-
-    /// @notice A streaming deal locks this note while its stream is live.
-    /// @dev Auth: `msg.sender` must be the canonical TokenContract for
-    ///      (sellerPubkey, nonce) — recomputed here from the pinned TC code hash
-    ///      via `_tokenContractAddr`. A genuine TC only ever locks its own
-    ///      counterparty note, so this transitively proves the caller is THIS
-    ///      note's deal, and only that deal can lock this note.
-    ///      `_lastStreamLockChange` refreshes only on a genuinely new lock, so the
-    ///      `forceClearStreamLocks` timer cannot be pushed forward by re-locking an
-    ///      already-held slot.
-    function streamLock(uint256 sellerPubkey, uint64 nonce) public accept {
-        address deal = _tokenContractAddr(sellerPubkey, nonce);
-        require(msg.sender == deal, ERR_INVALID_SENDER);
-        ensureBalance();
-        if (!_streamLocks[deal]) { _streamLocks[deal] = true; _streamLockCount += 1; _lastStreamLockChange = uint64(block.timestamp); }
-    }
-
-    /// @notice The deal releases its stream lock (amicable close / timeout).
-    function streamUnlock(uint256 sellerPubkey, uint64 nonce) public accept {
-        address deal = _tokenContractAddr(sellerPubkey, nonce);
-        require(msg.sender == deal, ERR_INVALID_SENDER);
-        ensureBalance();
-        if (_streamLocks[deal]) { delete _streamLocks[deal]; _streamLockCount -= 1; _lastStreamLockChange = uint64(block.timestamp); }
-    }
-
-    /// @notice The deal escalates to a dispute — both notes get dispute-locked.
-    function streamDisputeLock(uint256 sellerPubkey, uint64 nonce) public accept {
-        address deal = _tokenContractAddr(sellerPubkey, nonce);
-        require(msg.sender == deal, ERR_INVALID_SENDER);
-        ensureBalance();
-        if (!_disputeLocks[deal]) { _disputeLocks[deal] = true; _disputeLockCount += 1; _lastStreamLockChange = uint64(block.timestamp); }
-    }
-
-    /// @notice The deal resolves the dispute — dispute lock released.
-    function streamDisputeUnlock(uint256 sellerPubkey, uint64 nonce) public accept {
-        address deal = _tokenContractAddr(sellerPubkey, nonce);
-        require(msg.sender == deal, ERR_INVALID_SENDER);
-        ensureBalance();
-        if (_disputeLocks[deal]) { delete _disputeLocks[deal]; _disputeLockCount -= 1; _lastStreamLockChange = uint64(block.timestamp); }
-    }
-
     // ── Inference-market confirmation mirrors (owner-facing) ─────────────────
     // The canonical InferenceOrderBook pushes a confirmation into the owner's note so the
     // owner can read JUST this note's ext-out stream and get the deal address — no full index.
@@ -475,44 +526,267 @@ contract PrivateNote is Modifiers, ReplayProtection {
     event InferenceOrderPlacedConfirmed(address orderBook, address tokenContract, uint128 orderId, bool isBuy, uint256 price, uint128 ticks);
     /// @notice Owner mirror of a match. `tokenContract` is the deal contract: the buyer reads it to
     ///         track the stream; the seller gets it symmetrically (their own TC).
+    /// @notice Emitted when the book reports one of this note's orders left it.
+    /// @dev    Cancel, expiry and fill are indistinguishable here on purpose — the book's one
+    ///         removal point sends the same message for all three, and the note only needs to
+    ///         know the order is no longer resting.
+    // Mirrors InferenceOrderBook's removal causes; only REMOVED_REJECTED is acted on here, the
+    // rest are carried to the owner untouched.
+    uint8 constant REMOVED_FILLED    = 1;
+    uint8 constant REMOVED_CANCELLED = 2;
+    uint8 constant REMOVED_EXPIRED   = 3;
+    uint8 constant REMOVED_DUST      = 4;
+    uint8 constant REMOVED_REJECTED  = 5;
+
+    event InferenceOrderRemoved(address book, uint128 orderId, uint8 cause, uint128 refunded);
+    /// @notice A request refused by the book without ever becoming an order (task Q, outcome 3).
+    /// @dev    Carries the CLIENT number, because that is the only name this outcome has: no order
+    ///         id was ever assigned. `refunded` is what actually landed on the balance, not what the
+    ///         book claimed, so the event describes this note's own books rather than a message.
+    event InferenceOrderRejectedMirror(address book, uint64 clientOrderId, uint8 reason, uint128 refunded);
+
+    /// @notice Emitted when a stake record is dropped locally, with no PMP to answer.
+    /// @dev    The PMP self-destructed before the forfeit reached it, so there is no
+    ///         authoritative counterpart — this is the only record that will exist.
+    event StakeDroppedLocally(uint256 stakeHash, uint32 tokenType,
+                              uint128[] amount, uint128[] debtAmount, uint128[] couponsAmount);
+
+    /// @notice Emitted when a forfeit becomes final on the owner's side.
+    /// @dev    Carries the stake key rather than the amounts: PMP's `StakeForfeited` is the
+    ///         authoritative record and has them, and duplicating figures across two contracts
+    ///         is how the two come to disagree.
+    event StakeForfeitConfirmed(address pmp, uint256 stakeHash);
+
+    /// @notice Emitted when a deal tells this note it is gone.
+    event InferenceDealClosed(address deal);
+
     event InferenceFilledConfirmed(address orderBook, address tokenContract, uint128 orderId, uint128 ticks, uint256 clearingPrice, bool isBuy);
 
-    function onInferencePlaced(uint256 modelHash, address tokenContract, uint128 orderId, bool isBuy, uint256 price, uint128 ticks) public accept {
+    /// @dev Authenticated BEFORE `tvm.accept()`. These mirrors are the note's only inbound entry
+    ///      points that anyone can address, and accepting first would make the note pay the compute
+    ///      for every message sent to them, whoever sent it — the note is the owner's wallet and
+    ///      identity, and without native balance it cannot send anything at all. Same ordering as
+    ///      `TokenContract.fundFromOrderBook`, for the same reason.
+    function onInferencePlaced(uint256 modelHash, address tokenContract, uint128 orderId, uint64 clientOrderId, bool isBuy, uint256 price, uint128 ticks) public {
         require(msg.sender == DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash), ERR_INVALID_SENDER);
+        tvm.accept();
         ensureBalance();
+        // The order now rests in the book. Recorded here because this mirror is the only moment
+        // the note learns an order id at all — `placeInferenceBuy` returns nothing, the book
+        // assigns the id, and the refund path (`creditFromBook`) carries only an amount and a model.
+        uint256 k = tvm.hash(abi.encode(msg.sender, orderId));
+        _restingInf[k] = true;
+        // OUTCOME 1 OF 4 — the request became an order. The pending record hands over to the
+        // resting record: the money is accounted for in the book from here on, and the guard that
+        // refuses a withdrawal moves from one map to the other without a gap between them.
+        delete _pendingInf[clientOrderId];
         emit InferenceOrderPlacedConfirmed{dest: address.makeAddrExtern(PRIVATENOTE_INFERENCE_PLACED, bitCntAddress)}(
             msg.sender, tokenContract, orderId, isBuy, price, ticks);
     }
 
-    function onInferenceFilled(uint256 modelHash, address tokenContract, uint128 orderId, uint128 ticks, uint256 clearingPrice, bool isBuy) public accept {
-        require(msg.sender == DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash), ERR_INVALID_SENDER);
+    /// @notice What this note still has outstanding, and therefore why a withdrawal is refused.
+    /// @dev    SEPARATE FROM `getDetails` on purpose: its nine-field answer is read by tooling that
+    ///         has no interest in this, and widening it would break those readers for everyone.
+    ///
+    ///         THE TWO LISTS ARE NOT EQUALLY USEFUL, and it is worth saying which is which.
+    ///
+    ///         `deals` are ADDRESSES — exactly what `touchDeal` takes. That closes the hard case
+    ///         completely: a stuck owner reads an address here and unblocks with it, without having
+    ///         to dig the match event out of his own history. Before this there was a mechanism to
+    ///         clear a stale deal and no way to learn what to point it at.
+    ///
+    ///         `orders` are `hash(book, orderId)` and are OPAQUE. They answer "how many are
+    ///         outstanding" and not "which" — cancelling needs `(modelHash, orderId)`, and neither
+    ///         survives the hash. That is the lighter case: an order can always be cancelled from
+    ///         the owner's own event history, and the count is enough to tell whether the gate is
+    ///         held by orders or by deals. Anyone tempted to make these readable should widen the
+    ///         key rather than the getter — the opacity is in what was stored, not in what is
+    ///         returned here.
+    function getOutstanding() external view returns (address[] deals, uint256[] orders) {
+        for ((address d, bool live) : _liveDeals) {
+            if (live) { deals.push(d); }
+        }
+        for ((uint256 k, bool resting) : _restingInf) {
+            if (resting) { orders.push(k); }
+        }
+    }
+
+    /// @notice Ask a deal whether it is still there, and drop the record if it is not.
+    /// @dev    THE SIGNAL IS THE BOUNCE. A live deal that belongs to this note answers by simply
+    ///         not bouncing, and closes itself later on its own. A deal that no longer exists
+    ///         bounces, and so does a live one this note was never party to — both mean the record
+    ///         here is stale, and both clear it. See `TokenContract.touchDeal` for why the third
+    ///         case has to bounce as well.
+    ///
+    ///         `require(_liveDeals.exists(deal))` is what keeps this a signal rather than a button.
+    ///         An address that is not already tracked cannot be passed in, so this cannot be aimed
+    ///         at anything — the owner may only ask about deals the note already believes are hers.
+    ///
+    ///         NO MONEY IS RESTORED when a record is dropped, exactly as with a cancelled order.
+    ///         This says "stop waiting for this deal", not "give the escrow back".
+    ///
+    ///         Takes no `_busy` latch: it is one message with no follow-up to serialise, and taking
+    ///         the latch would let a single stuck touch block transfers and withdrawals.
+    function touchDeal(address deal) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
         ensureBalance();
+        require(_liveDeals.exists(deal), ERR_INVALID_PARAMS);
+        require(uint32(block.timestamp) >= _lastDealTouch + DEAL_TOUCH_INTERVAL, ERR_NOTE_BUSY);
+        _lastDealTouch = uint32(block.timestamp);
+        IInferenceDeal(deal).touchDeal{value: 0.1 vmshell, flag: 1, bounce: true}();
+    }
+
+    /// @notice A deal this note is party to is destroying itself.
+    /// @dev    NO PARAMETERS, deliberately. `_liveDeals` is keyed by the deal's address, and a deal
+    ///         announcing its own death IS `msg.sender` — so the sender authenticates itself and
+    ///         identifies itself in the same fact, and there is nothing to pass or verify.
+    ///
+    ///         SILENT WHEN THERE IS NO RECORD, and this is required rather than tidy: the message
+    ///         comes from a contract in the act of self-destructing, which has no second attempt
+    ///         and nowhere to receive a bounce. A `require` here would turn one undelivered message
+    ///         into a note that can never be withdrawn — trading "withdrew too early" for "never
+    ///         withdraws", which is the worse of the two.
+    function onDealClosed() public {
+        // ACCEPTS BEFORE CHECKING, and unlike the three mirrors above that is fine here. Their
+        // rule — authorise first, or the note pays compute for anyone's message — rests on the note
+        // having gas it can run out of. It does not: `ensureBalance()` mints, in this very call,
+        // and the note's dapp has a config to mint from. Nothing is spent that could be exhausted.
+        //
+        // The membership test is therefore about STATE and only state, which is all this function
+        // has to protect. It also keeps the silence the destroying deal depends on — that contract
+        // has no second attempt and nowhere to receive a bounce.
+        tvm.accept();
+        ensureBalance();
+        if (_liveDeals.exists(msg.sender)) {
+            delete _liveDeals[msg.sender];
+            emit InferenceDealClosed{dest: address.makeAddrExtern(PRIVATENOTE_INFERENCE_DEAL_CLOSED, bitCntAddress)}(msg.sender);
+        }
+    }
+
+    /// @notice The book says one of this note's orders no longer rests there.
+    /// @dev    Sent from the book's SINGLE removal point, so cancel, expiry and fill all arrive
+    ///         here — the note does not have to know which happened, only that the order is gone.
+    ///         That matters because the money side says nothing: a refund arrives via
+    ///         `creditFromBook`, which carries an amount and a model and no identifier, so without
+    ///         this message a resting record could never be cleared and the note would become
+    ///         permanently unwithdrawable.
+    ///
+    ///         Clearing by ID is what makes redelivery harmless: setting a flag false twice is the
+    ///         same as once, where a counter would go wrong in both directions — a duplicate
+    ///         message would double-decrement, and a lost one would leave it high forever.
+    ///
+    ///         Authenticated BEFORE `tvm.accept()`, like the other two mirrors: this is an entry
+    ///         point anyone can address, and accepting first would let a stranger spend the note's
+    ///         gas.
+    function onInferenceOrderRemoved(uint256 modelHash, uint128 orderId, uint8 cause, uint128 refunded) public {
+        require(msg.sender == DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash), ERR_INVALID_SENDER);
+        tvm.accept();
+        ensureBalance();
+        // Silent when there is no record: a removal that arrives twice, or for an order this
+        // note never recorded, must not revert — the book sends this from inside a match walk,
+        // and a revert would bounce into a book that has already moved on.
+        uint256 k = tvm.hash(abi.encode(msg.sender, orderId));
+        // A REFUSED CANCEL REMOVES NOTHING, and the record must survive it. The book sends this
+        // same entry point when it declines a cancel — order not found, or not this owner — and
+        // dropping the resting record there would lose an order that is still live in the book.
+        if (cause != REMOVED_REJECTED) { delete _restingInf[k]; }
+        // The cause and the amount travel together: an owner who sees only "gone" cannot tell a
+        // cancel he asked for from an expiry he did not, and cannot reconcile what came back.
+        emit InferenceOrderRemoved{dest: address.makeAddrExtern(PRIVATENOTE_INFERENCE_REMOVED, bitCntAddress)}(
+            msg.sender, orderId, cause, refunded);
+    }
+
+    /// @dev Authenticated before `tvm.accept()` — see `onInferencePlaced`.
+    function onInferenceFilled(uint256 modelHash, address tokenContract, uint128 orderId, uint64 clientOrderId, uint128 ticks, uint256 clearingPrice, uint128 spent, bool isBuy) public {
+        require(msg.sender == DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash), ERR_INVALID_SENDER);
+        tvm.accept();
+        ensureBalance();
+        // A deal began. The ORDER is not cleared here: the book clears it from its own single
+        // removal point, and a partial fill leaves it resting on purpose. Touching both here would
+        // reintroduce exactly the ordering dependence the two counters exist to avoid.
+        _liveDeals[tokenContract] = true;
+        // OUTCOME 2 OF 4 — REDUCED BY WHAT WAS SPENT, not deleted.
+        //
+        // A fill is not necessarily the end of the request. A buy for ten ticks that meets three
+        // ticks of liquidity is settled for three and the other seven are still in flight; deleting
+        // the record here would call the whole thing resolved on the strength of its first partial
+        // match, and the seven ticks of escrow would then be unaccounted for on both sides.
+        //
+        // Subtracting makes the number mean what it says: not "I do not know how this ended" but
+        // "this much is still unresolved". Floored at zero rather than allowed to wrap — a figure
+        // that went negative would read as an enormous outstanding amount and lock the note out of
+        // withdrawal forever. At zero the key goes, because zero outstanding is no record at all.
+        uint128 outstanding = _pendingInf[clientOrderId];
+        if (outstanding != 0) {
+            uint128 left = spent >= outstanding ? 0 : outstanding - spent;
+            if (left == 0) { delete _pendingInf[clientOrderId]; }
+            else { _pendingInf[clientOrderId] = left; }
+        }
         emit InferenceFilledConfirmed{dest: address.makeAddrExtern(PRIVATENOTE_INFERENCE_FILLED, bitCntAddress)}(
             msg.sender, tokenContract, orderId, ticks, clearingPrice, isBuy);
+
+        // THE BUYER'S BOND, POSTED FROM HERE AND NOWHERE ELSE. This mirror is the first moment the
+        // amount can even be computed: it is `2 * clearingPrice`, and the clearing price does not
+        // exist until this fill happened. It is also the first moment this note knows the deal's
+        // address. So the bond is sent automatically, on the fill, with no client involvement —
+        // there is no step for an operator to forget, and no window in which the deal waits for a
+        // human.
+        //
+        // BUY SIDE ONLY. The book sends this same mirror to BOTH notes; the seller's copy carries
+        // `isBuy == false` and his bond went in with `fundDeal` long before. Without this test the
+        // seller would post a second bond into his own deal on every fill.
+        //
+        // `value: 0.05 vmshell, flag: 17` — the native part is GAS, not the bond. A deal is
+        // self-rooted, so native never crosses into its dapp and it pays for its own transactions
+        // out of its own balance; until now that balance came only from the seller, who was
+        // therefore paying for the calls his counterparty makes. The MONEY travels as `amount`, a
+        // figure on the call, exactly as in `fundDeal` — so nothing here can be confused with the
+        // native that was burned crossing the boundary.
+        //
+        // `bounce: true`, like `fundDeal`: if the deal refuses the bond, the figure must come home
+        // rather than be recorded as spent against a deal that never took it.
+        if (isBuy) {
+            uint128 bond = uint128(2 * clearingPrice);
+            if (_balance[CURRENCIES_ID_SHELL] >= bond) {
+                _balance[CURRENCIES_ID_SHELL] -= bond;
+                mapping(uint32 => varuint32) ecc;
+                IInferenceDeal(tokenContract).fundBuyerBond{
+                    value: 0.05 vmshell, flag: 17, bounce: true, currencies: ecc
+                }(bond);
+            }
+        }
     }
 
-    /// @notice Owner escape hatch — clear ALL stale locks after STREAM_LOCK_MAX
-    ///         (deal escrow lives in the `token_contract`, untouched by this).
-    function forceClearStreamLocks() public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
+    /// @notice OUTCOME 3 OF 4 — the book refused the request outright and gave the money back.
+    /// @dev    THE FAMILY THAT HAD NO ANSWER. A POST_ONLY that would cross, an FOK that cannot fill
+    ///         whole, a deadline already past: the book returns normally, so there is no bounce, and
+    ///         no order id was ever assigned, so the refund arrived as an ordinary credit that named
+    ///         nothing. This note received money and could not say which request it closed.
+    ///
+    ///         The credit happens HERE rather than through `creditFromBook`, so the money and its
+    ///         explanation cannot arrive separately. `refunded` is trusted the same way every other
+    ///         book mirror is trusted — by re-deriving the book from `modelHash` and refusing anyone
+    ///         else — and it is bounded by what this note itself committed under that number.
+    function onInferenceRejected(uint256 modelHash, uint64 clientOrderId, uint8 reason, uint128 refunded) public {
+        require(msg.sender == DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash), ERR_INVALID_SENDER);
+        tvm.accept();
         ensureBalance();
-        require(_streamLockCount != 0 || _disputeLockCount != 0, ERR_INVALID_STATE);
-        require(uint64(block.timestamp) > _lastStreamLockChange + STREAM_LOCK_MAX, ERR_INVALID_STATE);
-        delete _streamLocks;
-        delete _disputeLocks;
-        _streamLockCount = 0;
-        _disputeLockCount = 0;
+        // Clamped by the pending record, not taken on faith. The book should never return more than
+        // was committed under this number, and if it ever did, the excess would be minted here out
+        // of a message — the one thing a record-based balance must never let happen.
+        uint128 committed = _pendingInf[clientOrderId];
+        uint128 credit = refunded < committed ? refunded : committed;
+        if (credit > 0) { _balance[CURRENCIES_ID_SHELL] += credit; }
+        delete _pendingInf[clientOrderId];
+        emit InferenceOrderRejectedMirror{dest: address.makeAddrExtern(PRIVATENOTE_INFERENCE_REJECTED, bitCntAddress)}(
+            msg.sender, clientOrderId, reason, credit);
     }
 
-    /// @notice Lock state (for off-chain monitoring / tests).
-    function getStreamLocks() external view returns (uint32 streamCount, uint32 disputeCount, uint64 lastChange) {
-        return (_streamLockCount, _disputeLockCount, _lastStreamLockChange);
-    }
 
     // ── Inference market: deploy an InferenceOrderBook FROM this note (§2/§8) ──
 
     /// @notice Deploy an InferenceOrderBook from this note. The OB code is the
     ///         one baked into this note at deploy (`_inferenceOrderBookCode`) —
-    ///         NOT caller-supplied — so a note can never plant a forged/wrong
+    ///         NOT caller-supplied — so the address a note carries is always the canonical
     ///         build. The address derives from that code + the model
     ///         (spec §8), so a given model maps to exactly one book.
     ///         Permissionless: any note holder may (re)deploy the canonical book
@@ -543,29 +817,35 @@ contract PrivateNote is Modifiers, ReplayProtection {
     // methods forward that physical SHELL, so the note itself is the market
     // participant (no external multisig). SHELL id: CURRENCIES_ID_SHELL == 2.
 
-    /// @notice Post a SELL offer to the canonical book for the model from
-    ///         this note, attaching the platform fee in SHELL (spec §2.1). The
-    ///         fee becomes irrevocable on match (no-show penalty); this note is
-    ///         recorded as the sellerNote (fee refund target on cancel,
-    ///         dispute-lock target). The OB address is derived from the baked
-    ///         `_inferenceOrderBookCode` + model — never a raw address —
-    ///         so SHELL/fee flows cannot be routed to a forged book.
     /// @notice Seller places its resting sell offer in ONE call. Derives the canonical
     ///         per-deal TC for `(this note's ephemeral pubkey, nonce)` from the baked TC
     ///         code hash, then hands it the canonical InferenceOrderBook code hash/depth
     ///         (`_inferenceOrderBookCode`, baked by RootPN) + this note's deposit id +
     ///         order `flags`. The TC verifies the caller is a canonical PrivateNote (its
     ///         pinned note-code hash) and posts its own ask (`msg.sender == TC` at the
-    ///         book), so a forged book/TC is impossible and no RootPN round-trip is needed.
+    ///         book), so the derived book/TC is canonical and no RootPN round-trip is needed.
     ///         Order params (price/ticks) live in the TC (constructor). Re-run after a
     ///         cancel to re-list; the TC self-guards double-posts.
     /// @param flags Order flags (POST_ONLY / IOC / FOK / MARKET) forwarded to the book.
     /// @param nonce Deal nonce identifying the seller's per-deal TC.
-    function postSellOffer(uint8 flags, uint64 nonce) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
+    /// @param ttl Mandatory offer lifetime in seconds, `1 <= ttl <= MAX_SELL_TTL` (spec §2.1.1).
+    ///        `ttl == 0` (GTC) is rejected: a SELL commits no collateral, so it MUST auto-expire.
+    ///        Validated here and converted to an ABSOLUTE deadline anchored NOW, so any time spent
+    ///        reaching the book counts against the offer's life and never extends it past the
+    ///        seller's intent. Out of range → revert `ERR_SELL_DEADLINE_TOO_LONG`.
+    function postSellOffer(uint8 flags, uint64 nonce, uint64 ttl) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
         ensureBalance();
         require(!_hasWithdrawn, ERR_INVALID_STATE);
+        require(ttl != 0 && ttl <= MAX_SELL_TTL, ERR_SELL_DEADLINE_TOO_LONG);
+        // Same shape rule the buy side enforces at submission: a SUBSCRIPTION is one deal against
+        // ONE counterparty for the WHOLE volume, so the flag implies AON. Checked here as well as
+        // in the book because the note is the seller's trusted entry and the only path to it —
+        // a malformed offer should not spend a queue slot or a bounce round-trip to be refused,
+        // and the flags travel from here to `postFromNote` and on to the book untouched.
+        require((flags & FLAG_SUBSCRIPTION) == 0 || (flags & FLAG_AON) != 0, ERR_INVALID_PARAMS);
+        uint64 deadline = uint64(block.timestamp) + ttl;   // absolute, anchored at the seller's call
         TokenContract(_tokenContractAddr(_ephemeralPubkey, nonce)).postFromNote{value: 1 vmshell, flag: 1, bounce: false}(
-            tvm.hash(_inferenceOrderBookCode), _inferenceOrderBookCode.depth(), _depositIdentifierHash, flags);
+            tvm.hash(_inferenceOrderBookCode), _inferenceOrderBookCode.depth(), _depositIdentifierHash, flags, deadline);
     }
 
     /// @notice Send a BUY order from this note with SHELL escrow (spec §2.3).
@@ -580,57 +860,81 @@ contract PrivateNote is Modifiers, ReplayProtection {
         uint8   flags,
         uint64  deadline
     ) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
-        // §8 limit buy on inference: budget = escrow (held in the OB), ceiling =
-        // maxPricePerTick, TIF = deadline (0 = GTC), flags = IOC/FOK/MARKET/POST_ONLY.
+        // Limit buy on inference: budget = escrow (held in the OB), ceiling = maxPricePerTick,
+        // TIF = deadline (0 = GTC), flags = IOC/FOK/MARKET/POST_ONLY/AON/TEE/SUBSCRIPTION.
         // Owner/buyer = this note (OB uses msg.sender).
+        //
+        // A SUBSCRIPTION is placed through THIS call, not a separate one: set FLAG_SUBSCRIPTION
+        // (which requires FLAG_AON — one seller, the whole volume). The term is always one month,
+        // so the order carries no duration; `ticks` only has to divide evenly into its weeks.
         ensureBalance();
         require(!_hasWithdrawn, ERR_INVALID_STATE);
-        mapping(uint32 => varuint32) ecc;
-        ecc[CURRENCIES_ID_SHELL] = varuint32(escrow);
+        // Validate the subscription shape HERE, at submission, not only in the book: the note is the
+        // buyer's trusted entry and the only path to the book, so a malformed order should never
+        // consume a placement slot or a bounce round-trip. The book re-checks the same invariants —
+        // it holds the money and must not depend on a caller for them — but a genuine order never
+        // reaches that check in a bad shape.
+        bool isSub = (flags & FLAG_SUBSCRIPTION) != 0;
+        require(!isSub || (flags & FLAG_AON) != 0, ERR_INVALID_PARAMS);
+        require(!isSub || ticks % uint128(SUB_WEEKS) == 0, ERR_INVALID_PARAMS);
+        // Physical ceiling: nothing produces more than one tick per minute, so a subscription may
+        // not buy more volume than its own month could ever deliver.
+        require(!isSub || ticks <= uint128(SUB_WEEKS) * SUB_TICKS_PER_WEEK, ERR_INVALID_PARAMS);
+        // A subscription posts the buyer's own `2P` beside its escrow — the deal contract holds it
+        // apart from the money the weeks are drawn from, so a dispute costs the same in the last
+        // week of the term as in the first, and it comes back whole when none is raised. Sized at
+        // the limit price, since the deal clears at or below it. A market order cannot carry one:
+        // its price exists only once it clears, which is after the escrow is already committed.
+        require(!isSub || (flags & FLAG_MARKET) == 0, ERR_INVALID_PARAMS);
+        // Fee-free lower bound. The book applies the exact one — it holds the money and cannot
+        // depend on a caller for it — and the platform fee lives on that side of the split, so the
+        // book's requirement is strictly the stronger of the two. This only catches, at submission,
+        // an escrow that could not possibly cover volume plus bond.
+        require(!isSub || uint256(escrow) >= uint256(ticks) * uint256(maxPricePerTick)
+            + 2 * uint256(maxPricePerTick), ERR_INVALID_PARAMS);
+        // The escrow leaves this note's RECORD (generation 4.0.33), where it used to leave its
+        // account as physical ECC[2] — note that the old path never touched `_balance` at all,
+        // because the currency it sent was a different pot from the custodied figure. Now there is
+        // one pot: the buy is paid from `_balance[CURRENCIES_ID_SHELL]` and nothing physical moves.
+        require(_balance[CURRENCIES_ID_SHELL] >= escrow, ERR_LOW_VALUE);
+        _balance[CURRENCIES_ID_SHELL] -= escrow;
         // §3.1.1: forward this note's pubkey so the OB can record it in the deal
-        // contract (the gateway authenticates the buyer against it). SHELL escrow
+        // contract (the gateway authenticates the buyer against it). The escrow figure
         // goes to the derived canonical book, never a caller-supplied address.
         address orderBook = DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash);
         // bounce:true — if the book rejects the placement (expired / bad flags / insufficient
-        // deposit), the SHELL escrow bounces straight back to this note rather than staying on
-        // the book. onBounce safely no-ops here (msg.sender != _busy) and the ECC is
-        // re-credited on accept.
-        InferenceOrderBook(orderBook).placeBuyOrder{value: 2 vmshell, flag: 1, bounce: true, currencies: ecc}(
-            maxPricePerTick, ticks, flags, deadline, _ephemeralPubkey);
+        // deposit) the subtraction above has to be undone, and the bounce is what says so. Under
+        // currency this was automatic, because the ECC physically came back; a figure does not do
+        // that by itself, and this is the one behaviour the conversion silently drops if nobody
+        // puts it back. `onBounce` does — and it reads the CLIENT NUMBER, not the amount, which is
+        // why `clientOrderId` leads `placeBuyOrder`'s parameter list.
+        //
+        // DO NOT MOVE `escrow` BACK TO THE FRONT. A bounce carries only the leading bits of the
+        // body, so whatever restores the record has to be first. The number is 64 bits and the
+        // escrow was written under it before the send, so the number alone restores it. Put the
+        // uint128 first and `onBounce` would load its HIGH half as the number — zero for any real
+        // amount — credit `_pendingInf[0]`, which is empty, and leave the real record standing
+        // forever. Money lost and the note wedged, with nothing to see.
+        //
+        // Deliberately NOT via `_pendingPlaceBuyLock`: that slot belongs to the PMP order path and
+        // is only examined under the `_busy` latch, which an inference buy does not take. Reusing
+        // it would put the restore behind a gate this call never opens — the money would be gone
+        // with no error anywhere — and taking the latch instead would serialise inference buys
+        // against PMP activity for no reason. The body carries the figure, so neither is needed.
+        // THE NUMBER IS CHOSEN HERE, BEFORE THE SEND, and the record is written in the same breath
+        // as the subtraction (task Q). Both halves matter: a number handed out by the book would
+        // not exist for the two outcomes that never create an order, and a record written after the
+        // send would leave a gap in which the money is subtracted and nothing remembers why.
+        uint64 clientOrderId = ++_nextClientOrderId;
+        _pendingInf[clientOrderId] = escrow;
+        InferenceOrderBook(orderBook).placeBuyOrder{value: 2 vmshell, flag: 1, bounce: true}(
+            clientOrderId, escrow, maxPricePerTick, ticks, flags, deadline, _ephemeralPubkey, _depositIdentifierHash);
     }
 
-    /// @notice Place a §8 subscription (semantic order) from this note: budget
-    ///         (escrow) throttled into weekly cycles, unspent forfeited by-fact to
-    ///         sellers. `autoRenew` is a client hint (renewal = re-place, §8.2).
-    function placeInferenceSubscription(
-        uint256 modelHash,
-        uint128 maxPricePerTick,
-        uint128 ticks,
-        uint128 escrow,
-        bool    autoRenew
-    ) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
-        ensureBalance();
-        require(!_hasWithdrawn, ERR_INVALID_STATE);
-        mapping(uint32 => varuint32) ecc;
-        ecc[CURRENCIES_ID_SHELL] = varuint32(escrow);
-        // §3.1.1: forward this note's pubkey (gateway auth, recorded in the deal).
-        address orderBook = DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash);
-        // bounce:true — escrow returns to this note if the book rejects the placement.
-        InferenceOrderBook(orderBook).placeSubscription{value: 2 vmshell, flag: 1, bounce: true, currencies: ecc}(
-            maxPricePerTick, ticks, autoRenew, _ephemeralPubkey);
-    }
-
-    /// @notice Claim this note's pro-rata share of a subscription cycle's forfeited
-    ///         budget (spec §8.2). Sent FROM this note so the order book credits the
-    ///         caller (`msg.sender`) as a seller that served `orderId`'s `cycle`; the
-    ///         share is paid back to this note.
-    function claimInferenceForfeit(uint256 modelHash, uint128 orderId, uint8 cycle)
-        public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg
-    {
-        ensureBalance();
-        address orderBook = DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash);
-        InferenceOrderBook(orderBook).claimForfeit{value: 2 vmshell, flag: 1, bounce: false}(orderId, cycle);
-    }
+    // The legacy §8 subscription entry point (resting weekly-cycle bid) was removed with the
+    // single-seller redesign: a subscription is now an ORDINARY buy order carrying FLAG_AON plus
+    // the SUBSCRIPTION deal-flag, placed through `placeInferenceBuy` — no separate call, no
+    // separate registry, no separate deal contract.
 
     /// @notice Cancel one resting inference order owned by this note (refunds any
     ///         held BUY escrow back to this note).
@@ -639,63 +943,79 @@ contract PrivateNote is Modifiers, ReplayProtection {
     {
         ensureBalance();
         address orderBook = DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash);
+        // `bounce: false` since task P. It was true so that an undeployed book would answer, and
+        // the answer was handled by the cancel-bounce branch in `onBounce` — which is gone, because
+        // a bounce cannot say WHY and this note was drawing the wrong conclusion from it.
+        //
+        // Nothing is lost by not hearing back. A record in `_restingInf` is written by the book's
+        // own placement mirror, so a book that was never deployed cannot have caused one; there is
+        // no state here for a failed cancel to correct. Every outcome that DOES need answering —
+        // gone, not yours, queue busy — the book now answers explicitly.
         InferenceOrderBook(orderBook).cancelOrder{value: 1 vmshell, flag: 1, bounce: false}(orderId);
     }
 
     /// @notice Cancel all resting inference orders owned by this note.
+    /// @dev    `bounce: true` here, unlike its single-order neighbour above. Task P removed the
+    ///         cancel-bounce BRANCH from `onBounce`, not the bounce flag on this send, and the two
+    ///         are easy to read as one. Nothing arrives: a bounce from the book carries the book's
+    ///         address as `msg.sender`, and the gate below the inference branches turns away
+    ///         anything whose sender is not `_busy` — which only ever holds a PMP address, a
+    ///         PMP-orderbook address (derived from a different code cell) or a transfer
+    ///         destination. So the flag costs nothing and decides nothing; it is left as it is
+    ///         rather than changed, because changing it would move every hash for no behaviour.
     function cancelAllInferenceOrders(uint256 modelHash)
         public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg
     {
         ensureBalance();
         address orderBook = DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash);
-        InferenceOrderBook(orderBook).cancelAllOrders{value: 1 vmshell, flag: 1, bounce: false}();
+        // No figure moves here: a bounce returns the value and there is nothing to correct.
+        InferenceOrderBook(orderBook).cancelAllOrders{value: 1 vmshell, flag: 1, bounce: true}();
     }
 
     /// @notice Buyer note stops the stream — amicable exit (spec §4.1). Max loss
     ///         is the two in-flight ticks; refund returns to this note.
     function streamStop(address tokenContract) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
         ensureBalance();
-        IInferenceDeal(tokenContract).stop{value: 1 vmshell, flag: 1, bounce: false}();
+        // bounce:true — `tokenContract` is supplied by the caller, so a wrong address would
+        // otherwise make this a silent no-op.
+        // No figure moves here: a bounce returns the value and there is nothing to correct.
+        IInferenceDeal(tokenContract).stop{value: 1 vmshell, flag: 1, bounce: true}();
     }
 
-    /// @notice Buyer note disputes the current ≤2 ticks (spec §4.2). Locks both
-    ///         this note and the seller note until resolved/timed out.
+    /// @notice Buyer note disputes the current ≤2 ticks (spec §4.2). Neither note is locked by
+    ///         this — no note is locked by a deal at all (§4.3). Every stake a dispute can reach
+    ///         lives in the TokenContract: the buyer's escrow and bond, the seller's mirror bond.
+    ///         A note is an identity, so one note runs as many deals at once as its owner cares to
+    ///         open, and a dispute on one of them leaves the rest untouched.
     function streamDispute(address tokenContract) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
         ensureBalance();
-        IInferenceDeal(tokenContract).dispute{value: 1 vmshell, flag: 1, bounce: false}();
+        // bounce:true — same caller-supplied address, and here a silent no-op costs the buyer his
+        // contest window: he would believe the dispute was filed while it never arrived.
+        // No figure moves here: a bounce returns the value and there is nothing to correct.
+        IInferenceDeal(tokenContract).dispute{value: 1 vmshell, flag: 1, bounce: true}();
     }
 
-    /// @notice Buyer note reclaims the frozen tick after the seller goes silent
-    ///         for STREAM_TIMEOUT (spec §3.4 / §3.1.2). On the probe tick the
-    ///         buyer pays nothing; the seller's probe commission is returned.
-    function streamReclaim(address tokenContract) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
-        ensureBalance();
-        IInferenceDeal(tokenContract).reclaimOnTimeout{value: 1 vmshell, flag: 1, bounce: false}();
-    }
+    // `streamReclaim` was removed together with the deal's `reclaimOnTimeout`: there is no longer
+    // a prepaid/frozen tick to unwind. A seller who goes silent simply never gets his last claim
+    // promoted, so the buyer's ordinary `streamStop` settles what is trusted and refunds the rest.
 
     /// @notice Buyer note recovers a funded-but-never-opened deal: after
     ///         `MATCH_OPEN_TIMEOUT` from funding with no `open()`, the seller is a
     ///         no-show — `cleanupUnopened` refunds the full deposit and returns the
-    ///         seller's probe commission (nothing delivered → no fee/penalty, §2.1).
-    ///         Distinct from `streamReclaim` (opened-then-abandoned). The TC gates the
-    ///         timer; the deposit/commission (ECC) refund to their fixed notes and the residual native
+    ///         seller's seller bond (nothing delivered → no fee/penalty, §2.1).
+    ///         The TC gates the
+    ///         timer; the deposit/bond (ECC) refund to their fixed notes and the residual native
     ///         gas is swept to the canonical SuperRoot — no caller-chosen payout.
     function streamCleanup(address tokenContract) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
         ensureBalance();
-        IInferenceDeal(tokenContract).cleanupUnopened{value: 1 vmshell, flag: 1, bounce: false}();
-    }
-
-    /// @notice Deterministic RootModel address for `ownerPubkey` from the RootPN-baked code hash/depth
-    ///         + the canonical SuperRoot. Delegates to DexLib so the note and RootPN derive identically.
-    function _rootModelAddr(uint256 ownerPubkey) private returns (address) {
-        return DexLib.computeRootModelAddressFromHash(
-            _rootModelCodeHash, _rootModelCodeDepth, address.makeAddrStd(0, SUPER_ROOT_ADDR), ownerPubkey);
+        // No figure moves here: a bounce returns the value and there is nothing to correct.
+        IInferenceDeal(tokenContract).cleanupUnopened{value: 1 vmshell, flag: 1, bounce: true}();
     }
 
     /// @notice Deterministic per-deal TokenContract address from the RootPN-baked code hash/depth + the
     ///         seller's statics (sellerPubkey, real RootModel, nonce). Single source of truth in DexLib
     ///         (shared with the IOB's placeSellOffer check) — the ONLY address the note-funded helpers ever pay.
-    function _tokenContractAddr(uint256 sellerPubkey, uint64 nonce) private returns (address) {
+    function _tokenContractAddr(uint256 sellerPubkey, uint64 nonce) private view returns (address) {
         (, address tokenContract) = DexLib.computeCanonicalTokenContractAddress(
             _rootModelCodeHash, _rootModelCodeDepth,
             _tokenContractCodeHash, _tokenContractCodeDepth,
@@ -704,25 +1024,181 @@ contract PrivateNote is Modifiers, ReplayProtection {
     }
 
 
+    /// @notice THE funding entry for a deal (generation 4.0.33): gas and money in one call.
+    /// @dev    The two things a deal needs arrive by two different mechanisms in the SAME message,
+    ///         which is why this is one function and not two:
+    ///
+    ///         GAS — `gasShell` rides in `currencies` as physical ECC[2] and flag 17 converts it
+    ///         into the target's native balance. A deal cannot mint its own: a mint draws on the
+    ///         dapp config of the dapp the contract lives in, and a TokenContract is deployed by an
+    ///         external message into its OWN dapp, which has none. So its gas comes from here or
+    ///         it comes from nowhere. Flag 17 is 16 | 1 — 16 converts the sent token, 1 pays the
+    ///         message fees from this note rather than out of the amount being sent.
+    ///
+    ///         MONEY — `amount` is a FIGURE, not currency. It is subtracted from this note's
+    ///         private `_balance[CURRENCIES_ID_SHELL]` and passed as a call argument; the deal adds
+    ///         the same figure to its own record. That is why this CALLS the deal instead of
+    ///         transferring to it: a bare transfer arrives with no sender the receiver can check,
+    ///         and a figure that anyone could send is a figure anyone could invent. A call has a
+    ///         `msg.sender`, and the deal re-derives it — the credit sticks only because the caller
+    ///         is provably this note.
+    ///
+    ///         Conservation is the pair: this note subtracts, the deal adds, and `bounce: true`
+    ///         covers the case where it never lands. The target is DERIVED from this note's own key
+    ///         plus `nonce`, never supplied by the caller, so neither gas nor money can be aimed at
+    ///         an address the seller did not earn — a mistyped nonce addresses an account that does
+    ///         not exist and the message bounces rather than settling somewhere unrecoverable.
+    /// @param endpointCipher OPTIONAL, carried straight through to the deal. The note is the deal's
+    ///        only permitted sender for this call, so this is the one road the endpoint can travel
+    ///        without the seller keeping an operational wallet. Nothing here reads it: an opaque
+    ///        blob addressed to the buyer, forwarded unchanged.
+    function fundDeal(uint64 nonce, uint128 gasShell, uint128 amount, optional(bytes) endpointCipher)
+        public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg
+    {
+        ensureBalance();
+        require(!_hasWithdrawn, ERR_INVALID_STATE);
+        require(gasShell > 0 || amount > 0, ERR_INVALID_PARAMS);
+        require(_balance[CURRENCIES_ID_SHELL] >= amount, ERR_LOW_VALUE);
+
+        _balance[CURRENCIES_ID_SHELL] -= amount;
+
+        mapping(uint32 => varuint32) ecc;
+        if (gasShell > 0) { ecc[CURRENCIES_ID_SHELL] = varuint32(gasShell); }
+
+        IInferenceDeal(_tokenContractAddr(_ephemeralPubkey, nonce))
+            .fundDeal{value: 1 vmshell, flag: 17, bounce: true, currencies: ecc}(amount, endpointCipher);
+    }
+
+    /// @notice A deal pays this note back (generation 4.0.33) — the receiving half of the pair.
+    /// @dev    Money comes home the same way it went out: as a figure on a call, never as currency.
+    ///         The deal subtracted `amount` from its own `_balance` before sending, and this adds
+    ///         the same figure here, so between the two records nothing was created or lost.
+    ///
+    ///         THE SENDER CHECK IS THE WHOLE THING. `amount` is a number anyone could put on a
+    ///         message; what makes it credit is that `msg.sender` re-derives to the canonical
+    ///         TokenContract for `(sellerPubkey, nonce)` — an address that exists only if it was
+    ///         built from the code hash this note has baked in, at a static pair this note recomputes
+    ///         rather than believes. A contract that is not a real deal produces a different address
+    ///         and is turned away, so an unknown contract cannot hand this note a figure and have it
+    ///         stick. Note the derivation runs on the CALLER'S claimed identity: passing someone
+    ///         else's `sellerPubkey`/`nonce` only derives an address that is not the caller.
+    ///
+    ///         This reverts rather than returning quietly when the caller fails the check, because
+    ///         a genuine deal has already taken the figure off its record and its `onBounce` is
+    ///         waiting to put it back. A silent return here would destroy the money in the one case
+    ///         where the caller was honest and something else was wrong.
+    ///         The unnamed `uint8` between `amount` and `sellerPubkey` is the DEAL's earmark tag.
+    ///         It rides in the bounced window so a credit that never lands can tell the payer which
+    ///         counter to restore; nothing on this side reads it, because money arriving is money
+    ///         arriving whatever it was set aside for.
+    ///
+    ///         NO `_hasWithdrawn` GUARD, deliberately. A note does not get to refuse money. The
+    ///         nine inbound callbacks that predate this one — `onOrderCancelled`, `onMergeAccepted`,
+    ///         `acceptFee` and the rest — all credit unconditionally, and adding a refusal here
+    ///         would have made this the one door in the system that can turn a payment away. If the
+    ///         owner withdrew the note and can no longer reach what arrives afterwards, that is the
+    ///         consequence of withdrawing, not a reason to destroy the payer's money: a refusal
+    ///         does not return the figure, it bounces it back to a contract that already subtracted.
+    ///         THE TWO REFUSALS HERE ARE NOT THE SAME KIND, and only one of them is a refusal.
+    ///         A zero amount RETURNS: the sender is already proven, and a proven sender that sent
+    ///         nothing sent nothing. Reverting would manufacture a bounce with no work to do —
+    ///         there is no figure on the other side to give back — so it would be a failure report
+    ///         about an event that is not a failure. A bad SENDER reverts, because there the bounce
+    ///         is the only thing that saves the money.
+    /// @dev THE EARMARK PARAMETER IS GONE. An unnamed `uint8` used to sit second in this list —
+    ///      not for anything read here, but because the payer's `onBounce` recovered it from the
+    ///      bounced body, and a parameter absent from the signature is absent from the body. The
+    ///      deal now pays `bounce: false` to notes that are party to it and keeps no bounce handler,
+    ///      so nothing reads that field on either side and carrying it would be cargo.
+    ///
+    ///      What did NOT change is the only thing this entry point actually does: re-derive the
+    ///      caller's canonical address and refuse anyone else. A credit is a number arriving by
+    ///      message, so the sender check is the whole of its authenticity.
+    function creditFromDeal(uint128 amount, uint256 sellerPubkey, uint64 nonce) public accept {
+        ensureBalance();
+        if (amount == 0) { return; }
+        require(msg.sender == _tokenContractAddr(sellerPubkey, nonce), ERR_INVALID_SENDER);
+
+        _balance[CURRENCIES_ID_SHELL] += amount;
+
+        emit DealCredited{dest: address.makeAddrExtern(PRIVATENOTE_DEAL_CREDITED, bitCntAddress)}(
+            msg.sender, amount);
+    }
+
+    /// @notice An order book returns escrow to this note (generation 4.0.33) — refund, leftover,
+    ///         cancellation, expiry.
+    /// @dev    The other side of `placeInferenceBuy`'s subtraction. THE BOOK HOLDS NOTHING: it is a
+    ///         matcher and a registry of orders, and what it "returns" is a figure it was recording
+    ///         against an order, not currency it was keeping. So a cancellation is two actions in
+    ///         two contracts — the book drops the order, this note puts the figure back — where it
+    ///         used to be one physical send that could not half-happen.
+    ///
+    ///         Authentication is by derivation from `modelHash`, one book per model, using the book
+    ///         code this note has baked in. Same reasoning as `creditFromDeal` and a DIFFERENT
+    ///         derivation, which is why it is a separate entry point: a receiver that let the caller
+    ///         pick which check to run would be running no check at all.
+    ///
+    ///         Reverting rather than returning quietly on a FAILED SENDER CHECK matters here: a real
+    ///         book has already let go of the order, and a bounce is the only signal it gets.
+    ///
+    ///         But the sender check is the ONLY thing that can turn a credit away. Like
+    ///         `creditFromDeal`, and like the nine callbacks that predate both, this carries no
+    ///         `_hasWithdrawn` guard: a note accepts what it is sent. Anything else would put a
+    ///         refusal in the path of a book that no longer holds the escrow it is handing over.
+    ///         A zero amount returns rather than reverting, for the same reason as in
+    ///         `creditFromDeal`: nothing arrived, so there is nothing to credit and nothing on the
+    ///         book's side for a bounce to restore.
+    function creditFromBook(uint128 amount, uint256 modelHash) public accept {
+        ensureBalance();
+        if (amount == 0) { return; }
+        require(
+            msg.sender == DexLib.computeInferenceOrderBookAddress(_inferenceOrderBookCode, modelHash),
+            ERR_INVALID_SENDER
+        );
+
+        _balance[CURRENCIES_ID_SHELL] += amount;
+
+        emit BookCredited{dest: address.makeAddrExtern(PRIVATENOTE_BOOK_CREDITED, bitCntAddress)}(
+            msg.sender, amount);
+    }
+
     /// @notice (note-funded model, step 1a) Owner pre-funds the seller's UNINIT cross-dapp deploy
     ///         targets — the canonical RootModel (per-seller) and/or per-deal TokenContract — with
     ///         SHELL (ECC[2]) straight from this note, so no external operational wallet (one-seed)
     ///         is needed; the seller-signed deploy message then lands on the funded address.
-    /// @dev    Targets are DERIVED from THIS note's own key (`_ephemeralPubkey`) + `nonce`, never a
+    /// @dev    THE LINE BETWEEN THIS AND `fundDeal` IS THE TARGET'S STATE, not whether money is
+    ///         involved. `fundDeal` CALLS a live deal, so it can carry gas and a figure at once.
+    ///         This one aims at addresses where nothing exists yet: there is no contract to call,
+    ///         and a flag-16 transfer is the only thing that can land. That distinction matters
+    ///         most for the DEAL, which is deployed by an external message into its OWN dapp, has
+    ///         no dapp config, cannot mint, and therefore has no other way to get its first
+    ///         vmshell — the note-funded flow exists precisely so a seller needs no operational
+    ///         wallet, and this send is what makes it possible.
+    ///
+    ///         Targets are DERIVED from THIS note's own key (`_ephemeralPubkey`) + `nonce`, never a
     ///         caller-supplied address — SHELL can only ever reach the seller's canonical RootModel /
     ///         TokenContract (same derivation as the IOB). ONE `flag:16` send per target (mirrors the giver
     ///         `fund_deploy_address`): flag 16 carries the ECC[2] to an UNINIT cross-dapp address so the
     ///         seller-signed deploy then lands + activates (flag 1 funds the balance but the cross-dapp
     ///         deploy would not activate). `bounce:false` is REQUIRED (uninit target). amount 0 = skip.
-    function fundDeployShell(uint64 nonce, uint128 rootModelShell, uint128 tcShell)
+    /// @dev    ONE LEG NOW, NOT TWO. The `rootModelShell` leg is gone with the reason it existed:
+    ///         a RootModel used to be deployed by its owner as an external message, so somebody had
+    ///         to put native gas at that address first, and the note was the somebody. The super
+    ///         root deploys it now, with an internal `new`, and an internal deploy carries its own
+    ///         value — there is nothing left to pre-fund.
+    ///
+    ///         That change also revived dead code. Deployed externally, a RootModel landed in a dapp
+    ///         of its own with no configuration, and `gosh.mintshellq` draws on a dapp's
+    ///         configuration — so `RootModel.ensureBalance()` could never do anything, exactly as
+    ///         written out for `TokenContract`. Deployed by the super root it lands in the super
+    ///         root's dapp, and the same untouched line starts working.
+    ///
+    ///         `_rootModelAddr` went with it — deriving that address was the only thing this note
+    ///         ever needed it for.
+    function fundDeployShell(uint64 nonce, uint128 tcShell)
         public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg
     {
         ensureBalance();
-        if (rootModelShell > 0) {
-            mapping(uint32 => varuint32) rmEcc;
-            rmEcc[CURRENCIES_ID_SHELL] = varuint32(rootModelShell);
-            _rootModelAddr(_ephemeralPubkey).transfer({value: 1 vmshell, bounce: false, flag: 16, currencies: rmEcc});
-        }
         if (tcShell > 0) {
             mapping(uint32 => varuint32) tcEcc;
             tcEcc[CURRENCIES_ID_SHELL] = varuint32(tcShell);
@@ -730,20 +1206,11 @@ contract PrivateNote is Modifiers, ReplayProtection {
         }
     }
 
-    /// @notice (note-funded model, step 1b) Owner funds the seller's probe commission into the
-    ///         per-deal TokenContract straight from this note — the seller mirror of the buyer's
-    ///         `placeInferenceBuy` escrow (no external operational wallet).
-    /// @dev    The target is the DERIVED canonical TC for `(this note's seller key, nonce)` — never a
-    ///         caller-supplied address (same derivation as the IOB). `tc.fundProbeCommission` consumes the
-    ///         attached ECC[2] (`require >= probeCommission`, excess refunded to this note).
-    function postProbeCommission(uint64 nonce, uint128 amount)
-        public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg
-    {
-        ensureBalance();
-        mapping(uint32 => varuint32) ecc;
-        ecc[CURRENCIES_ID_SHELL] = varuint32(amount);
-        IInferenceDeal(_tokenContractAddr(_ephemeralPubkey, nonce)).fundProbeCommission{value: 2 vmshell, flag: 1, bounce: false, currencies: ecc}();
-    }
+    // The seller bond no longer has a funding call of its own. It was `postSellerBond`, and it did
+    // what `fundDeal` above does — send the deal SHELL from this note against a derived address —
+    // only by attaching currency instead of passing a figure. With money held as a record there is
+    // one way in, so there is one function: the bond is just an `amount`, and what makes it a bond
+    // is what the DEAL does with it on arrival, not which door it came through.
 
     /// @notice Deploys a new PMP contract for a prediction market event.
     /// @dev This function deterministically computes oracle addresses and
@@ -786,10 +1253,15 @@ contract PrivateNote is Modifiers, ReplayProtection {
         // dispatches, and no approveEvent / onInitialStakesAccepted / onInitialStakesFailed
         // ever fires — so require at least one name, keeping PN out of a permanent
         // `_busy` state with its initial stakes held in candidateAmount.
-        require(length > 0, ERR_INVALID_PARAMS);
+        // Cap outcome/list counts at ingress (< 20, matching the canonical OracleEventList's
+        // outcomeCount cap). Every per-outcome loop in the _busy-clearing callbacks
+        // (onInitialStakesAccepted / onSplitAccepted / onMergeAccepted / onBounce) iterates this
+        // count; an uncapped oversized market would gas-exhaust the only path that clears _busy and
+        // brick the note. Bounding it here also keeps PMP.approveEvent's mismatch-refund loop small.
+        require(length > 0 && length < 20, ERR_INVALID_PARAMS);
         require(length == oracleFee.length, ERR_INVALID_PARAMS);
         require(length == index.length, ERR_INVALID_PARAMS);
-        require(initialStakes.length > 0, ERR_INVALID_PARAMS);
+        require(initialStakes.length > 0 && initialStakes.length < 20, ERR_INVALID_PARAMS);
         require(_debt == 0, ERR_DEBT_NON_ZERO);
 
         // Validate initial stakes and compute total
@@ -950,14 +1422,29 @@ contract PrivateNote is Modifiers, ReplayProtection {
         // re-enables split/merge, even when the record is gone.
         if (_stakes.exists(hash)) {
             StakeInfo stake = _stakes[hash];
+            uint128 applied = 0;
             for (uint32 k = 0; k < uint32(refundAmounts.length) && k < uint32(stake.amount.length); k++) {
                 uint128 r = refundAmounts[k];
                 if (r == 0) continue;
-                require(stake.amount[k] >= r, ERR_LOW_VALUE);
+                // `r` is `cleanPool[k] % min(_initialStakes)`, so it is strictly
+                // below every component of the accepted initial stake and the
+                // holding covers it. Clamped rather than required: the
+                // acknowledgement at the tail has to leave in every case, and a
+                // revert here would take it with it — leaving `_normRefundPending`
+                // set on the PMP with nothing left able to clear it.
+                if (r > stake.amount[k]) { r = stake.amount[k]; }
                 stake.amount[k] -= r;
+                applied += r;
             }
             _stakes[hash] = stake;
-            _balance[tokenType] += refundTotal;
+            // ONE normalization point for the refund. Two figures reach this callback and either
+            // can be the smaller: `refundTotal`, which the PMP may itself have clamped to its
+            // remaining unclaimed balance without rewriting the per-outcome array, and `applied`,
+            // the tokens this note actually gave up. Crediting `refundTotal` outright would pay
+            // collateral for tokens still held; crediting `applied` outright would pay more than
+            // the PMP removed from its own ledger. The lower of the two is the only figure both
+            // sides agree on, so the stake decrements and the balance credit can never diverge.
+            _balance[tokenType] += applied < refundTotal ? applied : refundTotal;
         }
         // Tell PMP we processed the refund so it can clear `_normRefundPending`
         // and re-enable split/merge. Sent as a follow-up internal so this
@@ -1007,6 +1494,14 @@ contract PrivateNote is Modifiers, ReplayProtection {
     ///         local stake record and clears the busy lock.
     function onForfeitAccepted() public senderIs(_busy.get()) accept {
         ensureBalance();
+        // THE OWNER'S SIDE OF WALKING AWAY FROM MONEY, and the moment it becomes final: the stake
+        // record is about to be deleted here and there is nothing to undo it. PMP emits the
+        // authoritative record with the amounts; this mirrors it in the owner-facing stream, the
+        // same pairing a cancellation already has (book emits `OrderCancelled`, note mirrors
+        // `OrderCancelledConfirmed`). A forfeit is the more consequential of the two and was the
+        // only one nobody announced.
+        emit StakeForfeitConfirmed{dest: address.makeAddrExtern(PRIVATENOTE_STAKE_FORFEITED, bitCntAddress)}(
+            msg.sender, _lastHash);
         delete _stakes[_lastHash];
         _pendingForfeit = false;
         delete _busy;
@@ -1087,7 +1582,6 @@ contract PrivateNote is Modifiers, ReplayProtection {
         ensureBalance();
         require(!_busy.hasValue(), ERR_NOTE_BUSY);
         require(!_hasWithdrawn, ERR_INVALID_STATE);
-        _requireNotStreamLocked();
         require(collateral > 0, ERR_LOW_VALUE);
         // No lotSize check here: the minimal mintable basket (derived from
         // per-outcome unit sizes `u_k`) can be a large prime that exceeds
@@ -1183,7 +1677,6 @@ contract PrivateNote is Modifiers, ReplayProtection {
         ensureBalance();
         require(!_busy.hasValue(), ERR_NOTE_BUSY);
         require(!_hasWithdrawn, ERR_INVALID_STATE);
-        _requireNotStreamLocked();
         require(amount.length > 0, ERR_INVALID_PARAMS);
         require(_debt == 0, ERR_DEBT_NON_ZERO);
 
@@ -1501,6 +1994,7 @@ contract PrivateNote is Modifiers, ReplayProtection {
     /// @notice Generates a free coupon for the specified token type
     /// @param tokenType Token type for which to generate coupon
     /// @dev Can only generate coupon when:
+    ///      - the token type has a coupon nominal (`getCouponValue > 0`)
     ///      - all token balances < minStakeValue (i.e. too small to stake)
     ///      - debt == 0
     ///      - No withdrawals from this wallet have been performed.
@@ -1508,6 +2002,12 @@ contract PrivateNote is Modifiers, ReplayProtection {
     ///      - No coupon currently exists.
     function generateCoupon(uint32 tokenType) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
         ensureBalance();
+        // Only the three configured token types carry a nominal. Without this
+        // gate an unsupported type would set `_couponsTokenType` while leaving
+        // `_couponsValue` at zero, so the call does nothing and the coupon
+        // slot still reads as free.
+        uint128 nominal = getCouponValue(tokenType);
+        require(nominal > 0, ERR_INVALID_TOKEN_TYPE);
         require(_debt == 0, ERR_HAS_DEBT);
         require(!_hasWithdrawn, ERR_INVALID_STATE);
         require(!_hasTransferred, ERR_INVALID_STATE);
@@ -1531,8 +2031,28 @@ contract PrivateNote is Modifiers, ReplayProtection {
         // amounts could in principle remain after orders drained it. The
         // explicit counter is the canonical "no orders open" check.
         require(_openOrderCount == 0, ERR_OPEN_ORDERS_EXIST);
+        // INFERENCE HAS ITS OWN TWO, and they are asked separately because a match does two things
+        // at once: it takes an order out of the book and starts a deal. One quantity would make the
+        // answer depend on which of those two messages arrived first; two make the order of arrival
+        // irrelevant. A partial fill leaves the order resting AND starts a deal, which falls out of
+        // the separation rather than being a case anyone has to handle.
+        //
+        // The maps answer about their own emptiness — no counter is kept beside them, because a
+        // count next to a map is a second source of truth that drifts silently and is exactly what
+        // a gate like this would then be reading.
+        //
+        // `ERR_OPEN_ORDERS_EXIST` rather than new codes: the condition it already names on the line
+        // above is the same one — this note still has business outstanding in a book — and a second
+        // number for the same meaning is how an exit code stops telling you anything.
+        require(_restingInf.empty(), ERR_OPEN_ORDERS_EXIST);
+        // AND NOTHING IN FLIGHT (task Q). Between the debit and the book's answer the escrow is in
+        // neither place: subtracted here, not yet recorded there. Withdrawing in that window empties
+        // a balance that is already short by the escrow, and the answer — whichever of the four it
+        // is — then credits a note that has latched `_hasWithdrawn` and can never pay it out.
+        require(_pendingInf.empty(), ERR_OPEN_ORDERS_EXIST);
+        require(_liveDeals.empty(), ERR_OPEN_ORDERS_EXIST);
         require(_couponsValue == 0, ERR_COUPON_ALREADY_EXISTS);
-        _couponsValue = getCouponValue(tokenType);
+        _couponsValue = nominal;
         _couponsTokenType = tokenType;
 
         uint128 baseDebt = _couponsValue * 5 / 100;
@@ -1553,7 +2073,82 @@ contract PrivateNote is Modifiers, ReplayProtection {
     onBounce(TvmSlice body) external {
         tvm.accept();
         ensureBalance();
-        body;
+        // --- Inference-buy bounce (generation 4.0.33): the book refused the placement.
+        //
+        // Handled BEFORE the `_busy` gate below, and this ordering is the whole point. Everything
+        // past that gate is a PMP-side operation that takes the busy latch; an inference buy takes
+        // no latch, so it would be turned away at the gate and the escrow — already subtracted from
+        // `_balance` — would simply cease to exist. Under currency this case needed no code at all,
+        // because the ECC came back on its own. That is the shape of what the conversion to figures
+        // takes away: not a check that fails, a behaviour that silently stops happening.
+        //
+        // OUTCOME 4 OF 4 — the message never reached the book. Several buys can be in flight to the
+        // same book at once, so the answer has to say WHICH one came back; the client number does,
+        // and it leads `placeBuyOrder`'s parameter list for exactly this reason.
+        //
+        // Budget: function id (32) + `clientOrderId` (64) = 96 bits, well inside the 256 a bounce
+        // carries. The escrow itself no longer has to travel — it was written under this number
+        // before the send, so the number alone restores it. That is also what keeps the four
+        // outcomes symmetrical: every one of them names the request the same way.
+        //
+        // A bounce is marked as such by the node, so this cannot be forged by a contract that
+        // simply calls in.
+        uint32 bouncedFn = body.load(uint32);
+        if (bouncedFn == abi.functionId(InferenceOrderBook.placeBuyOrder)) {
+            uint64 bouncedClientId = body.load(uint64);
+            uint128 escrow = _pendingInf[bouncedClientId];
+            delete _pendingInf[bouncedClientId];
+            _balance[CURRENCIES_ID_SHELL] += escrow;
+            return;
+        }
+        // --- Deal-funding bounce (generation 4.0.33): same reasoning, other counterparty.
+        //
+        // `fundDeal` subtracts the figure here and asks the deal to add it there. A deal that is
+        // not deployed yet, was destroyed, or refuses the bond (wrong size, already bonded) leaves
+        // the subtraction standing on its own. The GAS half of that call needs no undoing — ECC
+        // sent under flag 17 comes back the way currency always did — so it is only ever the figure
+        // that has to be put back by hand.
+
+        // NO CANCEL-BOUNCE BRANCH — it used to sit here and is gone (task P). The book no longer
+        // bounces a cancel: a full queue answers with `CANCEL_REJ_QUEUE_FULL` and leaves the order
+        // resting, and the two rejections that DO mean the order is gone send the removal mirror
+        // themselves. A bounce carries no reason, so this branch had to guess one — and it guessed
+        // "gone", which was right for a missing order and exactly wrong for a busy queue: it
+        // dropped the record of a LIVE order, and that record is what refuses a withdrawal.
+        //
+        // The decision moved to where the data is. Nothing here has to infer it any more.
+
+        // --- Touch bounce (task E): the deal is gone, or it was never this note's.
+        //
+        // THIS IS THE ONLY OUTCOME THE TOUCH HAS. A live deal that belongs here answers by not
+        // bouncing at all, so arriving in this branch already means the record is stale — whether
+        // because the contract no longer exists or because it refused a stranger. Both are the same
+        // fact from this side: stop waiting for it.
+        //
+        // Cleared by `msg.sender`, not from the body: the bounce comes back FROM the deal, so its
+        // address is the key and nothing needs decoding. No money is restored, exactly as with a
+        // cancelled order — this says the deal is over, not that anything is owed.
+        if (bouncedFn == abi.functionId(IInferenceDeal.touchDeal)) {
+            if (_liveDeals.exists(msg.sender)) {
+                delete _liveDeals[msg.sender];
+                emit InferenceDealClosed{dest: address.makeAddrExtern(PRIVATENOTE_INFERENCE_DEAL_CLOSED, bitCntAddress)}(msg.sender);
+            }
+            return;
+        }
+        if (bouncedFn == abi.functionId(IInferenceDeal.fundDeal)) {
+            uint128 amount = body.load(uint128);
+            _balance[CURRENCIES_ID_SHELL] += amount;
+            return;
+        }
+        // Same shape, same reason: the buyer's bond leaves as a FIGURE (`_balance` is decremented
+        // before the send), and a bounce returns the attached value but not the record. Without
+        // this the note would stay short by `2 * clearing` on every refused bond — and the send is
+        // automatic on each buy fill, so a refusal is an ordinary path, not an edge.
+        if (bouncedFn == abi.functionId(IInferenceDeal.fundBuyerBond)) {
+            uint128 amount = body.load(uint128);
+            _balance[CURRENCIES_ID_SHELL] += amount;
+            return;
+        }
         if (!_busy.hasValue() || msg.sender != _busy.get()) {
             return;
         }
@@ -1562,6 +2157,24 @@ contract PrivateNote is Modifiers, ReplayProtection {
         //     by an earlier claim) when `deleteStake` dispatched. The
         //     stake is moot — clean up locally.
         if (_pendingForfeit) {
+            // ANNOUNCED WITH THE AMOUNTS, TAKEN BEFORE THE DELETE. This is the one place a stake
+            // record vanishes with nothing happening on the PMP side — the PMP is gone, so there
+            // is no authoritative record to pair with and this event is the only trace there will
+            // ever be. What makes it worth having is the amounts: "a stake was dropped" is barely
+            // better than silence, while "this much was dropped" is a fact somebody can check.
+            //
+            // Mitigating and not exculpating: a PMP self-destructs after settlement, so the claim
+            // really is empty by now. But from outside, "there was a stake" and "there was nothing"
+            // look identical — which is to say, they look like nothing at all.
+            // THE THREE CONFIRMED ARRAYS, not `candidateAmount`. That field is the PENDING stake —
+            // one outcome, not yet accepted — and on a settled record it is normally zero. Naming
+            // it here would have made this event report nothing in the one place where nothing else
+            // will ever be reported, which is precisely the failure the event was added to fix.
+            // These are the same three `deleteStake` sends to the PMP and the same three PMP emits
+            // in `StakeForfeited`, so the two records describe one quantity in one vocabulary.
+            StakeInfo dropped = _stakes[_lastHash];
+            emit StakeDroppedLocally{dest: address.makeAddrExtern(PRIVATENOTE_STAKE_DROPPED, bitCntAddress)}(
+                _lastHash, dropped.tokenType, dropped.amount, dropped.debtAmount, dropped.couponsAmount);
             delete _stakes[_lastHash];
             _pendingForfeit = false;
             delete _busy;
@@ -1633,6 +2246,13 @@ contract PrivateNote is Modifiers, ReplayProtection {
         // Restore _balance only. initTransfer never mutates _lockedInOrders
         // (transfers move user-owned tokens between PNs, not order
         // collateral), so onBounce must not touch it either.
+        //
+        // AND IT MUST NOT RESTORE THE COINS EITHER, now that `initTransfer` sends ECC alongside the
+        // record. A bounced message returns its `currencies` to the sender by itself — that is what
+        // currency does and the reason the figure needed hand-written restoration in the first
+        // place. Crediting them here as well would hand the note its coins twice, which is the one
+        // failure worth looking for on this path. The line below touches `_balance` and nothing
+        // else, deliberately.
         if (_pendingTransferAmount > 0) {
             _balance[_pendingTransferTokenType] += _pendingTransferAmount;
             _pendingTransferAmount = 0;
@@ -1697,13 +2317,14 @@ contract PrivateNote is Modifiers, ReplayProtection {
     /// @param destDepositHash _depositIdentifierHash of the destination PrivateNote
     /// @param tokenType Token type to transfer
     /// @param amount Amount to transfer (must be >= minStakeValue)
-    function initTransfer(uint256 destDepositHash, uint32 tokenType, uint128 amount)
+    /// @param eccAmount Physical ECC of `tokenType` to send along with the record. Named rather
+    ///        than "the whole pocket" because the owner decides how much — a named figure can say
+    ///        both "all of it" and "part of it", and "all" can say only one of those. Zero is
+    ///        allowed and means the record moves alone, which is what this call did before.
+    function initTransfer(uint256 destDepositHash, uint32 tokenType, uint128 amount, uint128 eccAmount)
         public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg
     {
         ensureBalance();
-        // A stream/dispute lock means this note collateralises a live deal;
-        // transferring its balance out would drain value from under the lock.
-        _requireNotStreamLocked();
         require(!_hasWithdrawn, ERR_INVALID_STATE);
         require(!_busy.hasValue(), ERR_NOTE_BUSY);
         require(_stakes.empty(), ERR_NOTE_BUSY);
@@ -1724,6 +2345,26 @@ contract PrivateNote is Modifiers, ReplayProtection {
         require(_pendingPlaceBuyLock == 0, ERR_NON_ZERO_BALANCE);
         require(_pendingBatchBuyLock == 0, ERR_NON_ZERO_BALANCE);
         require(_openOrderCount == 0, ERR_OPEN_ORDERS_EXIST);
+        // INFERENCE HAS ITS OWN TWO, and they are asked separately because a match does two things
+        // at once: it takes an order out of the book and starts a deal. One quantity would make the
+        // answer depend on which of those two messages arrived first; two make the order of arrival
+        // irrelevant. A partial fill leaves the order resting AND starts a deal, which falls out of
+        // the separation rather than being a case anyone has to handle.
+        //
+        // The maps answer about their own emptiness — no counter is kept beside them, because a
+        // count next to a map is a second source of truth that drifts silently and is exactly what
+        // a gate like this would then be reading.
+        //
+        // `ERR_OPEN_ORDERS_EXIST` rather than new codes: the condition it already names on the line
+        // above is the same one — this note still has business outstanding in a book — and a second
+        // number for the same meaning is how an exit code stops telling you anything.
+        require(_restingInf.empty(), ERR_OPEN_ORDERS_EXIST);
+        // AND NOTHING IN FLIGHT (task Q). Between the debit and the book's answer the escrow is in
+        // neither place: subtracted here, not yet recorded there. Withdrawing in that window empties
+        // a balance that is already short by the escrow, and the answer — whichever of the four it
+        // is — then credits a note that has latched `_hasWithdrawn` and can never pay it out.
+        require(_pendingInf.empty(), ERR_OPEN_ORDERS_EXIST);
+        require(_liveDeals.empty(), ERR_OPEN_ORDERS_EXIST);
 
         address dest = DexLib.computePrivateNoteAddress(_privateNoteCode, destDepositHash);
 
@@ -1736,7 +2377,26 @@ contract PrivateNote is Modifiers, ReplayProtection {
         address addrExtern = address.makeAddrExtern(PRIVATENOTE_TRANSFER_INITIATED, bitCntAddress);
         emit TransferInitiated{dest: addrExtern}(dest, tokenType, amount);
 
-        PrivateNote(dest).offerTransfer{value: 0.1 vmshell, flag: 1, bounce: true, dest_dapp_id: ROOT_PN_DAPP_ID}(
+        // THE COINS TRAVEL WITH THE RECORD. Until now this message carried no `currencies` at all:
+        // the figure moved and the physical ECC[2] stayed behind, so a note could hand its whole
+        // balance away and keep the currency that balance was backed by.
+        //
+        // `eccAmount` is NAMED rather than "whatever is in the pocket", and the reason is that the
+        // owner decides how much — a named amount expresses both "all of it" and "some of it",
+        // while "all" can express only one. It is NOT a safety reserve: emptying the pocket
+        // entirely is an ordinary thing to do. A note mints its own gas (`ensureBalance`, called at
+        // the head of `onTransferAccepted` itself), and it lives in a dapp that has a config to
+        // mint from — unlike a deal, whose identical-looking three lines do nothing. Reasoning from
+        // the deal's constraint to the note's is a mistake this comment exists to prevent.
+        require(uint128(address(this).currencies[tokenType]) >= eccAmount, ERR_LOW_VALUE);
+        mapping(uint32 => varuint32) cc;
+        if (eccAmount > 0) { cc[tokenType] = varuint32(eccAmount); }
+
+        // `bounce: true` was already here and now matters more: on a refusal — `offerTransfer` is
+        // the one receiver allowed to say no, when `_hasWithdrawn` — the COINS come back on their
+        // own, because that is what currency does. `onBounce` must therefore restore the RECORD and
+        // nothing else; restoring the coins too would credit them twice.
+        PrivateNote(dest).offerTransfer{value: 0.1 vmshell, flag: 1, bounce: true, currencies: cc, dest_dapp_id: ROOT_PN_DAPP_ID}(
             tokenType, amount, _depositIdentifierHash
         );
     }
@@ -1763,21 +2423,13 @@ contract PrivateNote is Modifiers, ReplayProtection {
     }
 
     /// @notice Called by the receiving PrivateNote after crediting the transfer.
-    /// @dev Clears busy state. Sent with bounce: false — if it fails to arrive,
-    ///      use clearTransferBusy() as a recovery hatch.
+    /// @dev Clears busy state once the receiver has credited the transfer. This is the
+    ///      only path that clears `_busy` on success; the failure path is the offerTransfer
+    ///      bounce (onBounce). While `_busy` holds, no second transfer can start, so the
+    ///      pending amount always matches the single in-flight transfer's own bounce.
+    ///      Sent with bounce: false; ensureBalance keeps the note funded so it lands.
     function onTransferAccepted() public senderIs(_busy.get()) accept {
         ensureBalance();
-        _pendingTransferAmount = 0;
-        delete _busy;
-    }
-
-    /// @notice Recovery hatch: owner can force-clear a stuck transfer state.
-    /// @dev Only callable when a pending transfer exists (_pendingTransferAmount > 0).
-    ///      Does NOT restore balance — tokens are already at the destination.
-    ///      Use only after verifying off-chain that the receiver credited the tokens.
-    function clearTransferBusy() public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
-        ensureBalance();
-        require(_pendingTransferAmount > 0, ERR_INVALID_STATE);
         _pendingTransferAmount = 0;
         delete _busy;
     }
@@ -1790,6 +2442,17 @@ contract PrivateNote is Modifiers, ReplayProtection {
     function discardCoupon() public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
         ensureBalance();
         require(_couponsValue > 0, ERR_NO_COUPON_AVAILABLE);
+        // Only an UNTOUCHED coupon may be discarded: the outstanding value has to still equal the
+        // nominal its type is issued at. Staking spends `_couponsValue` down, so anything below
+        // the nominal means the coupon has been put to work and the debt it created is owed.
+        require(_couponsValue == getCouponValue(_couponsTokenType), ERR_INVALID_STATE);
+        // Discarding an unused coupon takes its debt with it. The debt exists because the coupon
+        // does; leaving it behind would strand the note, since `_debt == 0` gates almost every
+        // path including the only exit. Subtracted rather than zeroed so debt from any other
+        // source is untouched — an unused coupon can only account for its own 5%.
+        uint128 baseDebt = _couponsValue * 5 / 100;
+        _debt = _debt > baseDebt ? _debt - baseDebt : 0;
+        if (_debt == 0) { _debtTokenType = 0; }
         _couponsValue = 0;
         _couponsTokenType = 0;
     }
@@ -1797,13 +2460,12 @@ contract PrivateNote is Modifiers, ReplayProtection {
     /// @notice Withdraws tokens to a specified wallet.
     /// @dev Inner action flag is hard-coded to 1 inside RootPN — accepting a
     ///      caller-supplied flag opens TVM flag 128 (CARRY_ALL_BALANCE) and 32
-    ///      (DELETE_IF_EMPTY) abuse paths that drain or destroy RootPN.
+    ///      (DELETE_IF_EMPTY) paths that would otherwise reach RootPN's own balance.
     /// @param destWalletAddr Destination wallet address
     /// @param dapp_id DApp id forwarded to RootPN.withdrawTokens (surfaced in the TokensWithdrawn event).
     function withdrawTokens(address destWalletAddr, uint256 dapp_id) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
         ensureBalance();
         require(!_hasWithdrawn, ERR_INVALID_STATE);
-        _requireNotStreamLocked();
         require(!_busy.hasValue(), ERR_NOTE_BUSY);
         require(_stakes.empty(), ERR_NOTE_BUSY);
         require(_debt == 0, ERR_DEBT_NON_ZERO);
@@ -1818,12 +2480,33 @@ contract PrivateNote is Modifiers, ReplayProtection {
         require(_pendingPlaceBuyLock == 0, ERR_NON_ZERO_BALANCE);
         require(_pendingBatchBuyLock == 0, ERR_NON_ZERO_BALANCE);
         require(_openOrderCount == 0, ERR_OPEN_ORDERS_EXIST);
-        // Drain the note's PHYSICAL ECC pool too. Inference SHELL (ECC[2]) is held
-        // on the note ACCOUNT, NOT in the RootPN-custodied `_balance` — so releasing
-        // `_balance` alone leaves live ECC[2] on a "withdrawn" note, which could still
-        // fund an inference buy. Attach that physical SHELL to this message; RootPN
-        // forwards it straight through to `destWalletAddr` (and returns it on the
-        // revert path). After this the note holds zero ECC[2] and is dead.
+        // INFERENCE HAS ITS OWN TWO, and they are asked separately because a match does two things
+        // at once: it takes an order out of the book and starts a deal. One quantity would make the
+        // answer depend on which of those two messages arrived first; two make the order of arrival
+        // irrelevant. A partial fill leaves the order resting AND starts a deal, which falls out of
+        // the separation rather than being a case anyone has to handle.
+        //
+        // The maps answer about their own emptiness — no counter is kept beside them, because a
+        // count next to a map is a second source of truth that drifts silently and is exactly what
+        // a gate like this would then be reading.
+        //
+        // `ERR_OPEN_ORDERS_EXIST` rather than new codes: the condition it already names on the line
+        // above is the same one — this note still has business outstanding in a book — and a second
+        // number for the same meaning is how an exit code stops telling you anything.
+        require(_restingInf.empty(), ERR_OPEN_ORDERS_EXIST);
+        // AND NOTHING IN FLIGHT (task Q). Between the debit and the book's answer the escrow is in
+        // neither place: subtracted here, not yet recorded there. Withdrawing in that window empties
+        // a balance that is already short by the escrow, and the answer — whichever of the four it
+        // is — then credits a note that has latched `_hasWithdrawn` and can never pay it out.
+        require(_pendingInf.empty(), ERR_OPEN_ORDERS_EXIST);
+        require(_liveDeals.empty(), ERR_OPEN_ORDERS_EXIST);
+        // Drain the note's PHYSICAL ECC pool too, and note that this is no longer the same money
+        // as the inference escrow: since 4.0.33 an inference buy is paid out of `_balance`, so
+        // releasing `_balance` already releases the trading side. What is left on the ACCOUNT is
+        // the coin pocket — what `fundDeal` converts to a deal's gas under flag 17 — and leaving it
+        // behind would strand real value on a note that can never be withdrawn again. Attach that
+        // physical SHELL to this message; RootPN forwards it straight through to `destWalletAddr`
+        // (and returns it on the revert path). After this the note holds zero ECC[2] and is dead.
         mapping(uint32 => varuint32) physCc;
         uint128 physShell = uint128(address(this).currencies[CURRENCIES_ID_SHELL]);
         if (physShell > 0) { physCc[CURRENCIES_ID_SHELL] = varuint32(physShell); }
@@ -1833,6 +2516,33 @@ contract PrivateNote is Modifiers, ReplayProtection {
         delete _balance;
         _hasWithdrawn = true;
 	}
+
+    /// @notice Sweep physical ECC[2] that reached the note AFTER it was withdrawn.
+    ///
+    /// @dev    `withdrawTokens` runs once and empties the note, but inference SHELL can still
+    ///         arrive afterwards: an inference order cancelled out of the book refunds to the owner
+    ///         note, a deal contract refunds the buyer's deposit or returns the seller's bond to the
+    ///         note that posted it, and none of those paths ask whether the note has been withdrawn
+    ///         — nor should they, since the money is owed either way. Without this the SHELL would
+    ///         sit on a note that can never withdraw again.
+    ///
+    ///         Deliberately narrow. It moves ONLY physical ECC[2] and never touches `_balance`,
+    ///         which `withdrawTokens` already released and which stays empty. The withdrawn note
+    ///         cannot take on new obligations either — `placeInferenceBuy`, `postSellOffer` and
+    ///         `deployInferenceOrderBook` all refuse once `_hasWithdrawn` — so this only ever
+    ///         collects the tail of commitments made before the withdrawal.
+    function sweepShell(address destWalletAddr, uint256 dapp_id)
+        public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg
+    {
+        ensureBalance();
+        require(_hasWithdrawn, ERR_INVALID_STATE);
+        uint128 physShell = uint128(address(this).currencies[CURRENCIES_ID_SHELL]);
+        require(physShell > 0, ERR_NON_ZERO_BALANCE);
+        mapping(uint32 => varuint32) physCc;
+        physCc[CURRENCIES_ID_SHELL] = varuint32(physShell);
+        destWalletAddr.transfer({value: 0.1 vmshell, bounce: false, flag: 1,
+                                 currencies: physCc, dest_dapp_id: dapp_id});
+    }
 
     /// @notice Reverts a withdraw operation (called by Vault)
     /// @param amounts Per-token-type amounts to restore to the note balance
@@ -1960,8 +2670,9 @@ contract PrivateNote is Modifiers, ReplayProtection {
             _stakes[hash] = stake;
         }
 
-        address obAddress = DexLib.computeOrderBookAddress(
+        address obAddress = DexLib.computeOrderBookAddressFromPmpCode(
             _privateNoteCode,
+            _pmpCode,
             _orderBookCode,
             eventId,
             oracleListHash,
@@ -2010,8 +2721,9 @@ contract PrivateNote is Modifiers, ReplayProtection {
     ) public accept {
         // Sender check: allow either active single-op OB (_busy) or any OB from this event
         // (because in batch mode _busy is cleared in onBatchComplete, not on first callback).
-        address expectedOb = DexLib.computeOrderBookAddress(
+        address expectedOb = DexLib.computeOrderBookAddressFromPmpCode(
             _privateNoteCode,
+            _pmpCode,
             _orderBookCode,
             eventId,
             oracleListHash,
@@ -2103,8 +2815,9 @@ contract PrivateNote is Modifiers, ReplayProtection {
         uint64  opNonce
     ) public accept {
         ensureBalance();
-        address expectedOb = DexLib.computeOrderBookAddress(
+        address expectedOb = DexLib.computeOrderBookAddressFromPmpCode(
             _privateNoteCode,
+            _pmpCode,
             _orderBookCode,
             eventId,
             oracleListHash,
@@ -2196,8 +2909,9 @@ contract PrivateNote is Modifiers, ReplayProtection {
         require(!_busy.hasValue(), ERR_NOTE_BUSY);
 
 
-        address obAddress = DexLib.computeOrderBookAddress(
+        address obAddress = DexLib.computeOrderBookAddressFromPmpCode(
             _privateNoteCode,
+            _pmpCode,
             _orderBookCode,
             eventId,
             oracleListHash,
@@ -2234,8 +2948,9 @@ contract PrivateNote is Modifiers, ReplayProtection {
         // cancel until OB has confirmed via onOrderPlaced.
         require(orderId != type(uint128).max, ERR_NOTE_BUSY);
 
-        address obAddress = DexLib.computeOrderBookAddress(
+        address obAddress = DexLib.computeOrderBookAddressFromPmpCode(
             _privateNoteCode,
+            _pmpCode,
             _orderBookCode,
             eventId,
             oracleListHash,
@@ -2277,8 +2992,9 @@ contract PrivateNote is Modifiers, ReplayProtection {
         uint64  opNonce
     ) public accept {
         // Verify sender is the correct OrderBook (same pattern as onOrderFilled)
-        address expectedOb = DexLib.computeOrderBookAddress(
+        address expectedOb = DexLib.computeOrderBookAddressFromPmpCode(
             _privateNoteCode,
+            _pmpCode,
             _orderBookCode,
             eventId,
             oracleListHash,
@@ -2344,8 +3060,19 @@ contract PrivateNote is Modifiers, ReplayProtection {
             uint256 hash = tvm.hash(data);
             if (_stakes.exists(hash)) {
                 StakeInfo stake = _stakes[hash];
-                stake.amount[outcomeId] += amount;
-                _stakes[hash] = stake;
+                // Length-checked for the same reason the branch is guarded by `exists` at all,
+                // one level finer. `setStake` creates a record with EMPTY arrays and they are
+                // sized only when the stake is accepted, so a record recreated after a
+                // `deleteStake` can be shorter than an index carried by a cancellation for an
+                // order placed against the previous one. This handler is the only one of the
+                // three without `numOutcomes` in its signature, so it cannot grow the array the
+                // way `onOrderRejected` and `onOrderFilled` do — and it must not throw: the
+                // counters above have already been decremented in this same transaction, and
+                // reverting would leave them pointing at an order the book has removed.
+                if (outcomeId < uint32(stake.amount.length)) {
+                    stake.amount[outcomeId] += amount;
+                    _stakes[hash] = stake;
+                }
             }
         }
 
@@ -2400,8 +3127,9 @@ contract PrivateNote is Modifiers, ReplayProtection {
     ) public accept {
         ensureBalance();
         // Verify sender is the OrderBook for this event
-        address expectedOb = DexLib.computeOrderBookAddress(
+        address expectedOb = DexLib.computeOrderBookAddressFromPmpCode(
             _privateNoteCode,
+            _pmpCode,
             _orderBookCode,
             eventId,
             oracleListHash,
@@ -2631,8 +3359,9 @@ contract PrivateNote is Modifiers, ReplayProtection {
             _stakes[hash] = stake;
         }
 
-        address obAddress = DexLib.computeOrderBookAddress(
+        address obAddress = DexLib.computeOrderBookAddressFromPmpCode(
             _privateNoteCode,
+            _pmpCode,
             _orderBookCode,
             eventId,
             oracleListHash,
@@ -2665,8 +3394,9 @@ contract PrivateNote is Modifiers, ReplayProtection {
         ensureBalance();
         require(!_busy.hasValue(), ERR_NOTE_BUSY);
 
-        address obAddress = DexLib.computeOrderBookAddress(
+        address obAddress = DexLib.computeOrderBookAddressFromPmpCode(
             _privateNoteCode,
+            _pmpCode,
             _orderBookCode,
             eventId,
             oracleListHash,
@@ -2697,8 +3427,9 @@ contract PrivateNote is Modifiers, ReplayProtection {
         uint32 tokenType,
         uint64  opNonce
     ) public accept {
-        address expectedOb = DexLib.computeOrderBookAddress(
+        address expectedOb = DexLib.computeOrderBookAddressFromPmpCode(
             _privateNoteCode,
+            _pmpCode,
             _orderBookCode,
             eventId,
             oracleListHash,
@@ -2738,13 +3469,6 @@ contract PrivateNote is Modifiers, ReplayProtection {
             _busyOpNonce = 0;
         }
     }
-
-    /// @notice Helper to return empty optional for event emission
-    function _resolvedOutcomeNone() private pure returns (optional(uint32)) {
-        optional(uint32) none;
-        return none;
-    }
-
 
     /// @notice Returns the salted PMP contract code
     /// @return pmpCode The salted PMP contract code as TvmCell

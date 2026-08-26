@@ -1169,7 +1169,7 @@ fn check_common_block_params(
     candidate_block: &Envelope<AckiNackiBlock>,
     parent_block_state: &BlockState,
     _time_to_produce_block: &Duration,
-    block_state: &BlockState,
+    _block_state: &BlockState,
 ) -> anyhow::Result<bool> {
     let (Some(_parent_time), Some(parent_seq_no), Some(parent_height)) =
         parent_block_state.guarded(|e| (*e.block_time_ms(), *e.block_seq_no(), *e.block_height()))
@@ -1211,17 +1211,17 @@ fn check_common_block_params(
     //     return Ok(false);
     // }
 
-    let (Some(bk_set), Some(producer_selector)) =
-        block_state.guarded(|e| (e.bk_set().clone(), e.producer_selector_data().clone()))
-    else {
-        anyhow::bail!("Failed to get selector data to perform common check");
-    };
-    let is_producer_correct = producer_selector
-        .is_node_bp(&bk_set, candidate_block.data().common_section().producer_id());
-    if is_producer_correct.is_err() || !is_producer_correct? {
-        tracing::trace!("Invalid producer selector");
-        return Ok(false);
-    }
+    // let (Some(bk_set), Some(producer_selector)) = block_state
+    //     .guarded(|e| (e.bk_set().clone(), e.descendant_producer_selector_data().clone()))
+    // else {
+    //     anyhow::bail!("Failed to get selector data to perform common check");
+    // };
+    // let is_producer_correct = producer_selector
+    //     .is_node_bp(&bk_set, candidate_block.data().common_section().producer_id());
+    // if is_producer_correct.is_err() || !is_producer_correct? {
+    //     tracing::trace!("Invalid producer selector");
+    //     return Ok(false);
+    // }
 
     let common_section = candidate_block.data().common_section();
     if let Some(prefab) = &common_section.threads_table() {

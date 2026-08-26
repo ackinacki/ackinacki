@@ -2,10 +2,31 @@
 
 All notable changes to `migration-tool` are documented in this file.
 
+## [0.6.0]
+
+### Added
+- Added BM archive migration `010-transaction_currency_deltas`: adds the
+  `balance_delta_other` and `total_fees_other` TEXT columns to `transactions`.
+  Both hold a JSON array ordered by currency id
+  (`[{"currency":<u32>,"value":"<signed decimal>"}]`) and are `NULL` when the
+  transaction moved no extra currency. Existing rows are not backfilled — the
+  columns stay `NULL` for transactions archived before the upgrade
+- Added BM archive migration `009-events_src_dapp_id_msg_chain_order_index`:
+  - creates a partial composite index on `messages(src_dapp_id, msg_chain_order)`
+    for event message types `2` and `4`
+  - extends the existing event cursor index to cover both message types
+
 ## [0.5.0]
 
 ### Added
-- Added `index_blocks_thread_chain_order` to BM archive migration `006-attestations_source_block_id_index`:
+- Added BM archive migration `008-poseidon`:
+  - adds the `block_merkle_leaves`, `history_proofs`, `tracked_ext_out_messages_root`,
+    `tracked_ext_out_message_hashes` and `proof_block_refs` BLOB columns to `blocks`,
+    with length checks on the fixed-size ones
+- Added BM archive migration `007-drop_blocks_boc`:
+  - drops the `blocks.boc` column, made redundant by the zstd-compressed `blocks.data`
+- Added BM archive migration `006-attestations_source_block_id_index`:
+  - creates index `index_attestations_source_block_id` on `attestations(source_block_id)`
   - creates composite index `index_blocks_thread_chain_order` on `blocks(thread_id, chain_order)` for faster `blockchain.blocks(..., thread_id)` pagination.
 - Added BM archive migration `005-events_msg_chain_order_index`:
   - creates partial index `index_messages_ext_out_msg_chain_order` on `messages(msg_chain_order)` for rows where `msg_type = 2`

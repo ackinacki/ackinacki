@@ -147,6 +147,7 @@ impl From<MessageSerializationSet> for ArchMessage {
                 data_hash,
                 msg_type: Some(4),
                 src: Some(header.src.to_string()),
+                src_dapp_id: header.src_dapp_id.as_ref().map(|id| id.to_hex_string()),
                 dst: Some(header.dst.to_string()),
                 created_at: Some(header.created_at.as_u32()),
                 created_lt: Some(header.created_lt.to_string()),
@@ -162,5 +163,50 @@ pub(crate) fn get_msg_fees(msg: &Message) -> Option<(&Grams, &Grams)> {
     match msg.header() {
         CommonMsgInfo::IntMsgInfo(header) => Some((&header.ihr_fee, &header.fwd_fee)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tvm_block::Deserializable;
+    use tvm_block::Message;
+    use tvm_block::Serializable;
+    use tvm_types::base64_decode;
+
+    use super::ArchMessage;
+    use crate::serialization::MessageSerializationSet;
+
+    const SRC_DAPP_ID: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+    fn archive_fixture(encoded_boc: &str) -> ArchMessage {
+        let boc = base64_decode(encoded_boc.trim()).expect("fixture must be valid base64");
+        let message = Message::construct_from_bytes(&boc).expect("fixture must contain a message");
+        let id = message.serialize().expect("message must serialize").repr_hash();
+
+        MessageSerializationSet { message, id, boc, ..Default::default() }.into()
+    }
+
+    #[test]
+    fn parses_legacy_ext_out_event_fixture() {
+        let archived = archive_fixture(include_str!("fixtures/ext_out_msg_info.boc.b64"));
+
+        assert_eq!(archived.msg_type, Some(2));
+        assert_eq!(
+            archived.src.as_deref(),
+            Some("0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(archived.src_dapp_id, None);
+    }
+
+    #[test]
+    fn parses_ext_out_v2_event_src_dapp_id_fixture() {
+        let archived = archive_fixture(include_str!("fixtures/ext_out_msg_info_v2.boc.b64"));
+
+        assert_eq!(archived.msg_type, Some(4));
+        assert_eq!(
+            archived.src.as_deref(),
+            Some("0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(archived.src_dapp_id.as_deref(), Some(SRC_DAPP_ID));
     }
 }

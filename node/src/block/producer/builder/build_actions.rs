@@ -1509,6 +1509,7 @@ impl BlockBuilder {
         active_threads.clear();
         tracing::info!(target: "builder", "Start build of block: {} for {:?}", self.block_info.seq_no(), self.thread_id);
         tracing::info!(target: "builder", "Capabilities: {}", hex::encode(blockchain_config.capabilites().to_be_bytes()));
+        tracing::info!(target: "builder", "Block Gas limit: {}", self.block_gas_limit);
         tracing::info!(target: "builder", "ext_messages_queue.len={}, active_threads.len={}, check_messages_map.len={:?}", ext_messages_source.len(), active_threads.len(), check_messages_map.as_ref().map(|map| map.len()));
 
         let (block_unixtime, block_lt) = self.at_and_lt();

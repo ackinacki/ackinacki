@@ -11,9 +11,12 @@ use super::message::Message;
 use crate::helpers::decode_u64_string;
 use crate::helpers::decompress_blob;
 use crate::helpers::format_big_int;
+use crate::helpers::format_big_int_dec;
+use crate::helpers::signed_ecc_from_json;
 use crate::schema::db;
 use crate::schema::graphql_ext::is_cold_storage_field_visible;
 use crate::schema::graphql_ext::ColdStorageGuard;
+use crate::schema::graphql_shared::currency::OtherCurrency;
 use crate::schema::graphql_shared::formats::BigIntFormat;
 // use super::message::Message;
 
@@ -192,12 +195,11 @@ pub struct Transaction {
     action: TransactionAction,
     #[graphql(skip)]
     balance_delta: Option<String>,
-    // /// Account balance change after the transaction. Because fwd_fee is collected
-    // /// by the validators of the receiving shard, total_fees value does not include
-    // /// Sum(out_msg.fwd_fee[]), but includes in_msg.fwd_fee.
-    // /// The formula is:
-    // /// balance_delta = in_msg.value - total_fees - Sum(out_msg.value[]) -
-    // Sum(out_msg.fwd_fee[]). ? balance_delta_other: [OtherCurrency]
+    /// Same as `balance_delta`, but for the extra currencies. Amounts are
+    /// signed — an account that sent out extra currency has a negative one —
+    /// and only the currencies whose amount actually changed are listed, so a
+    /// transaction that merely forwarded what it received returns `null`.
+    balance_delta_other: Option<Vec<OtherCurrency>>,
     // ! block: Block,
     block_id: String,
     /// Base64-encoded TVM bag of cells of the transaction. Stored
@@ -283,9 +285,9 @@ pub struct Transaction {
     storage: TransactionStorage,
     #[graphql(skip)]
     total_fees: Option<String>,
-    /// Same as above, but reserved for non gram coins that may appear in the
-    /// blockchain.
-    // ! total_fees_other: [OtherCurrency]
+    /// Same as `total_fees`, but for the extra currencies. `null` when the
+    /// transaction collected no extra currency fees.
+    total_fees_other: Option<Vec<OtherCurrency>>,
     /// Transaction type according to the original blockchain specification,
     /// clause 4.2.4.
     /// - 0 – ordinary
@@ -361,9 +363,27 @@ impl From<u8> for TransactionTypeEnum {
     }
 }
 
+/// Extra currency deltas are written by the block manager, so a value this
+/// server cannot parse is a bug on the writing side: it is logged and reported
+/// as absent instead of failing the whole query.
+fn decode_currency_delta(
+    trx_id: &str,
+    column: &str,
+    json: Option<String>,
+) -> Option<Vec<OtherCurrency>> {
+    signed_ecc_from_json(json).unwrap_or_else(|err| {
+        tracing::error!("transaction {trx_id}: failed to decode {column}: {err}");
+        None
+    })
+}
+
 impl From<db::Transaction> for Transaction {
     fn from(trx: db::Transaction) -> Self {
         let boc = tvm_types::base64_encode(decompress_blob(trx.boc));
+        let balance_delta_other =
+            decode_currency_delta(&trx.id, "balance_delta_other", trx.balance_delta_other);
+        let total_fees_other =
+            decode_currency_delta(&trx.id, "total_fees_other", trx.total_fees_other);
         let action = TransactionAction {
             action_list_hash: trx.action_list_hash,
             msgs_created: Some(trx.action_msgs_created),
@@ -414,6 +434,7 @@ impl From<db::Transaction> for Transaction {
             account_addr: Some(trx.account_addr),
             action,
             balance_delta: Some(trx.balance_delta),
+            balance_delta_other,
             block_id: trx.block_id,
             boc,
             bounce: None,
@@ -449,6 +470,7 @@ impl From<db::Transaction> for Transaction {
             status_name: trx.status.into(),
             storage,
             total_fees: Some(trx.total_fees),
+            total_fees_other,
             tr_type: trx.tr_type,
             tr_type_name: trx.tr_type.into(),
             tt: None,
@@ -461,17 +483,17 @@ impl From<db::Transaction> for Transaction {
 impl TransactionBounce {
     #[graphql(name = "fwd_fees")]
     async fn fwd_fees(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.fwd_fees.clone(), format)
+        format_big_int_dec(self.fwd_fees.clone(), format)
     }
 
     #[graphql(name = "msg_fees")]
     async fn msg_fees(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.msg_fees.clone(), format)
+        format_big_int_dec(self.msg_fees.clone(), format)
     }
 
     #[graphql(name = "req_fwd_fees")]
     async fn req_fwd_fees(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.req_fwd_fees.clone(), format)
+        format_big_int_dec(self.req_fwd_fees.clone(), format)
     }
 }
 
@@ -479,12 +501,12 @@ impl TransactionBounce {
 impl TransactionAction {
     #[graphql(name = "total_fwd_fees")]
     async fn total_fwd_fees(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.total_fwd_fees.clone(), format)
+        format_big_int_dec(self.total_fwd_fees.clone(), format)
     }
 
     #[graphql(name = "total_action_fees")]
     async fn total_action_fees(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.total_action_fees.clone(), format)
+        format_big_int_dec(self.total_action_fees.clone(), format)
     }
 }
 
@@ -495,7 +517,7 @@ impl TransactionCompute {
     /// for executing this transaction. It must be equal to the product of
     /// gas_used and gas_price from the current block header.
     async fn gas_fees(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.gas_fees.clone(), format)
+        format_big_int_dec(self.gas_fees.clone(), format)
     }
 
     #[graphql(name = "gas_limit")]
@@ -504,12 +526,12 @@ impl TransactionCompute {
     /// from the value of the inbound message divided by the current gas price,
     /// or the global per-transaction gas limit.
     async fn gas_limit(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.gas_limit.clone(), format)
+        format_big_int_dec(self.gas_limit.clone(), format)
     }
 
     #[graphql(name = "gas_used")]
     async fn gas_used(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.gas_used.clone(), format)
+        format_big_int_dec(self.gas_used.clone(), format)
     }
 }
 
@@ -517,7 +539,7 @@ impl TransactionCompute {
 impl TransactionCredit {
     #[graphql(name = "credit")]
     async fn credit(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.credit.clone(), format)
+        format_big_int_dec(self.credit.clone(), format)
     }
 
     #[graphql(name = "due_fees_collected")]
@@ -535,14 +557,14 @@ impl TransactionStorage {
     #[graphql(name = "storage_fees_collected")]
     /// This field defines the amount of storage fees collected in grams.
     async fn storage_fees_collected(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.storage_fees_collected.clone(), format)
+        format_big_int_dec(self.storage_fees_collected.clone(), format)
     }
 
     #[graphql(name = "storage_fees_due")]
     /// This field represents the amount of due fees in grams, it might be
     /// empty.
     async fn storage_fees_due(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.storage_fees_due.clone(), format)
+        format_big_int_dec(self.storage_fees_due.clone(), format)
     }
 }
 #[ComplexObject]
@@ -560,13 +582,16 @@ impl Transaction {
     /// balance_delta = in_msg.value - total_fees - Sum(out_msg.value[]) -
     /// Sum(out_msg.fwd_fee[])
     async fn balance_delta(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.balance_delta.clone(), format)
+        // The block manager stores this column in decimal, unlike `total_fees`
+        // next to it — which is why the `min_balance_delta` / `max_balance_delta`
+        // filters compare against `balance_delta+0`.
+        format_big_int_dec(self.balance_delta.clone(), format)
     }
 
     #[graphql(name = "ext_in_msg_fee")]
     /// Fee for inbound external message import.
     async fn ext_in_msg_fee(&self, format: Option<BigIntFormat>) -> Option<String> {
-        format_big_int(self.ext_in_msg_fee.clone(), format)
+        format_big_int_dec(self.ext_in_msg_fee.clone(), format)
     }
 
     #[graphql(name = "lt")]

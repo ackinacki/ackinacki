@@ -43,12 +43,38 @@
 			]
 		},
 		{
+			"name": "owner",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"uint256"}
+			]
+		},
+		{
 			"name": "orderBookOf",
 			"inputs": [
 				{"name":"canonicalName","type":"string"}
 			],
 			"outputs": [
 				{"name":"value0","type":"address"}
+			]
+		},
+		{
+			"name": "modelNameOf",
+			"inputs": [
+				{"name":"key","type":"uint256"}
+			],
+			"outputs": [
+				{"name":"value0","type":"string"}
+			]
+		},
+		{
+			"name": "keyOf",
+			"inputs": [
+				{"name":"canonicalName","type":"string"}
+			],
+			"outputs": [
+				{"name":"value0","type":"uint256"}
 			]
 		},
 		{
@@ -74,7 +100,7 @@
 			"inputs": [
 			],
 			"outputs": [
-				{"name":"n","type":"uint32"}
+				{"name":"value0","type":"uint32"}
 			]
 		},
 		{
@@ -85,6 +111,15 @@
 				{"name":"codeHash","type":"uint256"},
 				{"name":"codeDepth","type":"uint16"}
 			]
+		},
+		{
+			"name": "getVersion",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"value0","type":"string"},
+				{"name":"value1","type":"string"}
+			]
 		}
 	],
 	"events": [
@@ -93,6 +128,8 @@
 		{"init":true,"name":"_pubkey","type":"uint256"},
 		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
-		{"init":false,"name":"_models","type":"map(uint256,bool)"}
+		{"init":false,"name":"_models","type":"map(uint256,string)"},
+		{"init":false,"name":"_count","type":"uint32"},
+		{"init":false,"name":"_ownerPubkey","type":"uint256"}
 	]
 }

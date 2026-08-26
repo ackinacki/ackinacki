@@ -6,7 +6,6 @@
 		{
 			"name": "constructor",
 			"inputs": [
-				{"name":"tokenContractCode","type":"cell"}
 			],
 			"outputs": [
 			]

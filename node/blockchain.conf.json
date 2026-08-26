@@ -161,7 +161,7 @@
     "gas_limit": "10000000",
     "special_gas_limit": "10000000",
     "gas_credit": "500000",
-    "block_gas_limit": "10000000",
+    "block_gas_limit": "100000000",
     "freeze_due_limit": "100000000",
     "delete_due_limit": "1000000000"
   },

@@ -16,17 +16,8 @@
 			]
 		},
 		{
-			"name": "fund",
+			"name": "touchDeal",
 			"inputs": [
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "authorizeDirectFund",
-			"inputs": [
-				{"name":"buyerNote","type":"address"},
-				{"name":"buyerPubkey","type":"uint256"}
 			],
 			"outputs": [
 			]
@@ -34,8 +25,10 @@
 		{
 			"name": "fundFromOrderBook",
 			"inputs": [
+				{"name":"paid","type":"uint128"},
 				{"name":"buyerNote","type":"address"},
-				{"name":"buyerPubkey","type":"uint256"}
+				{"name":"buyerPubkey","type":"uint256"},
+				{"name":"dealFlags","type":"uint8"}
 			],
 			"outputs": [
 			]
@@ -46,15 +39,8 @@
 				{"name":"iobHash","type":"uint256"},
 				{"name":"iobDepth","type":"uint16"},
 				{"name":"depositIdentifierHash","type":"uint256"},
-				{"name":"flags","type":"uint8"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "placeSellOffer",
-			"inputs": [
-				{"name":"flags","type":"uint8"}
+				{"name":"flags","type":"uint8"},
+				{"name":"deadline","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -69,14 +55,23 @@
 		{
 			"name": "close",
 			"inputs": [
-				{"name":"payoutAddress","type":"address"}
 			],
 			"outputs": [
 			]
 		},
 		{
-			"name": "fundProbeCommission",
+			"name": "fundDeal",
 			"inputs": [
+				{"name":"amount","type":"uint128"},
+				{"name":"endpointCipher","type":"optional(bytes)"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "fundBuyerBond",
+			"inputs": [
+				{"name":"amount","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -90,7 +85,29 @@
 			]
 		},
 		{
-			"name": "advance",
+			"name": "acceptProbe",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "claimTokens",
+			"inputs": [
+				{"name":"cumulativeTokens","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "finalize",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "settleWeek",
 			"inputs": [
 			],
 			"outputs": [
@@ -98,6 +115,13 @@
 		},
 		{
 			"name": "stop",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sellerStop",
 			"inputs": [
 			],
 			"outputs": [
@@ -125,13 +149,6 @@
 			]
 		},
 		{
-			"name": "reclaimOnTimeout",
-			"inputs": [
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "cleanupUnopened",
 			"inputs": [
 			],
@@ -141,8 +158,7 @@
 		{
 			"name": "withdrawShell",
 			"inputs": [
-				{"name":"amount","type":"uint128"},
-				{"name":"recipient","type":"address"}
+				{"name":"amount","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -150,7 +166,6 @@
 		{
 			"name": "destroy",
 			"inputs": [
-				{"name":"payoutAddress","type":"address"}
 			],
 			"outputs": [
 			]
@@ -165,13 +180,29 @@
 				{"name":"probeAccepted","type":"bool"},
 				{"name":"disputed","type":"bool"},
 				{"name":"deposit","type":"uint128"},
-				{"name":"prepaid","type":"uint128"},
-				{"name":"frozen","type":"uint128"},
+				{"name":"probeTick","type":"uint128"},
 				{"name":"finalizedOwed","type":"uint128"},
-				{"name":"prepaidTime","type":"uint64"},
-				{"name":"lastAdvance","type":"uint64"},
+				{"name":"tokensFinal","type":"uint128"},
+				{"name":"tokensPending","type":"uint128"},
+				{"name":"probeTime","type":"uint64"},
+				{"name":"lastClaimTime","type":"uint64"},
 				{"name":"disputeTime","type":"uint64"},
 				{"name":"fundedTime","type":"uint64"}
+			]
+		},
+		{
+			"name": "getSubscription",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"dealFlags","type":"uint8"},
+				{"name":"subWeeks","type":"uint8"},
+				{"name":"weekIndex","type":"uint8"},
+				{"name":"tokensPerWeek","type":"uint128"},
+				{"name":"fundedTokens","type":"uint128"},
+				{"name":"tokensPaid","type":"uint128"},
+				{"name":"periodStart","type":"uint64"},
+				{"name":"weekBaseTokens","type":"uint128"}
 			]
 		},
 		{
@@ -179,18 +210,26 @@
 			"inputs": [
 			],
 			"outputs": [
-				{"name":"offerPosted","type":"bool"},
-				{"name":"closing","type":"bool"}
+				{"name":"offerPosted","type":"bool"}
 			]
 		},
 		{
-			"name": "getProbe",
+			"name": "getSellerBond",
 			"inputs": [
 			],
 			"outputs": [
-				{"name":"probeFunded","type":"bool"},
-				{"name":"probeLocked","type":"uint128"},
-				{"name":"probeCommission","type":"uint128"}
+				{"name":"bondFunded","type":"bool"},
+				{"name":"bondHeld","type":"uint128"},
+				{"name":"bondRequired","type":"uint128"}
+			]
+		},
+		{
+			"name": "getBuyerBond",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"bondHeld","type":"uint128"},
+				{"name":"bondRequired","type":"uint128"}
 			]
 		},
 		{
@@ -199,8 +238,8 @@
 			],
 			"outputs": [
 				{"name":"platformFeeBps","type":"uint16"},
-				{"name":"settleWindow","type":"uint64"},
-				{"name":"streamTimeout","type":"uint64"},
+				{"name":"minClaimInterval","type":"uint64"},
+				{"name":"minSecondsPerTick","type":"uint64"},
 				{"name":"disputeWindow","type":"uint64"}
 			]
 		},
@@ -314,7 +353,15 @@
 			]
 		},
 		{
-			"name": "ProbeCommissionFunded",
+			"name": "SellerBondFunded",
+			"inputs": [
+				{"name":"amount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "BuyerBondFunded",
 			"inputs": [
 				{"name":"amount","type":"uint128"}
 			],
@@ -331,22 +378,9 @@
 			]
 		},
 		{
-			"name": "ProbeAccepted",
+			"name": "EndpointSet",
 			"inputs": [
-				{"name":"buyer","type":"address"},
-				{"name":"toSeller","type":"uint128"},
-				{"name":"commissionReturned","type":"uint128"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "ProbeBurned",
-			"inputs": [
-				{"name":"buyer","type":"address"},
-				{"name":"burnedProbe","type":"uint128"},
-				{"name":"burnedCommission","type":"uint128"},
-				{"name":"refundToBuyer","type":"uint128"}
+				{"name":"endpointCipher","type":"bytes"}
 			],
 			"outputs": [
 			]
@@ -361,10 +395,40 @@
 			]
 		},
 		{
+			"name": "TicksClaimed",
+			"inputs": [
+				{"name":"trusted","type":"uint128"},
+				{"name":"claimed","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "StreamStopped",
 			"inputs": [
 				{"name":"buyer","type":"address"},
 				{"name":"toSeller","type":"uint128"},
+				{"name":"refundToBuyer","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "ProbeAccepted",
+			"inputs": [
+				{"name":"buyer","type":"address"},
+				{"name":"toSeller","type":"uint128"},
+				{"name":"bondReturned","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "ProbeBurned",
+			"inputs": [
+				{"name":"buyer","type":"address"},
+				{"name":"burnedProbe","type":"uint128"},
+				{"name":"burnedBond","type":"uint128"},
 				{"name":"refundToBuyer","type":"uint128"}
 			],
 			"outputs": [
@@ -385,15 +449,6 @@
 				{"name":"toSeller","type":"uint128"},
 				{"name":"refundToBuyer","type":"uint128"},
 				{"name":"released","type":"bool"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "StreamReclaimed",
-			"inputs": [
-				{"name":"buyer","type":"address"},
-				{"name":"refundToBuyer","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -427,37 +482,43 @@
 		{"init":false,"name":"_iobDepth","type":"uint16"},
 		{"init":false,"name":"_noteAuthorized","type":"bool"},
 		{"init":false,"name":"_offerPosted","type":"bool"},
-		{"init":false,"name":"_closing","type":"bool"},
-		{"init":false,"name":"_closePayout","type":"address"},
 		{"init":false,"name":"_modelName","type":"string"},
 		{"init":false,"name":"_modelHash","type":"uint256"},
 		{"init":false,"name":"_pricePerTick","type":"uint128"},
 		{"init":false,"name":"_maxTicks","type":"uint128"},
 		{"init":false,"name":"_buyer","type":"address"},
 		{"init":false,"name":"_buyerPubkey","type":"uint256"},
-		{"init":false,"name":"_authorizedBuyer","type":"address"},
-		{"init":false,"name":"_authorizedBuyerPubkey","type":"uint256"},
 		{"init":false,"name":"_sellerNote","type":"address"},
 		{"init":false,"name":"_endpointCipher","type":"bytes"},
 		{"init":false,"name":"_funded","type":"bool"},
 		{"init":false,"name":"_opened","type":"bool"},
 		{"init":false,"name":"_everOpened","type":"bool"},
-		{"init":false,"name":"_probeAccepted","type":"bool"},
 		{"init":false,"name":"_disputed","type":"bool"},
-		{"init":false,"name":"_sellerProbeFunded","type":"bool"},
-		{"init":false,"name":"_sellerProbeLocked","type":"uint128"},
+		{"init":false,"name":"_probeAccepted","type":"bool"},
+		{"init":false,"name":"_probeTick","type":"uint128"},
+		{"init":false,"name":"_probeTime","type":"uint64"},
+		{"init":false,"name":"_sellerBondFunded","type":"bool"},
+		{"init":false,"name":"_buyerBondFunded","type":"bool"},
+		{"init":false,"name":"_sellerBond","type":"uint128"},
+		{"init":false,"name":"_buyerBond","type":"uint128"},
+		{"init":false,"name":"_balance","type":"uint128"},
 		{"init":false,"name":"_deposit","type":"uint128"},
-		{"init":false,"name":"_prepaid","type":"uint128"},
-		{"init":false,"name":"_frozen","type":"uint128"},
 		{"init":false,"name":"_finalizedOwed","type":"uint128"},
 		{"init":false,"name":"_feeAccrued","type":"uint128"},
 		{"init":false,"name":"_ticksFinalized","type":"uint128"},
 		{"init":false,"name":"_everDisputed","type":"bool"},
 		{"init":false,"name":"_fundedTime","type":"uint64"},
-		{"init":false,"name":"_prepaidTime","type":"uint64"},
-		{"init":false,"name":"_lastAdvance","type":"uint64"},
 		{"init":false,"name":"_disputeTime","type":"uint64"},
-		{"init":false,"name":"_settleWindow","type":"uint64"},
-		{"init":false,"name":"_streamTimeout","type":"uint64"}
+		{"init":false,"name":"_dealFlags","type":"uint8"},
+		{"init":false,"name":"_subWeeks","type":"uint8"},
+		{"init":false,"name":"_weekIndex","type":"uint8"},
+		{"init":false,"name":"_tokensPerWeek","type":"uint128"},
+		{"init":false,"name":"_fundedTokens","type":"uint128"},
+		{"init":false,"name":"_tokensPaid","type":"uint128"},
+		{"init":false,"name":"_periodStart","type":"uint64"},
+		{"init":false,"name":"_weekBaseTokens","type":"uint128"},
+		{"init":false,"name":"_tokensFinal","type":"uint128"},
+		{"init":false,"name":"_tokensPend","type":"uint128"},
+		{"init":false,"name":"_lastClaimTime","type":"uint64"}
 	]
 }

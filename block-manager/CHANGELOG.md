@@ -2,6 +2,21 @@
 
 All notable changes to `block-manager` are documented in this file.
 
+## [0.10.0]
+
+### Added
+- The BM archive now records `src_dapp_id` for external outbound v2
+  (`ExtOutMsgInfoV2`, `msg_type = 4`) messages, taken from the message header, so
+  events can be attributed to and filtered by the dApp that emitted them. Legacy
+  `ExtOut` (`msg_type = 2`) messages carry no such header field and keep a `NULL`
+  `src_dapp_id`.
+- Added archive migration `009-events_src_dapp_id_msg_chain_order_index`, which
+  creates the partial composite index
+  `index_messages_events_src_dapp_id_msg_chain_order` on
+  `messages(src_dapp_id, msg_chain_order)` for event message types, and widens the
+  existing event cursor index `index_messages_ext_out_msg_chain_order` from
+  `msg_type = 2` to `msg_type IN (2, 4)` so that v2 events are covered by it too.
+
 ## [0.9.1]
 
 ### Added
@@ -16,6 +31,19 @@ All notable changes to `block-manager` are documented in this file.
   normal block-production jitter no longer causes spurious 503 responses.
   Deployments that relied on the previous 5-second behaviour must set
   `READINESS_MAX_BLOCK_AGE_SECS=5` explicitly.
+
+## [0.9.0]
+
+### Added
+- Added archive support for the external outbound v2 message header
+  (`ExtOutMsgInfoV2`), introduced in tvm-sdk `v3.0.4.an`. Such messages are now
+  written to the `messages` table with `msg_type = 4` together with their `src`,
+  `dst`, `created_at` and `created_lt` header fields; previously they had no
+  archive representation at all.
+
+### Changed
+- Bumped the workspace `tvm_*` (tvm-sdk) dependencies from `v3.0.3.an` to
+  `v3.0.4.an`.
 
 ## [0.8.1]
 

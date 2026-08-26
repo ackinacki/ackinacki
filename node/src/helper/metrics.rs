@@ -47,6 +47,7 @@ struct BlockProductionMetricsInner {
     finalization_time: Histogram<u64>,
     last_finalized_seqno: Gauge<u64>,
     ext_msg_queue_size: Gauge<u64>,
+    ext_msg_queue_size_by_dapp: Gauge<u64>,
     int_msg_queue_size: Gauge<u64>,
     block_finalized: Counter<u64>,
     block_invalidated: Counter<u64>,
@@ -260,6 +261,7 @@ impl BlockProductionMetrics {
                 .build(),
             last_finalized_seqno: meter.u64_gauge("node_last_finalized_seqno").build(),
             ext_msg_queue_size: meter.u64_gauge("node_ext_msg_queue_size").build(),
+            ext_msg_queue_size_by_dapp: meter.u64_gauge("node_ext_msg_queue_size_by_dapp").build(),
             int_msg_queue_size: meter.u64_gauge("node_int_msg_queue_size").build(),
             block_finalized: meter.u64_counter("node_block_finalized").build(),
             block_invalidated: meter.u64_counter("node_block_invalidated").build(),
@@ -607,6 +609,21 @@ impl BlockProductionMetrics {
         self.0
             .ext_msg_queue_size
             .record(value as u64, &[KeyValue::new("thread", Self::thread_label(thread_id))]);
+    }
+
+    pub fn report_ext_msg_queue_size_by_dapp(
+        &self,
+        value: usize,
+        thread_id: &ThreadIdentifier,
+        dapp_id: String,
+    ) {
+        self.0.ext_msg_queue_size_by_dapp.record(
+            value as u64,
+            &[
+                KeyValue::new("thread", Self::thread_label(thread_id)),
+                KeyValue::new("dapp", dapp_id),
+            ],
+        );
     }
 
     pub fn report_int_msg_queue_size(&self, value: usize, thread_id: &ThreadIdentifier) {

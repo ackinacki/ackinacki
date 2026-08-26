@@ -67,6 +67,7 @@ pub struct Transaction {
     pub action_tot_msg_size_cells: f64,      // action_tot_msg_size_cells INTEGER NOT NULL,
     pub action_tot_msg_size_bits: f64,       // action_tot_msg_size_bits INTEGER NOT NULL,
     pub balance_delta: String,               // balance_delta INTEGER NOT NULL,
+    pub balance_delta_other: Option<String>, // balance_delta_other TEXT,
     pub block_id: String,                    // block_id TEXT NOT NULL,
     pub boc: Vec<u8>,                        // boc TEXT NOT NULL,
     pub chain_order: String,                 // chain_order TEXT NOT NULL
@@ -103,6 +104,7 @@ pub struct Transaction {
     pub storage_fees_collected: Option<String>, // storage_fees_collected INTEGER NOT NULL,
     pub storage_status_change: Option<u8>,      // storage_status_change INTEGER NOT NULL,
     pub total_fees: String,                     // total_fees INTEGER NOT NULL,
+    pub total_fees_other: Option<String>,       // total_fees_other TEXT,
     pub tr_type: u8,                            // tr_type INTEGER NOT NULL,
     pub workchain_id: i32,                      // workchain_id INTEGER NOT NULL,
 }
@@ -127,6 +129,7 @@ impl Default for Transaction {
             action_tot_msg_size_cells: 0.0,
             action_tot_msg_size_bits: 0.0,
             balance_delta: String::new(),
+            balance_delta_other: None,
             block_id: String::new(),
             boc: Vec::new(),
             chain_order: String::new(),
@@ -161,6 +164,7 @@ impl Default for Transaction {
             storage_fees_collected: None,
             storage_status_change: Some(0),
             total_fees: String::new(),
+            total_fees_other: None,
             tr_type: 0,
             workchain_id: 0,
         }
@@ -196,10 +200,11 @@ impl Transaction {
         "compute_vm_init_state_hash",
         "compute_vm_steps",
     ];
-    const DIRECT_COLUMNS: [&'static str; 23] = [
+    const DIRECT_COLUMNS: [&'static str; 25] = [
         "aborted",
         "account_addr",
         "balance_delta",
+        "balance_delta_other",
         "block_id",
         "boc",
         "chain_order",
@@ -216,6 +221,7 @@ impl Transaction {
         "proof",
         "status",
         "total_fees",
+        "total_fees_other",
         "workchain_id",
         "in_msg",
         "out_msgs",

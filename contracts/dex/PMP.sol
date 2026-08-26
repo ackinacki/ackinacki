@@ -13,7 +13,7 @@ import "./libraries/DexLib.sol";
 contract PMP is Modifiers {
 
     /// @notice Contract semantic version.
-    string constant version = "4.0.27";
+    string constant version = "4.0.35";
 
     /// @notice PMP name (static, unique identifier)
     string _name;
@@ -52,9 +52,15 @@ contract PMP is Modifiers {
     /// @dev Structure: outcome => betType => forfeitedAmount
     mapping(uint32 => mapping(uint8 => uint128)) _forfeited;
 
-    /// @notice Stake counts separated by bet type
-    /// @dev Structure: outcome => betType => stakeCount
-    mapping(uint32 => mapping(uint8 => uint128)) _typedOutcomeCounts;
+    /// @notice The CREATOR's own forfeited clean mass, per outcome — the part of `_forfeited` that
+    ///         came from the deployer rather than from anyone else. Needed because freeze-time
+    ///         normalization trims the pool at the creator's expense, so it may only reduce the
+    ///         creator's share of the forfeited figure. Reducing the aggregate blindly would eat
+    ///         other stakers' forfeits, and `_poolsEqualForfeited` would then never be reachable:
+    ///         the market could not close and its custody could not be released.
+    /// @dev Structure: outcome => forfeitedAmount
+    mapping(uint32 => uint128) _creatorForfeitedClean;
+
 
     /// @notice Total coupon pool across all outcomes
     /// @dev Used to enforce COUPON_POOL_LIMIT_PERCENT
@@ -112,6 +118,11 @@ contract PMP is Modifiers {
 
     /// @notice Cancellation flag
     bool _isCancelled;
+
+    /// @notice Latch: the confirmed OracleEventList counts have been released (decremented)
+    ///         for this event. Set by the FIRST of the normal cancel or the onBounce cleanup
+    ///         path so the two can never double-decrement an OEL count (#588).
+    bool _countReleased;
 
     /// @notice Mapping of confirmed oracle events
     mapping(uint256 => bool) _oracleEventsConfirmed;
@@ -254,6 +265,12 @@ contract PMP is Modifiers {
     /// @param betType 0 - clean bet, 1 - debt bet, 2 - coupon bet
     event StakeAccepted(address indexed note, uint32 outcomeId, uint128 amount, uint8 betType);
 
+    /// @notice A holder abandoned a stake: the amounts given up, per outcome.
+    /// @dev    The only place in this system where an owner deliberately and irreversibly loses
+    ///         money. Carries the amounts rather than just the fact — an event saying "something
+    ///         was forfeited" is barely better than the silence it replaces.
+    event StakeForfeited(address wallet, uint128[] stakeAmount, uint128[] debtAmount, uint128[] couponsAmount);
+
     /// @notice Emitted when the event is fully approved by oracle(s).
     /// @dev This event is emitted only when all required oracle confirmations are collected.
     /// @param oracleEventList Address of the oracle event list that triggered the last required confirmation.
@@ -272,7 +289,7 @@ contract PMP is Modifiers {
     event ClaimProcessed(address indexed note, uint128 payout, bool win);
 
     /// @notice Emitted when network fee was burned.
-    /// @dev The contract currently does not emit this event in the shown code; reserved for future accounting.
+    /// @dev Emitted once, at the first PMP approval, when the network fee is burned.
     /// @param amount Burned fee amount in native units.
     event NetworkFeeBurned(uint64 amount);
 
@@ -283,10 +300,6 @@ contract PMP is Modifiers {
     /// @param resultEnd Result acceptance end timestamp.
     event TimingsSet(uint64 stakeStart, uint64 stakeEnd, uint64 resultStart, uint64 resultEnd);
 
-    /// @notice Emitted when number of outcomes is set.
-    /// @dev The contract currently derives `_numOutcomes` from `outcomeNames` and does not emit this event.
-    /// @param numOutcomes Number of available outcomes.
-    event NumOutcomesSet(uint32 numOutcomes);
 
     /// @notice Emitted when the event is cancelled by oracle governance.
     event EventCancelled();
@@ -328,7 +341,7 @@ contract PMP is Modifiers {
         _privateNoteCode = PrivateNoteCode;
         _orderBookCode = orderBookCode;
         _orderBookAddress = DexLib.computeOrderBookAddress(
-            _privateNoteCode, _orderBookCode,
+            _privateNoteCode, tvm.hash(tvm.code()), uint16(tvm.code().depth()), _orderBookCode,
             _eventId, _oracleListHash, _tokenType
         );
         _approved = false;
@@ -359,16 +372,11 @@ contract PMP is Modifiers {
         ensureBalance();
         address addrExtern = address.makeAddrExtern(PMP_REJECTED_BY_ORACLE, bitCntAddress);
         emit PMPRejected{dest: addrExtern}();
-        
-        for ((uint256 key, bool value) : _oracleEventsConfirmed) {
-            if (value == true) {
-                OracleEventList(address.makeAddrStd(0, key)).cancelEvent{
-                    value: 0.1 vmshell,
-                    flag: 1,
-                    dest_dapp_id: ORACLE_DAPP_ID
-                }(_eventId, _oracleListHash, _tokenType);
-            }
-        }
+
+        // Release the confirmed oracle lists' counts once (#588) — the same idempotent
+        // path as normal cancel / onBounce, so reject after a normal cancel (or vice
+        // versa) cannot double-decrement.
+        _releaseOracleCounts();
 
         // Refund the deployer's initial stakes regardless of approval state:
         //   - Pre-approval (`_approvedOracleEvents == 0`): stakes still in PN's
@@ -429,6 +437,10 @@ contract PMP is Modifiers {
         if (_oracleEventsConfirmed[msg.sender.value] == true) {
             return;
         }
+        // Once the market is cancelled no further list confirmation is accepted: revert so
+        // the message bounces and the list decrements its own count in onBounce, rather than
+        // recording a confirmation after the counts were already released.
+        require(!_isCancelled, ERR_ALREADY_CANCELLED);
         if (_approvedOracleEvents >= _numberOfOracleEvents) {
             return;
         }
@@ -450,9 +462,11 @@ contract PMP is Modifiers {
                 PrivateNote(_deployer).onInitialStakesFailed{value: 0.1 vmshell, flag: 1, dest_dapp_id: ROOT_PN_DAPP_ID}(
                     _eventId, _oracleListHash, _tokenType, refundTotal
                 );
-                // This OracleEventList (msg.sender) counted the event in confirmEvent; ask it to
-                // cancel so its per-event count is decremented before this PMP self-destructs.
-                // The oracle fee stays with the oracle here -- only the count is corrected.
+                // Release the count only on the list that confirmed (msg.sender): its
+                // approveEvent reached this PMP, so it will not bounce. Any other list whose
+                // approveEvent cannot be delivered to this destroyed PMP self-corrects its own
+                // count in its onBounce handler. The oracle fee stays with the oracle here --
+                // only the count is corrected.
                 OracleEventList(msg.sender).cancelEvent{
                     value: 0.1 vmshell, flag: 1, dest_dapp_id: ORACLE_DAPP_ID
                 }(_eventId, _oracleListHash, _tokenType);
@@ -474,6 +488,34 @@ contract PMP is Modifiers {
             );
         }
         _oracleEventsConfirmed[msg.sender.value] = true;
+        // Governance votes (setTimings / resolve / cancelEvent) are keyed by oracle
+        // pubkey, while the quorum is sized by the oracle-event-list count. Two lists
+        // sharing one oracle pubkey drop the distinct-voter count below quorum, so the
+        // event can never be approved and the deployer's initial stakes would be locked
+        // with no resolve or cancel path. Reject on the first duplicate pubkey: refund
+        // the initial stakes, cancel every confirmed list, and self-destruct before the
+        // duplicate is recorded.
+        if (_oracleEventsPubkeys.exists(oraclePubkey)) {
+            uint128 dupRefund = 0;
+            for (uint32 di = 0; di < _initialStakes.length; di++) {
+                dupRefund += _initialStakes[di];
+            }
+            PrivateNote(_deployer).onInitialStakesFailed{value: 0.1 vmshell, flag: 1, dest_dapp_id: ROOT_PN_DAPP_ID}(
+                _eventId, _oracleListHash, _tokenType, dupRefund
+            );
+            // Release the count only on lists that confirmed (their approveEvent reached this
+            // PMP, so it will not bounce). A list whose approveEvent cannot be delivered to
+            // this destroyed PMP self-corrects its own count in its onBounce handler.
+            for ((uint256 dupKey, bool dupConfirmed) : _oracleEventsConfirmed) {
+                if (dupConfirmed) {
+                    OracleEventList(address.makeAddrStd(0, dupKey)).cancelEvent{
+                        value: 0.1 vmshell, flag: 1, dest_dapp_id: ORACLE_DAPP_ID
+                    }(_eventId, _oracleListHash, _tokenType);
+                }
+            }
+            selfdestruct(ROOT_PN_ADDRESS);
+            return;
+        }
         _oracleEventsPubkeys[oraclePubkey] = true;
         if (trustAddr.hasValue()) {
             require(!_oracleEventsAddress.exists(trustAddr.get()), ERR_ALREADY_INITIALIZED);
@@ -550,6 +592,11 @@ contract PMP is Modifiers {
         if (_stakeStart == 0) {
             require(resultStart >= uint64(block.timestamp) + MIN_RESULT_GAP, ERR_INVALID_PARAMS);
             _stakeStart = uint64(block.timestamp);
+            // The network fee is consumed when the market goes live. By this first
+            // approval every oracle fee has already been dispatched, so the only SHELL
+            // held by the contract is the network fee: burn it and report the burn.
+            gosh.burnecc(NETWORK_FEE_AMOUNT, CURRENCIES_ID_SHELL);
+            emit NetworkFeeBurned{dest: address.makeAddrExtern(PMP_NETWORK_FEE_BURNED, bitCntAddress)}(NETWORK_FEE_AMOUNT);
         }
 
         _resultStart = resultStart;
@@ -575,6 +622,24 @@ contract PMP is Modifiers {
         emit TimingsSet{dest: addrExtern}(_stakeStart, _computeStakeEnd(), _resultStart, _resultStart + GRACE_PERIOD);
     }
 
+    /// @notice Release (decrement) the confirmed OracleEventList counts for this event
+    ///         exactly once (#588). Idempotent via `_countReleased`, so the normal cancel
+    ///         and the onBounce cleanup can both call it without double-decrementing a count.
+    ///         Each confirmed list drops its confirmation for this event, letting the oracle
+    ///         later `deleteEvent` once every confirmed PMP has released (count reaches 0).
+    function _releaseOracleCounts() private {
+        if (_countReleased) return;
+        _countReleased = true;
+        for ((uint256 key, bool confirmed) : _oracleEventsConfirmed) {
+            if (confirmed) {
+                OracleEventList(address.makeAddrStd(0, key)).cancelEvent{
+                    value: 0.1 vmshell,
+                    flag: 1, dest_dapp_id: ORACLE_DAPP_ID
+                }(_eventId, _oracleListHash, _tokenType);
+            }
+        }
+    }
+
     /// @notice Cancels the event
     function cancelEvent() private {
         require(_approvedOracleEvents == _numberOfOracleEvents, ERR_NOT_APPROVED);
@@ -588,6 +653,10 @@ contract PMP is Modifiers {
         // on `_isCancelled` — so flipping the flag first is required for the
         // OB drain to start in the same tx as the cancel.
         ensureBalance();
+
+        // Release the confirmed OracleEventList counts (#588) so the event can later be
+        // deleted (deleteEvent requires count == 0). Idempotent with the onBounce path.
+        _releaseOracleCounts();
 
         address addrExtern = address.makeAddrExtern(PMP_EVENT_CANCELLED, bitCntAddress);
         emit EventCancelled{dest: addrExtern}();
@@ -616,6 +685,20 @@ contract PMP is Modifiers {
         
         address wallet = DexLib.computePrivateNoteAddress(_privateNoteCode, depositIdentifierHash);
         require(msg.sender == wallet, ERR_INVALID_SENDER);
+        // The creator's share of a clean pool is either LIVE or FORFEITED, never both, and the
+        // freeze keeps it that way. Normalization refunds the pool's leftover to him and shrinks
+        // his forfeited figure by the same amount — a sound attribution only while the two cannot
+        // overlap. Were they to overlap, the refund would be paid out of live mass while the cut
+        // still came off forfeited mass, leaving `_forfeited` short of what the pool actually
+        // holds; both close gates read that figure against a pool (`_poolsEqualForfeited` per
+        // outcome, `_forfeitedWinMass` for the winner), and the shortfall survives every later
+        // forfeit, so the gates would never be reachable again and the custody would stay locked.
+        // Giving a clean stake up in an outcome therefore closes that outcome to him until the
+        // freeze. Other stakers are unaffected: only the creator's forfeits move this figure, and
+        // only clean mass reaches the normalization at all.
+        require(betType != BET_TYPE_CLEAN
+                || wallet != _deployer
+                || _creatorForfeitedClean[outcomeId] == 0, ERR_NOT_ALLOWED);
 
         tvm.accept();
         ensureBalance();
@@ -694,6 +777,9 @@ contract PMP is Modifiers {
 
         address wallet = DexLib.computePrivateNoteAddress(_privateNoteCode, depositIdentifierHash);
         require(msg.sender == wallet, ERR_INVALID_SENDER);
+        // Deployer's stake.amount trails the freeze-time clean refund until it is
+        // acknowledged; scope the guard to the deployer, mirroring split/merge.
+        require(!_normRefundPending || wallet != _deployer, ERR_NORM_REFUND_PENDING);
 
         tvm.accept();
         ensureBalance();
@@ -817,6 +903,26 @@ contract PMP is Modifiers {
             if (remainder > 0) {
                 _typedOutcomePools[k][BET_TYPE_CLEAN] = cleanPool - remainder;
                 refundTotal += remainder;
+                // The remainder comes off the creator's OWN share of this pool, so only his share
+                // of the forfeited figure may shrink with it — and only if he forfeited at all.
+                //
+                // When he did, that share sits in `_forfeited` instead of a stake record, and a
+                // figure left at its pre-normalization size would claim more mass than the pool
+                // still holds; both close gates read this map against a pool
+                // (`_poolsEqualForfeited` per outcome, `_forfeitedWinMass` for the winner), so a
+                // stale entry lets a LIVE stake be counted as forfeited and swept on close.
+                //
+                // When he did not, the figure belongs to other stakers entirely and must not move.
+                // Reducing it then would under-count forfeited mass, `_poolsEqualForfeited` would
+                // never be reachable, and the market would sit unclosable with its custody frozen
+                // — the opposite failure, and the more expensive one to unwind.
+                uint128 mine = _creatorForfeitedClean[k];
+                uint128 cut  = remainder < mine ? remainder : mine;
+                if (cut > 0) {
+                    _creatorForfeitedClean[k] = mine - cut;
+                    uint128 f = _forfeited[k][BET_TYPE_CLEAN];
+                    _forfeited[k][BET_TYPE_CLEAN] = f > cut ? f - cut : 0;
+                }
             }
             _frozenCleanPools[k] = _typedOutcomePools[k][BET_TYPE_CLEAN];
         }
@@ -883,6 +989,8 @@ contract PMP is Modifiers {
         // in `_orderBookAddress`).
         TvmCell stateInit = DexLib.buildOrderBookStateInit(
             _privateNoteCode,
+            tvm.hash(tvm.code()),
+            uint16(tvm.code().depth()),
             _orderBookCode,
             _eventId,
             _oracleListHash,
@@ -893,18 +1001,21 @@ contract PMP is Modifiers {
             stateInit: stateInit,
             value: 10 vmshell,
             flag: 1
-        }(tvm.hash(tvm.code()), tvm.code().depth(), _resultStart, _numOutcomes);
+        }(_resultStart, _numOutcomes);
 
         address addrExtern = address.makeAddrExtern(PMP_POOLS_FROZEN, bitCntAddress);
         emit PoolsFrozen{dest: addrExtern}(_baseTotalPool);
     }
 
-    /// @notice Splits collateral into proportional outcome tokens across all outcomes.
-    /// @dev Per spec: δ_k = floor(F × M_k / T) where M_k = frozen clean pool,
-    ///      T = baseTotalPool. Pool update: _totalPool += F (full collateral).
-    ///      Tokens minted: _cleanPools[k] += δ_k.
-    ///      Remainder F - Σδ_k stays in pool as surplus (benefits existing stakers).
-    ///
+    /// @notice Splits collateral into a whole number of full sets — `u_k` clean
+    ///         outcome-k tokens per basket, `Q = Σ u_k` collateral per basket.
+    /// @dev Quantized, not proportional: `t = floor(F / Q)` baskets are minted,
+    ///      `F_use = t·Q` enters the pool and `amounts[k] = t·u_k` is credited to
+    ///      the caller. The sub-basket tail `F - F_use` never enters the pool:
+    ///      `onSplitAccepted` carries `F_use` back, and the note returns the
+    ///      difference from the amount it had staged to its free balance. `u_k`
+    ///      and `Q` are fixed at freeze from the normalized clean pools, which is
+    ///      what makes every basket exact and leaves nothing to round.
     /// @param collateral Amount of collateral to split (F).
     /// @param depositIdentifierHash Caller's PrivateNote deposit ID.
     function splitFullSet(
@@ -1463,6 +1574,12 @@ contract PMP is Modifiers {
                 flag: 1, dest_dapp_id: ROOT_PN_DAPP_ID
             }(residual, _tokenType, _eventId, _oracleListHash);
         }
+        // Release this PMP's OracleEventList confirmations before it disappears
+        // (#588): a resolved market self-destructs here, so without this the
+        // confirmed lists would hold the count raised forever and the event
+        // could never be deleted. Idempotent via `_countReleased`, so a close
+        // that already released on the cancel path is a no-op.
+        _releaseOracleCounts();
         selfdestruct(_deployer);
     }
 
@@ -1479,6 +1596,11 @@ contract PMP is Modifiers {
                 flag: 1, dest_dapp_id: ROOT_PN_DAPP_ID
             }(residual, _tokenType, _eventId, _oracleListHash);
         }
+        // Release this PMP's OracleEventList confirmations before self-destruct
+        // (#588). On the debt-refund resolve close the count would otherwise leak
+        // and block deleteEvent; on the cancelled close it was already released,
+        // and `_countReleased` makes this call a no-op there.
+        _releaseOracleCounts();
         selfdestruct(_deployer);
     }
 
@@ -1532,11 +1654,27 @@ contract PMP is Modifiers {
         uint32 nMax = uint32(stakeAmount.length);
         if (uint32(debtAmount.length) > nMax) nMax = uint32(debtAmount.length);
         if (uint32(couponsAmount.length) > nMax) nMax = uint32(couponsAmount.length);
+        bool byCreator = (wallet == _deployer);
         for (uint32 i = 0; i < nMax; i++) {
-            if (i < uint32(stakeAmount.length))   _forfeited[i][BET_TYPE_CLEAN]  += stakeAmount[i];
+            if (i < uint32(stakeAmount.length)) {
+                _forfeited[i][BET_TYPE_CLEAN] += stakeAmount[i];
+                if (byCreator) { _creatorForfeitedClean[i] += stakeAmount[i]; }
+            }
             if (i < uint32(debtAmount.length))    _forfeited[i][BET_TYPE_DEBT]   += debtAmount[i];
             if (i < uint32(couponsAmount.length)) _forfeited[i][BET_TYPE_COUPON] += couponsAmount[i];
         }
+
+        // THE ONE PLACE A HOLDER WALKS AWAY FROM MONEY ON PURPOSE, and until now it was invisible
+        // from outside — this contract emits thirteen events elsewhere and none here. Compare with
+        // a cancellation, which is announced by the book AND mirrored by the note, with the id, the
+        // outcome, the side and the amount returned. A forfeit is the more consequential of the two
+        // and was quieter than nothing.
+        //
+        // Emitted HERE because this is the authoritative record: the amounts are in hand and the
+        // abandoned mass is accounted into `_forfeited` on the lines above. The note mirrors it in
+        // `onForfeitAccepted`, where the forfeit becomes final on the owner's side.
+        emit StakeForfeited{dest: address.makeAddrExtern(PMP_STAKE_FORFEITED, bitCntAddress)}(
+            wallet, stakeAmount, debtAmount, couponsAmount);
 
         // Ack first so PN clears `_busy` / deletes its local stake before any
         // selfdestruct flushes this tx's outbound messages.
@@ -1656,36 +1794,52 @@ contract PMP is Modifiers {
     /// - Prevents half-initialized market state after failed oracle interactions.
     /// @param body Bounced message body (unused, accepted to satisfy ABI).
     onBounce(TvmSlice body) external {
-        tvm.accept();
-        ensureBalance();
         body;
-        if (_oracleEventsConfirmed.exists(msg.sender.value)) {
-            // Only cancel oracles that have already confirmed (not the one that bounced)
-            for ((uint256 key, bool confirmed) : _oracleEventsConfirmed) {
-                if (confirmed) {
-                    OracleEventList(address.makeAddrStd(0, key)).cancelEvent{
-                        value: 0.1 vmshell,
-                        flag: 1, dest_dapp_id: ORACLE_DAPP_ID
-                    }(_eventId, _oracleListHash, _tokenType);
-                }
-            }
-
-            // Refund the deployer's initial stakes — symmetric with rejectEvent.
-            // Must fire regardless of `_approvedOracleEvents`: post-partial-approval
-            // the stakes are already committed in PN as `stake.amount[k]`, and
-            // without this callback they'd stay locked once the PMP is gone.
-            if (_initialStakes.length > 0) {
-                uint128 refundTotal = 0;
-                for (uint32 i = 0; i < _initialStakes.length; i++) {
-                    refundTotal += _initialStakes[i];
-                }
-                PrivateNote(_deployer).onInitialStakesFailed{
-                    value: 0.1 vmshell, flag: 1, dest_dapp_id: ROOT_PN_DAPP_ID
-                }(_eventId, _oracleListHash, _tokenType, refundTotal);
-            }
-
-            selfdestruct(ROOT_PN_ADDRESS);
+        tvm.accept();
+        // A bounce from a configured oracle list is one of two things:
+        //  (a) during a normal cancel (`_isCancelled`): a release `cancelEvent` that failed to
+        //      deliver. Re-arm exactly that list once, `bounce: false`, so the automatic resend is
+        //      strictly finite: the first release send bounces here, this single retry is sent one
+        //      way, and if it still cannot be delivered it does not bounce back — no further
+        //      onBounce, no gas loop. `OracleEventList.cancelEvent` is idempotent per canonical PMP
+        //      (a first delivery that actually landed cleared `_pmpConfirmed`), so the retry or a
+        //      late no-op cannot double-decrement. Keep the cancelled market intact: no refund, no
+        //      self-destruct, no `ensureBalance`.
+        //  (b) before cancel: a failed constructor-time oracle interaction. Run the half-init
+        //      cleanup — release the confirmed counts, refund the deployer's stakes, self-destruct.
+        if (!_oracleEventsConfirmed.exists(msg.sender.value)) {
+            return;
         }
+        if (_isCancelled) {
+            OracleEventList(msg.sender).cancelEvent{
+                value: 0.1 vmshell, flag: 1, bounce: false, dest_dapp_id: ORACLE_DAPP_ID
+            }(_eventId, _oracleListHash, _tokenType);
+            return;
+        }
+        ensureBalance();
+        _releaseOracleCounts();
+
+        // Refund the deployer's initial stakes — symmetric with rejectEvent.
+        // Must fire regardless of `_approvedOracleEvents`: post-partial-approval
+        // the stakes are already committed in PN as `stake.amount[k]`, and
+        // without this callback they'd stay locked once the PMP is gone.
+        if (_initialStakes.length > 0) {
+            uint128 refundTotal = 0;
+            for (uint32 i = 0; i < _initialStakes.length; i++) {
+                refundTotal += _initialStakes[i];
+            }
+            PrivateNote(_deployer).onInitialStakesFailed{
+                value: 0.1 vmshell, flag: 1, dest_dapp_id: ROOT_PN_DAPP_ID
+            }(_eventId, _oracleListHash, _tokenType, refundTotal);
+        }
+
+        // The bounced confirmEvent carries the oracle fee (SHELL) back. Return it
+        // to the deployer rather than sweeping it to RootPN on self-destruct,
+        // mirroring rejectEvent — the oracle rendered no service on a bounce.
+        if (uint128(msg.currencies[CURRENCIES_ID_SHELL]) > 0) {
+            _deployer.transfer({value: 0.1 vmshell, flag: 1, bounce: false, currencies: msg.currencies, dest_dapp_id: ROOT_PN_DAPP_ID});
+        }
+        selfdestruct(ROOT_PN_ADDRESS);
     }
 
     /// @notice Returns full current state of the PMP contract.
@@ -1793,9 +1947,6 @@ contract PMP is Modifiers {
         return _orderBookAddress;
     }
 
-    /// @notice Callback from the OrderBook emitted as part of its final
-    ///         self-destruct message (flag 161 — carries balance, deletes
-    ///         source). Flips the gate that `claim()` checks.
     /// @notice Deployer PN acknowledges receipt and application of the
     ///         normalization refund. Clears `_normRefundPending`, re-enabling
     ///         `splitFullSet` / `mergeFullSet`. Auto-called at the tail of
@@ -1809,6 +1960,9 @@ contract PMP is Modifiers {
         _normRefundPending = false;
     }
 
+    /// @notice Callback from the OrderBook emitted as part of its final
+    ///         self-destruct message (flag 161 — carries balance, deletes
+    ///         source). Flips the gate that `claim()` checks.
     function onOrderBookShutdownComplete() public {
         require(msg.sender == _orderBookAddress, ERR_INVALID_SENDER);
         tvm.accept();

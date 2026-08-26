@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.1] – 2026-08-24
+
+### New / Improvements
+- Added a `src_dapp_id` filter to the GraphQL `blockchain.events` query, covering `ExtOut` and `ExtOutV2` with cursor pagination. Requires BM archive migration `009-events_src_dapp_id_msg_chain_order_index`; legacy `ExtOut` messages carry no `src_dapp_id` and never match the filter
+- Added the `node_ext_msg_queue_size_by_dapp` gauge — external-message queue occupancy per DApp. Covers DApp ids `0`, `1`, `2` and `4`; override the set with `EXT_MESSAGES_QUEUE_SIZE_METRIC_DAPPS`
+- Quietened `contracts/scripts/generate_zerostate.py`: the helper commands it runs no longer echo their output
+- Added the extra-currency movement of a transaction as `transaction.balance_delta_other` and `transaction.total_fees_other` — signed amounts, `null` when nothing moved. Requires BM archive migration `010-transaction_currency_deltas`; transactions archived earlier report `null`
+- Showed the extra currencies in the explorer bundled with the `live` image, on message and transaction rows and details, labelled `ECC NACKL` / `ECC SHELL` / `ECC USDC` (an unnamed id as `ECC #<id>`); message rows show the value as a signed delta of the account being viewed
+- Changed the default external-message queue limits in the `block-keeper` Ansible role: `EXT_MESSAGES_TOTAL_LIMIT` 250 → 1000, `EXT_MESSAGES_DAPP_LIMIT` 200 → 500, `EXT_MESSAGES_ACCOUNT_LIMIT` 100 → 5. A deployment needing a wider per-account allowance has to set the variable in its inventory
+
+### Fixes
+- Fixed the GraphQL `transaction` money fields being read as hexadecimal instead of decimal, which inflated every amount except `total_fees` — a `balance_delta` of `627700000` was served as `0x627700000`. Clients that compensated for the inflated numbers have to drop the workaround
+- Fixed the explorer bundled with the `live` image rendering every outbound message of an account as incoming, and not showing an event's external destination address
+- Fixed `eccUSDCBridge.initiateWithdrawal` (v1.3.1) accepting an empty `recipient`, which burned the tokens with no way to claim them; it is now refused with error `223` (`ERR_RECIPIENT_EMPTY`). `DepositVoucher` is versioned to 1.3.1 and a freshly generated zerostate carries the rebuilt contracts
+- Fixed attestation delay calculation bug
+- Increased block gas limit
+
 ## [0.19.0] – 2026-08-18
 
 ### Breaking Changes

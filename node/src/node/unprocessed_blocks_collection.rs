@@ -398,7 +398,7 @@ mod tests {
             Default::default(),
         );
         let mut common_section = block.common_section().clone();
-        common_section.set_producer_selector(Some(make_selector(parent_block_id)));
+        common_section.set_descendant_producer_selector(Some(make_selector(parent_block_id)));
         block.set_common_section(common_section, true).unwrap();
         let envelope = Arc::new(Envelope::create(Default::default(), HashMap::new(), block));
         let block_state = BlockState::test();

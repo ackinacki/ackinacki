@@ -2,6 +2,88 @@
 
 All notable changes to `gql-server` are documented in this file.
 
+## [1.4.0]
+
+### Added
+- Added `transaction.balance_delta_other` and `transaction.total_fees_other`
+  (`[OtherCurrency]`, previously reserved in the schema but never served). Both
+  are `null` when the transaction moved no extra currency, and
+  `balance_delta_other` amounts are signed — an account that sent extra currency
+  out reports a negative amount. Only transactions archived after the BM archive
+  migration `010-transaction_currency_deltas` carry the values; older rows report
+  `null`
+- Added an optional `src_dapp_id` filter to `blockchain.events`, including cursor
+  pagination support for both `ExtOut` and `ExtOutV2` events. The filter is
+  served by the new partial BM archive index on
+  `messages(src_dapp_id, msg_chain_order)`.
+
+### Fixed
+- Fixed every decimal-stored money field of `transaction` being decoded as
+  hexadecimal, which inflated the reported amounts (a `balance_delta` of
+  `627700000` was served as `0x627700000`, i.e. 42× too large). Affects
+  `balance_delta`, `ext_in_msg_fee`, `credit.credit`,
+  `storage.storage_fees_collected`, `storage.storage_fees_due`,
+  `compute.gas_fees`, `compute.gas_limit`, `compute.gas_used`,
+  `action.total_fwd_fees`, `action.total_action_fees`, `bounce.fwd_fees`,
+  `bounce.msg_fees` and `bounce.req_fwd_fees`. `transaction.total_fees` and the
+  message amounts were and stay hexadecimal, and the `min_balance_delta` /
+  `max_balance_delta` filters were already comparing numerically and are
+  unaffected. Clients that compensated for the old values have to drop the
+  workaround
+- Stopped panicking on a money column that fails to parse: the field is now
+  reported as `null` and the error is logged, instead of failing the request
+
+## [1.3.0]
+
+### Added
+- Added a cold-storage mode, enabled with the `--cold-storage` CLI flag, the
+  `GQL_COLD_STORAGE` environment variable, or the `cold_storage` YAML config
+  option (default off, hot-reloadable via `SIGUSR1`). On cold-storage servers
+  the database no longer stores the transaction BOC and inbound messages, so
+  `transaction.boc`, `transaction.in_message` and `message.dst_transaction` are
+  hidden from introspection and rejected when queried, and
+  `blockchain.account.messages` rejects `msg_type` filters other than external
+  outbound.
+- Added the `CrossDapp` (`msg_type = 3`) and `ExtOutV2` (`ExtOutMsgInfoV2`,
+  `msg_type = 4`) values to the `MessageType` enum. `ExtOutV2` is also selectable
+  in the `blockchain.account.messages` `msg_type` filter, where it narrows the
+  selection down to external outbound v2 messages only.
+
+### Changed
+- The `counterparties` validation in `blockchain.account.messages` now covers the
+  new `ExtOutV2` filter value as well: `counterparties` must be null whenever
+  `msg_type` includes any external outbound type.
+
+### Fixed
+- Fixed a server panic when returning a message with the `CrossDapp`
+  (`msg_type = 3`) or `ExtOutMsgInfoV2` (`msg_type = 4`) message type.
+- Fixed a server failure when a message carried a type or processing status the
+  server did not recognise at all. Such a message aborted the whole request
+  without a GraphQL error, so every unrelated message in the same response was
+  lost too. Unrecognised values are now reported as a `null` `msg_type_name` /
+  `status_name` — the numeric `msg_type` and `status` fields still carry the raw
+  value — and the rest of the response is returned normally.
+
+### Removed
+- Removed the `code_hash` argument from the `blockchain.transactions` query.
+  It never worked: the archive `transactions` table has no `code_hash` column,
+  so any query using the filter failed with a SQL error.
+
+## [1.2.0]
+
+### Changed
+- The `blockchain.events` and `blockchain.account.events` queries now include
+  external outbound v2 (`ExtOutMsgInfoV2`, `msg_type = 4`) messages in addition
+  to `ExtOut` (`msg_type = 2`).
+- The `ExtOut` value of the `blockchain.account.messages` `msg_type` filter now
+  selects every external outbound message — both `ExtOut` (`msg_type = 2`) and
+  `ExtOutMsgInfoV2` (`msg_type = 4`). Existing queries filtering by `ExtOut`
+  therefore keep returning all external outbound messages as contracts migrate
+  to v2 headers; use the `ExtOutV2` value added in 1.3.0 to select v2 messages
+  only.
+- Bumped `tvm_block` / `tvm_client` / `tvm_types` dependencies from
+  `v3.0.3.an` to `v3.0.4.an`.
+
 ## [1.1.0]
 
 ### Added
@@ -22,45 +104,10 @@ All notable changes to `gql-server` are documented in this file.
   `proof_block_refs`, `tracked_ext_out_messages_root`,
   `tracked_ext_out_message_hashes`) to the DB block model with field-based
   projection support.
-- Added a cold-storage mode, enabled with the `--cold-storage` CLI flag, the
-  `GQL_COLD_STORAGE` environment variable, or the `cold_storage` YAML config
-  option (default off, hot-reloadable via `SIGUSR1`). On cold-storage servers
-  the database no longer stores the transaction BOC and inbound messages, so
-  `transaction.boc`, `transaction.in_message` and `message.dst_transaction` are
-  hidden from introspection and rejected when queried, and
-  `blockchain.account.messages` rejects `msg_type` filters other than external
-  outbound.
-- Added the `CrossDapp` (`msg_type = 3`) and `ExtOutV2` (`ExtOutMsgInfoV2`,
-  `msg_type = 4`) values to the `MessageType` enum. `ExtOutV2` is also selectable
-  in the `blockchain.account.messages` `msg_type` filter, where it narrows the
-  selection down to external outbound v2 messages only.
 
 ### Changed
-- The `blockchain.events` and `blockchain.account.events` queries now include
-  external outbound v2 (`ExtOutMsgInfoV2`, `msg_type = 4`) messages in addition
-  to `ExtOut` (`msg_type = 2`).
-- The `ExtOut` value of the `blockchain.account.messages` `msg_type` filter now
-  selects every external outbound message — both `ExtOut` (`msg_type = 2`) and
-  `ExtOutMsgInfoV2` (`msg_type = 4`). Existing queries filtering by `ExtOut`
-  therefore keep returning all external outbound messages as contracts migrate
-  to v2 headers; use the new `ExtOutV2` value to select v2 messages only.
 - Bumped `tvm_block` / `tvm_client` / `tvm_types` dependencies from
   `v3.0.2.an` to `v3.0.3.an`.
-
-### Fixed
-- Fixed a server panic when returning a message with the `CrossDapp`
-  (`msg_type = 3`) or `ExtOutMsgInfoV2` (`msg_type = 4`) message type.
-- Fixed a server failure when a message carried a type or processing status the
-  server did not recognise at all. Such a message aborted the whole request
-  without a GraphQL error, so every unrelated message in the same response was
-  lost too. Unrecognised values are now reported as a `null` `msg_type_name` /
-  `status_name` — the numeric `msg_type` and `status` fields still carry the raw
-  value — and the rest of the response is returned normally.
-
-### Removed
-- Removed the `code_hash` argument from the `blockchain.transactions` query.
-  It never worked: the archive `transactions` table has no `code_hash` column,
-  so any query using the filter failed with a SQL error.
 
 ## [1.0.0]
 
@@ -144,6 +191,15 @@ All notable changes to `gql-server` are documented in this file.
 
 ### Fixed
 - Improved GraphQL integration test server startup to avoid flaky port collisions during parallel test runs.
+
+## [0.5.0]
+
+### Changed
+- Version-alignment release: `gql-server` was ticked to 0.5.0 together with
+  `block-manager` 0.4.0 without any user-facing change — the GraphQL schema,
+  queries and configuration are identical to 0.4.0, and the only code touched
+  was the integration test harness. The BK set updates and attestations work
+  that landed while 0.5.0 was the current version is documented under [0.6.0].
 
 ## [0.4.0] - 2026-02-12
 

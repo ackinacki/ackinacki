@@ -39,7 +39,7 @@ interface IShellAccumulator {
 ///
 ///         Deployed at fixed address in zerostate.
 contract eccUSDCBridge is eccUSDCBridgeModifiers, ISubscriber {
-    string constant version = "1.3.0";
+    string constant version = "1.3.1";
 
     event UsdcMigrated(address from, uint128 value);
     event UsdcMinted(address recipient, uint128 value);
@@ -340,6 +340,7 @@ contract eccUSDCBridge is eccUSDCBridgeModifiers, ISubscriber {
     function initiateWithdrawal(uint256 dstChainId, bytes recipient) public {
         tvm.accept();
         ensureBalance();
+        require(recipient.length > 0, ERR_RECIPIENT_EMPTY);
         require(recipient.length <= 64, ERR_RECIPIENT_TOO_LONG);
 
         mapping(uint32 => varuint32) currencies = msg.currencies;

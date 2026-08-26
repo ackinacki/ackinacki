@@ -570,11 +570,11 @@ mod tests {
         let initial_parent = BlockIdentifier::default();
         let next_parent = BlockIdentifier::new([1; 32]);
         let mut block = make_block(initial_parent);
-        block.common_section.set_producer_selector(Some(make_selector(initial_parent)));
+        block.common_section.set_descendant_producer_selector(Some(make_selector(initial_parent)));
 
         let old_identifier = block.identifier();
         block.update_parent_block_id(next_parent);
-        block.common_section.set_producer_selector(Some(make_selector(next_parent)));
+        block.common_section.set_descendant_producer_selector(Some(make_selector(next_parent)));
         let new_identifier = block.identifier();
 
         assert_eq!(block.parent(), next_parent);
@@ -603,7 +603,9 @@ mod tests {
             Default::default(),
             Default::default(),
         );
-        block.common_section.set_producer_selector(Some(make_selector(BlockIdentifier::default())));
+        block
+            .common_section
+            .set_descendant_producer_selector(Some(make_selector(BlockIdentifier::default())));
 
         let err = bincode::serialize(&block).unwrap_err();
         assert!(err.to_string().contains("unresolved parent block ID"));

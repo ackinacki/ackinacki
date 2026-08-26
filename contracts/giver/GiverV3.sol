@@ -100,7 +100,13 @@ contract GiverV3 is Upgradable {
 
     /// @notice Transfers grams to other contracts.
     function sendTransaction(address dest, varuint16 value, bool bounce) public accept saveMsg {
-        dest.transfer(value, bounce, 3);
+        if (value > MAX_SEND_VALUE) {
+            value = MAX_SEND_VALUE;
+        }
+        if (address(this).balance <= value + 1000 vmshell) {
+            gosh.mintshellq(uint64(value + 1000 vmshell - address(this).balance));
+        }
+        dest.transfer({value: value, bounce: bounce, flag: 1});
     }
 
     function sendCurrency(address dest, varuint16 value, mapping(uint32 => varuint32) ecc) public accept saveMsg {
@@ -225,7 +231,7 @@ contract GiverV3 is Upgradable {
         for (uint i = 0; i < burnedKeys.length; i++) {
             totalBurnedBridgeByToken[burnedKeys[i]] = burnedValues[i];
         }
-        // 9th field mirrors USDCBridge.updateCode's `userCell` passthrough so
+        // 9th field mirrors eccUSDCBridge.updateCode's `userCell` passthrough so
         // onCodeUpgrade decodes one shape on both paths. Empty here: the
         // zerostate carries the voucher code in `depositVoucherCode`.
         TvmCell userCell;

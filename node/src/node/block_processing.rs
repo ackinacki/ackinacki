@@ -55,7 +55,7 @@ where
             return Ok(None);
         }
 
-        let Some(producer_selector) = net_block.producer_selector.clone() else {
+        let Some(producer_selector) = net_block.descendant_producer_selector.clone() else {
             tracing::trace!("Incoming block doesn't have producer selector, Skip it");
             return Ok(None);
         };
@@ -98,8 +98,8 @@ where
             state.set_block_seq_no(net_block.seq_no)?;
             state.set_thread_identifier(thread_identifier)?;
             // Guard against setting the value repeatedly on the producer
-            if state.producer_selector_data().is_none() {
-                state.set_producer_selector_data(producer_selector)?;
+            if state.descendant_producer_selector_data().is_none() {
+                state.set_descendant_producer_selector_data(producer_selector)?;
             }
 
             state.set_block_time_ms(block_time)?;

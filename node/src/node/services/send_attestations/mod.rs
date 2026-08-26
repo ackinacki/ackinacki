@@ -451,7 +451,7 @@ impl AttestationSendService {
                 continue;
             };
             let Some(parent_block_producer_selector) =
-                parent_block_state.guarded(|e| e.producer_selector_data().clone())
+                parent_block_state.guarded(|e| e.descendant_producer_selector_data().clone())
             else {
                 trace_skip(AttestationSkipReason::MissingParentBlockProducerSelector);
                 continue;

@@ -1330,7 +1330,9 @@ impl RepositoryImpl {
                         thread_snapshot.ancestor_blocks_finalization_checkpoints.clone(),
                     )?;
                     state.set_attestation_target(thread_snapshot.attestation_target)?;
-                    state.set_producer_selector_data(thread_snapshot.producer_selector.clone())?;
+                    state.set_descendant_producer_selector_data(
+                        thread_snapshot.producer_selector.clone(),
+                    )?;
                     state.set_finalizes_blocks(thread_snapshot.finalizes_blocks.clone())?;
                     state.set_block_round(
                         *thread_snapshot.finalized_block.data().common_section().round(),
@@ -1522,7 +1524,7 @@ impl RepositoryImpl {
             let block_round = *chain_block_envelope.data().common_section().round();
             let block_height = *chain_block_envelope.data().common_section().block_height();
             let Some(producer_selector) =
-                chain_block_envelope.data().common_section().producer_selector().clone()
+                chain_block_envelope.data().common_section().descendant_producer_selector().clone()
             else {
                 tracing::trace!("Incoming block doesn't have producer selector, Skip it");
                 continue;
@@ -1532,8 +1534,8 @@ impl RepositoryImpl {
                 state.set_block_seq_no(chain_block_envelope.data().seq_no())?;
                 state.set_thread_identifier(thread_identifier)?;
 
-                if state.producer_selector_data().is_none() {
-                    state.set_producer_selector_data(producer_selector)?;
+                if state.descendant_producer_selector_data().is_none() {
+                    state.set_descendant_producer_selector_data(producer_selector)?;
                 }
 
                 state.set_block_time_ms(block_time)?;
@@ -4414,7 +4416,7 @@ pub mod tests {
             Default::default(),
         );
         let mut common_section = block.common_section().clone();
-        common_section.set_producer_selector(Some(
+        common_section.set_descendant_producer_selector(Some(
             ProducerSelector::builder().rng_seed_block_id(parent_block_id).index(0).build(),
         ));
         block.set_common_section(common_section, true).unwrap();

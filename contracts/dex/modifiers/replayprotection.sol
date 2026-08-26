@@ -11,7 +11,6 @@ import "./errors.sol";
 ///         `saveMsg` — the hook only populates `lastMessage` for ext messages; a save
 ///         after an internal call would write `messages[0][0]`.
 abstract contract ReplayProtection is Errors {
-    string constant versionRP = "6.2.0";
 
     /// @notice Seen external messages, keyed by (expireAt, messageHash).
     ///         Entries are garbage-collected opportunistically via `gc()`.

@@ -23,7 +23,6 @@ use versioned_struct::versioned;
 use versioned_struct::Transitioning;
 
 use crate::block_keeper_system::BlockKeeperSetChange;
-use crate::block_keeper_system::BlockKeeperSetChangeOld;
 use crate::block_keeper_system::BlockKeeperSetTransitionHashes;
 use crate::bls::envelope::Envelope;
 use crate::node::associated_types::AckData;
@@ -76,16 +75,17 @@ pub struct CommonSection {
     threads_table: Option<ThreadsTablePrefab>,
     /// Extra references this block depends on.
     refs: Vec<BlockIdentifier>,
-    #[future]
     block_keeper_set_changes: Vec<BlockKeeperSetChange>,
-    #[legacy]
-    block_keeper_set_changes: Vec<BlockKeeperSetChangeOld>,
     // Dynamic parameter: an expected number of Acki-Nacki for this block
     verify_complexity: SignerIndex,
     acks: Vec<Envelope<AckData>>,
     nacks: Vec<Envelope<NackData>>,
+
     // This field must be set, but it is option, because we can't set it up on block creation and update it later
+    #[legacy]
     producer_selector: Option<ProducerSelector>,
+    #[future]
+    descendant_producer_selector: Option<ProducerSelector>,
 
     #[cfg(feature = "monitor-accounts-number")]
     accounts_number_diff: i64,
@@ -116,11 +116,6 @@ impl Transitioning for CommonSection {
     type Old = CommonSectionOld;
 
     fn from(old: Self::Old) -> Self {
-        let block_keeper_set_changes = old
-            .block_keeper_set_changes
-            .into_iter()
-            .map(<BlockKeeperSetChange as Transitioning>::from)
-            .collect();
         Self {
             parent_block_id: old.parent_block_id,
             block_height: old.block_height,
@@ -131,11 +126,11 @@ impl Transitioning for CommonSection {
             thread_id: old.thread_id,
             threads_table: old.threads_table,
             refs: old.refs,
-            block_keeper_set_changes,
+            block_keeper_set_changes: old.block_keeper_set_changes,
             verify_complexity: old.verify_complexity,
             acks: old.acks,
             nacks: old.nacks,
-            producer_selector: old.producer_selector,
+            descendant_producer_selector: old.producer_selector,
             accounts_number_diff: old.accounts_number_diff,
             history_proofs: old.history_proofs,
             tracked_ext_out_messages_root: old.tracked_ext_out_messages_root,
@@ -241,7 +236,7 @@ impl CommonSection {
             verify_complexity,
             acks: vec![],
             nacks: vec![],
-            producer_selector: None,
+            descendant_producer_selector: None,
             #[cfg(feature = "monitor-accounts-number")]
             accounts_number_diff,
             #[cfg(feature = "protocol_version_hash_in_block")]
@@ -271,8 +266,8 @@ impl CommonSection {
             .verify_complexity(self.verify_complexity)
             .acks(acks_data)
             .nacks(nacks_data)
-            .producer_selector(
-                self.producer_selector
+            .descendant_producer_selector(
+                self.descendant_producer_selector
                     .clone()
                     .expect("Producer selector must be set before serialization"),
             )
@@ -313,7 +308,7 @@ impl CommonSection {
             .verify_complexity(data.verify_complexity)
             .acks(acks)
             .nacks(nacks)
-            .producer_selector(Some(data.producer_selector))
+            .descendant_producer_selector(Some(data.descendant_producer_selector))
             .refs(data.refs)
             .thread_id(data.thread_identifier)
             .threads_table(data.threads_table)
@@ -429,14 +424,14 @@ struct WrappedCommonSection {
     pub directives: Directives,
     pub block_attestations: Vec<u8>,
     pub producer_id: NodeIdentifier,
-    #[future]
     pub block_keeper_set_changes: Vec<BlockKeeperSetChange>,
-    #[legacy]
-    pub block_keeper_set_changes: Vec<BlockKeeperSetChangeOld>,
     pub verify_complexity: SignerIndex,
     pub acks: Vec<u8>,
     pub nacks: Vec<u8>,
+    #[legacy]
     pub producer_selector: ProducerSelector,
+    #[future]
+    pub descendant_producer_selector: ProducerSelector,
     pub thread_identifier: ThreadIdentifier,
     pub refs: Vec<BlockIdentifier>,
     pub threads_table: Option<ThreadsTablePrefab>,
@@ -449,39 +444,6 @@ struct WrappedCommonSection {
     pub tracked_ext_out_messages_root: [u8; 32],
     pub tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
     pub block_keeper_set_change_proof_data: Option<BlockKeeperSetChangeProofData>,
-}
-
-impl Transitioning for WrappedCommonSection {
-    type Old = WrappedCommonSectionOld;
-
-    fn from(old: Self::Old) -> Self {
-        let changes = old
-            .block_keeper_set_changes
-            .into_iter()
-            .map(<BlockKeeperSetChange as Transitioning>::from)
-            .collect();
-        Self {
-            parent_block_id: old.parent_block_id,
-            round: old.round,
-            directives: old.directives,
-            block_attestations: old.block_attestations,
-            producer_id: old.producer_id,
-            block_keeper_set_changes: changes,
-            verify_complexity: old.verify_complexity,
-            acks: old.acks,
-            nacks: old.nacks,
-            producer_selector: old.producer_selector,
-            thread_identifier: old.thread_identifier,
-            refs: old.refs,
-            threads_table: old.threads_table,
-            block_height: old.block_height,
-            accounts_number_diff: old.accounts_number_diff,
-            history_proofs: old.history_proofs,
-            tracked_ext_out_messages_root: old.tracked_ext_out_messages_root,
-            tracked_ext_out_messages: old.tracked_ext_out_messages,
-            block_keeper_set_change_proof_data: old.block_keeper_set_change_proof_data,
-        }
-    }
 }
 
 impl Serialize for CommonSection {
@@ -536,7 +498,7 @@ impl Debug for CommonSection {
             .field("verify_complexity", &self.verify_complexity)
             .field("acks", &self.acks)
             .field("nacks", &self.nacks)
-            .field("producer_selector", &self.producer_selector)
+            .field("descendant_producer_selector", &self.descendant_producer_selector)
             .field("refs", &self.refs)
             .field("threads_table", &self.threads_table)
             .field("block_height", &self.block_height.height())
@@ -606,7 +568,7 @@ mod tests {
             tracked_ext_out_messages,
             Default::default(),
         );
-        common_section.set_producer_selector(Some(make_selector(parent_block_id)));
+        common_section.set_descendant_producer_selector(Some(make_selector(parent_block_id)));
         common_section
     }
 
@@ -630,7 +592,7 @@ mod tests {
             Default::default(),
             Default::default(),
         );
-        common_section.set_producer_selector(Some(make_selector(parent_block_id)));
+        common_section.set_descendant_producer_selector(Some(make_selector(parent_block_id)));
 
         let encoded = bincode::serialize(&common_section).unwrap();
         let decoded: CommonSection = bincode::deserialize(&encoded).unwrap();
@@ -658,7 +620,7 @@ mod tests {
             Default::default(),
             Default::default(),
         );
-        common_section.set_producer_selector(Some(make_selector(parent_block_id)));
+        common_section.set_descendant_producer_selector(Some(make_selector(parent_block_id)));
 
         let encoded = bincode::serialize(&common_section).unwrap();
         let decoded: CommonSection = bincode::deserialize(&encoded).unwrap();
@@ -685,7 +647,8 @@ mod tests {
             Default::default(),
             Default::default(),
         );
-        common_section.set_producer_selector(Some(make_selector(BlockIdentifier::default())));
+        common_section
+            .set_descendant_producer_selector(Some(make_selector(BlockIdentifier::default())));
 
         let err = bincode::serialize(&common_section).unwrap_err();
         assert!(err.to_string().contains("unresolved parent block ID"));

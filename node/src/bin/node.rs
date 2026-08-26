@@ -800,7 +800,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     )
                     .build(),
             )?;
-            state_in.set_producer_selector_data(
+            state_in.set_descendant_producer_selector_data(
                 ProducerSelector::builder()
                     .rng_seed_block_id(BlockIdentifier::default())
                     .index(0)
@@ -2392,7 +2392,7 @@ async fn test_execute() -> anyhow::Result<()> {
                     )
                     .build(),
             )?;
-            state_in.set_producer_selector_data(
+            state_in.set_descendant_producer_selector_data(
                 ProducerSelector::builder()
                     .rng_seed_block_id(BlockIdentifier::default())
                     .index(0)

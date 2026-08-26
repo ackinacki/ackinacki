@@ -10,12 +10,7 @@ import "./TokenContract.sol";
 /// @notice Per-AI-model root. Stores the TokenContract code and registers
 ///         TokenContracts that anyone deploys with this RootModel as parent.
 contract RootModel is AiRegistryModifiers {
-    string constant version = "4.0.27";
-
-    // Native value attached to THIS contract's cross-dapp message (registerRoot).
-    // Tunable; recipients self-fund via `accept`, so it only covers a non-accepting hop.
-    // (TC/RM-local — NOT the shared REGISTER_FORWARD_VALUE the IOB also uses.)
-    varuint16 constant DAPP_MSG_VALUE = 0.01 vmshell;
+    string constant version = "4.0.35";
 
     /// @notice Canonical code hash of `TokenContract`. The constructor
     ///         rejects any caller-supplied code whose `tvm.hash` does not
@@ -23,8 +18,8 @@ contract RootModel is AiRegistryModifiers {
     ///         specific TokenContract bytecode. To bump versions, rebuild
     ///         TokenContract, recompute the hash below, recompile
     ///         RootModel, and redeploy.
-    uint256 constant TOKEN_CONTRACT_CODE_HASH  = 0xa2c32147ed9bedec588e81ad2f55300e0640635428254b710964f38331c84f45;
-    uint16  constant TOKEN_CONTRACT_CODE_DEPTH = 10;
+    uint256 constant TOKEN_CONTRACT_CODE_HASH  = 0xa67e1ae0a748f902b248a035eabbcfc6393b3154fed7d7002e0defae8b6d685d;
+    uint16  constant TOKEN_CONTRACT_CODE_DEPTH = 17;
 
     event ContractDeployed(address self);
     event TokenContractRegistered(address tokenContractAddress);
@@ -37,19 +32,51 @@ contract RootModel is AiRegistryModifiers {
     uint256 static _ownerPubkey;
     address static _superRootAddress;
 
-    // Note: we do NOT store the TokenContract code — only its pinned hash/depth
-    // (constants above). The ctor still verifies the supplied code matches, then
-    // discards it (hash, not code).
-    constructor(TvmCell tokenContractCode) {
+    // NO CODE CELL COMES IN ANY MORE, and the two checks that used to guard it are gone with it.
+    // The constructor took a `TvmCell tokenContractCode`, verified it hashed to the pin below, and
+    // then discarded it — nothing else in this contract ever touched it. Deal addresses are derived
+    // from `TOKEN_CONTRACT_CODE_HASH` and `TOKEN_CONTRACT_CODE_DEPTH` directly, with a dummy code
+    // cell (`_calculateTokenContractAddress`), so the pin was always the authority and the argument
+    // was a copy of it. The check said "the code you handed me hashes to what I already know": it
+    // proved the DEPLOYER held a correct copy, which was worth something while a person deployed
+    // this contract by hand, and is worth nothing now that the super root deploys it from the code
+    // it keeps itself. The two constants stay — they are what the derivation runs on.
+    constructor() {
+        // ONLY THE SUPER ROOT MAY CREATE A ROOT MODEL, and until this line that was an intention
+        // rather than a rule. The address of a root derives from `_ownerPubkey`,
+        // `_superRootAddress` and the code — all public — so anyone could compute where a given
+        // key's root will live and put one there first. The contract landing there would be
+        // byte-identical; what differs is the DAPP.
+        //
+        //   internal `new` from the super root   the child lands in the super root's dapp, which is
+        //                                        configured, so `ensureBalance` -> `gosh.mintshellq`
+        //                                        works — the whole reason the deploy moved here
+        //   external deploy                      the child lands in a dapp of its own with no
+        //                                        configuration, where that same line does nothing
+        //
+        // And the damage would be permanent: deploying onto an occupied address was MEASURED to
+        // leave the existing code untouched and merely donate the attached value, so the super root
+        // could not take the address back. The door closes here rather than being argued about
+        // afterwards.
+        //
+        // `msg.sender`, not `msg.pubkey()`. `TokenContract` guards its own constructor by pubkey
+        // because a seller deploys it by external message; this one is created by an internal
+        // `new`, which carries no key at all, so a pubkey check would lock out the only legitimate
+        // caller. For an external message `msg.sender` is `addr_none`, and this is a COMPARISON —
+        // not a `.value` read, which is what threw on `addr_none` in #941.
+        require(msg.sender == _superRootAddress, ERR_INVALID_SENDER);
         tvm.accept();
-        require(tvm.hash(tokenContractCode) == TOKEN_CONTRACT_CODE_HASH, ERR_BAD_CODE_HASH);
-        require(tokenContractCode.depth() == TOKEN_CONTRACT_CODE_DEPTH, ERR_BAD_CODE_HASH);
         ensureBalance();
 
         address selfExtern = address.makeAddrExtern(ContractDeployedEmit, bitCntAddress);
         emit ContractDeployed{dest: selfExtern}(address(this));
 
-        ISuperRootRegistry(_superRootAddress).registerRoot{value: DAPP_MSG_VALUE, flag: 1}(_ownerPubkey);
+        // THE CALL BACK TO THE SUPER ROOT IS GONE, and so is the question it answered. It existed
+        // because this contract used to be deployed by its owner as an external message: the super
+        // root had no part in it and could not know the root existed, so the newborn announced
+        // itself and the super root re-derived its address to check the announcement was not a
+        // stranger's. Now the super root performs the deploy. It cannot be told about something it
+        // did — there is no claim left to verify, and `registerRoot` was removed with it.
     }
 
     function ensureBalance() private pure {
@@ -58,10 +85,13 @@ contract RootModel is AiRegistryModifiers {
     }
 
     // ========================================================
-    // Verifies sender == derived(tokenContractCode, varInit)
+    // Verifies sender == derived(TOKEN_CONTRACT_CODE_HASH/DEPTH, varInit).
+    // Said as the pin, because that is what the derivation reads. The header used to say
+    // `derived(tokenContractCode, ...)` — loose while the constructor still took such a cell,
+    // and simply false now that it does not: no `tokenContractCode` exists anywhere here.
     // ========================================================
 
-    function _calculateTokenContractAddress(uint256 sellerPubkey, uint64 nonce) private view returns (address) {
+    function _calculateTokenContractAddress(uint256 sellerPubkey, uint64 nonce) private pure returns (address) {
         // Hash-based: derive the TC address from its pinned (code hash, depth) +
         // the data cell, without storing the full code.
         TvmCell dummyCode;
@@ -83,11 +113,25 @@ contract RootModel is AiRegistryModifiers {
             TOKEN_CONTRACT_CODE_HASH, tvm.hash(dataCell), TOKEN_CONTRACT_CODE_DEPTH, dataCell.depth()));
     }
 
-    function registerTokenContract(uint256 sellerPubkey, uint64 nonce) public {
+    /// @dev    ACCEPT FIRST. Everything above `tvm.accept()` is billed to the INCOMING message, and
+    ///         above it here stood `ensureBalance()` plus a full derivation of the caller's
+    ///         canonical address — the two most expensive things on the path. A deal attaches
+    ///         its own `DAPP_MSG_VALUE` (0.01) to this call and nothing derived that figure; measured on
+    ///         the sibling paths, that much did not always reach the guard, and a call that runs
+    ///         out of gas becomes `-14` rather than a refusal with a code. This one is sent
+    ///         `flag: 1` with no reply expected, so the loss would be silent: the deal would
+    ///         believe it registered and the root would never have heard of it.
+    ///
+    ///         The swap makes this root pay compute for messages it rejects. It can: unlike a deal,
+    ///         a RootModel deployed BY THE SUPER ROOT lives in the super root's configured dapp, so
+    ///         `ensureBalance` -> `gosh.mintshellq` actually works here. Under the old external
+    ///         deploy it did not — same code, dead, for exactly the reason written out in
+    ///         `TokenContract.sol`.
+    function registerTokenContract(uint256 sellerPubkey, uint64 nonce) public pure {
+        tvm.accept();
         ensureBalance();
         address expected = _calculateTokenContractAddress(sellerPubkey, nonce);
         require(msg.sender == expected, ERR_INVALID_SENDER);
-        tvm.accept();
 
         address regExtern = address.makeAddrExtern(TokenContractRegisteredEmit, bitCntAddress);
         emit TokenContractRegistered{dest: regExtern}(expected);
@@ -97,7 +141,7 @@ contract RootModel is AiRegistryModifiers {
     // Getters
     // ========================================================
 
-    function getTokenContractAddress(uint256 sellerPubkey, uint64 nonce) external view returns (address) {
+    function getTokenContractAddress(uint256 sellerPubkey, uint64 nonce) external pure returns (address) {
         return _calculateTokenContractAddress(sellerPubkey, nonce);
     }
 

@@ -33,50 +33,50 @@
 			]
 		},
 		{
-			"name": "streamLock",
-			"inputs": [
-				{"name":"sellerPubkey","type":"uint256"},
-				{"name":"nonce","type":"uint64"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "streamUnlock",
-			"inputs": [
-				{"name":"sellerPubkey","type":"uint256"},
-				{"name":"nonce","type":"uint64"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "streamDisputeLock",
-			"inputs": [
-				{"name":"sellerPubkey","type":"uint256"},
-				{"name":"nonce","type":"uint64"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "streamDisputeUnlock",
-			"inputs": [
-				{"name":"sellerPubkey","type":"uint256"},
-				{"name":"nonce","type":"uint64"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "onInferencePlaced",
 			"inputs": [
 				{"name":"modelHash","type":"uint256"},
 				{"name":"tokenContract","type":"address"},
 				{"name":"orderId","type":"uint128"},
+				{"name":"clientOrderId","type":"uint64"},
 				{"name":"isBuy","type":"bool"},
 				{"name":"price","type":"uint256"},
 				{"name":"ticks","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getOutstanding",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"deals","type":"address[]"},
+				{"name":"orders","type":"uint256[]"}
+			]
+		},
+		{
+			"name": "touchDeal",
+			"inputs": [
+				{"name":"deal","type":"address"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "onDealClosed",
+			"inputs": [
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "onInferenceOrderRemoved",
+			"inputs": [
+				{"name":"modelHash","type":"uint256"},
+				{"name":"orderId","type":"uint128"},
+				{"name":"cause","type":"uint8"},
+				{"name":"refunded","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -87,28 +87,24 @@
 				{"name":"modelHash","type":"uint256"},
 				{"name":"tokenContract","type":"address"},
 				{"name":"orderId","type":"uint128"},
+				{"name":"clientOrderId","type":"uint64"},
 				{"name":"ticks","type":"uint128"},
 				{"name":"clearingPrice","type":"uint256"},
+				{"name":"spent","type":"uint128"},
 				{"name":"isBuy","type":"bool"}
 			],
 			"outputs": [
 			]
 		},
 		{
-			"name": "forceClearStreamLocks",
+			"name": "onInferenceRejected",
 			"inputs": [
+				{"name":"modelHash","type":"uint256"},
+				{"name":"clientOrderId","type":"uint64"},
+				{"name":"reason","type":"uint8"},
+				{"name":"refunded","type":"uint128"}
 			],
 			"outputs": [
-			]
-		},
-		{
-			"name": "getStreamLocks",
-			"inputs": [
-			],
-			"outputs": [
-				{"name":"streamCount","type":"uint32"},
-				{"name":"disputeCount","type":"uint32"},
-				{"name":"lastChange","type":"uint64"}
 			]
 		},
 		{
@@ -133,7 +129,8 @@
 			"name": "postSellOffer",
 			"inputs": [
 				{"name":"flags","type":"uint8"},
-				{"name":"nonce","type":"uint64"}
+				{"name":"nonce","type":"uint64"},
+				{"name":"ttl","type":"uint64"}
 			],
 			"outputs": [
 			]
@@ -147,28 +144,6 @@
 				{"name":"escrow","type":"uint128"},
 				{"name":"flags","type":"uint8"},
 				{"name":"deadline","type":"uint64"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "placeInferenceSubscription",
-			"inputs": [
-				{"name":"modelHash","type":"uint256"},
-				{"name":"maxPricePerTick","type":"uint128"},
-				{"name":"ticks","type":"uint128"},
-				{"name":"escrow","type":"uint128"},
-				{"name":"autoRenew","type":"bool"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "claimInferenceForfeit",
-			"inputs": [
-				{"name":"modelHash","type":"uint256"},
-				{"name":"orderId","type":"uint128"},
-				{"name":"cycle","type":"uint8"}
 			],
 			"outputs": [
 			]
@@ -207,14 +182,6 @@
 			]
 		},
 		{
-			"name": "streamReclaim",
-			"inputs": [
-				{"name":"tokenContract","type":"address"}
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "streamCleanup",
 			"inputs": [
 				{"name":"tokenContract","type":"address"}
@@ -223,20 +190,40 @@
 			]
 		},
 		{
-			"name": "fundDeployShell",
+			"name": "fundDeal",
 			"inputs": [
 				{"name":"nonce","type":"uint64"},
-				{"name":"rootModelShell","type":"uint128"},
-				{"name":"tcShell","type":"uint128"}
+				{"name":"gasShell","type":"uint128"},
+				{"name":"amount","type":"uint128"},
+				{"name":"endpointCipher","type":"optional(bytes)"}
 			],
 			"outputs": [
 			]
 		},
 		{
-			"name": "postProbeCommission",
+			"name": "creditFromDeal",
+			"inputs": [
+				{"name":"amount","type":"uint128"},
+				{"name":"sellerPubkey","type":"uint256"},
+				{"name":"nonce","type":"uint64"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "creditFromBook",
+			"inputs": [
+				{"name":"amount","type":"uint128"},
+				{"name":"modelHash","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "fundDeployShell",
 			"inputs": [
 				{"name":"nonce","type":"uint64"},
-				{"name":"amount","type":"uint128"}
+				{"name":"tcShell","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -447,7 +434,8 @@
 			"inputs": [
 				{"name":"destDepositHash","type":"uint256"},
 				{"name":"tokenType","type":"uint32"},
-				{"name":"amount","type":"uint128"}
+				{"name":"amount","type":"uint128"},
+				{"name":"eccAmount","type":"uint128"}
 			],
 			"outputs": [
 			]
@@ -470,13 +458,6 @@
 			]
 		},
 		{
-			"name": "clearTransferBusy",
-			"inputs": [
-			],
-			"outputs": [
-			]
-		},
-		{
 			"name": "discardCoupon",
 			"inputs": [
 			],
@@ -485,6 +466,15 @@
 		},
 		{
 			"name": "withdrawTokens",
+			"inputs": [
+				{"name":"destWalletAddr","type":"address"},
+				{"name":"dapp_id","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "sweepShell",
 			"inputs": [
 				{"name":"destWalletAddr","type":"address"},
 				{"name":"dapp_id","type":"uint256"}
@@ -880,6 +870,24 @@
 			]
 		},
 		{
+			"name": "DealCredited",
+			"inputs": [
+				{"name":"deal","type":"address"},
+				{"name":"amount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "BookCredited",
+			"inputs": [
+				{"name":"book","type":"address"},
+				{"name":"amount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "InferenceOrderPlacedConfirmed",
 			"inputs": [
 				{"name":"orderBook","type":"address"},
@@ -888,6 +896,57 @@
 				{"name":"isBuy","type":"bool"},
 				{"name":"price","type":"uint256"},
 				{"name":"ticks","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceOrderRemoved",
+			"inputs": [
+				{"name":"book","type":"address"},
+				{"name":"orderId","type":"uint128"},
+				{"name":"cause","type":"uint8"},
+				{"name":"refunded","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceOrderRejectedMirror",
+			"inputs": [
+				{"name":"book","type":"address"},
+				{"name":"clientOrderId","type":"uint64"},
+				{"name":"reason","type":"uint8"},
+				{"name":"refunded","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "StakeDroppedLocally",
+			"inputs": [
+				{"name":"stakeHash","type":"uint256"},
+				{"name":"tokenType","type":"uint32"},
+				{"name":"amount","type":"uint128[]"},
+				{"name":"debtAmount","type":"uint128[]"},
+				{"name":"couponsAmount","type":"uint128[]"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "StakeForfeitConfirmed",
+			"inputs": [
+				{"name":"pmp","type":"address"},
+				{"name":"stakeHash","type":"uint256"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "InferenceDealClosed",
+			"inputs": [
+				{"name":"deal","type":"address"}
 			],
 			"outputs": [
 			]
@@ -938,6 +997,11 @@
 		{"init":false,"name":"_orderLocks","type":"map(address,map(uint128,uint128))"},
 		{"init":false,"name":"_lockedInOrders","type":"map(uint32,uint128)"},
 		{"init":false,"name":"_openOrderCount","type":"uint32"},
+		{"init":false,"name":"_restingInf","type":"map(uint256,bool)"},
+		{"init":false,"name":"_pendingInf","type":"map(uint64,uint128)"},
+		{"init":false,"name":"_nextClientOrderId","type":"uint64"},
+		{"init":false,"name":"_liveDeals","type":"map(address,bool)"},
+		{"init":false,"name":"_lastDealTouch","type":"uint32"},
 		{"init":false,"name":"_openOrdersByEvent","type":"map(uint256,uint32)"},
 		{"init":false,"name":"_clientOrderIds","type":"map(uint128,uint128)"},
 		{"init":false,"name":"_opNonce","type":"uint64"},
@@ -954,11 +1018,6 @@
 		{"init":false,"name":"_hasWithdrawn","type":"bool"},
 		{"init":false,"name":"_hasTransferred","type":"bool"},
 		{"init":false,"name":"_couponsValue","type":"uint128"},
-		{"init":false,"name":"_couponsTokenType","type":"uint32"},
-		{"init":false,"name":"_streamLocks","type":"map(address,bool)"},
-		{"init":false,"name":"_disputeLocks","type":"map(address,bool)"},
-		{"init":false,"name":"_streamLockCount","type":"uint32"},
-		{"init":false,"name":"_disputeLockCount","type":"uint32"},
-		{"init":false,"name":"_lastStreamLockChange","type":"uint64"}
+		{"init":false,"name":"_couponsTokenType","type":"uint32"}
 	]
 }

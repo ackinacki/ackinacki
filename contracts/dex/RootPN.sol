@@ -13,17 +13,17 @@ import "../airegistry/TokenContract.sol";
 contract RootPN is Modifiers {
 
     /// @notice Contract semantic version.
-    string constant version = "4.0.27";
+    string constant version = "4.0.35";
 
-    // Canonical SuperRoot account id + RootModel/TokenContract code hashes. Baked
-    // into every PrivateNote at deploy (`deployPrivateNote`) so the note derives the
-    // canonical RootModel / deal TC locally and posts its offer in a single call.
-    // RootPN is not pinned by anyone, so pinning these here is cycle-free
+    // RootModel/TokenContract code hashes. Baked into every PrivateNote at deploy
+    // (`deployPrivateNote`) so the note derives the canonical RootModel / deal TC
+    // locally and posts its offer in a single call. The SuperRoot account id the
+    // note pairs these with is its own constant — RootPN never derives an address
+    // itself. RootPN is not pinned by anyone, so pinning these here is cycle-free
     // (cascade-updated together with the note's baked copies).
-    uint256 constant SUPER_ROOT_ADDR           = 0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c;
-    uint256 constant TOKEN_CONTRACT_CODE_HASH  = 0xa2c32147ed9bedec588e81ad2f55300e0640635428254b710964f38331c84f45;
-    uint16  constant TOKEN_CONTRACT_CODE_DEPTH = 10;
-    uint256 constant ROOT_MODEL_CODE_HASH      = 0x0a6fe90e89faa99bdd4286965ec75e5085d7c0f365b8c2e3e1467cf584d359bc;
+    uint256 constant TOKEN_CONTRACT_CODE_HASH  = 0xa67e1ae0a748f902b248a035eabbcfc6393b3154fed7d7002e0defae8b6d685d;
+    uint16  constant TOKEN_CONTRACT_CODE_DEPTH = 17;
+    uint256 constant ROOT_MODEL_CODE_HASH      = 0x287831837ad23d5216956ccca347c65eecb31b56eb95e7ce0fe3bbf9f2edcff4;
     uint16  constant ROOT_MODEL_CODE_DEPTH     = 8;
 
     /// @notice Stored code of PrivateNote contract
@@ -50,6 +50,12 @@ contract RootPN is Modifiers {
     ///         supplied OB code / raw address.
     TvmCell _inferenceOrderBookCode;
 
+    /// @notice Canonical AI SuperRoot account id, the anchor a deal's address derives from.
+    /// @dev    Needed only by `_canonicalDeal`: a TokenContract's statics include its RootModel,
+    ///         and that RootModel derives under this SuperRoot. Same literal the note and the book
+    ///         carry, for the same derivation — one anchor, three contracts, no rotation.
+    uint256 constant SUPER_ROOT_ADDR = 0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c;
+
     /// @notice Root owner public key
     uint256 _ownerPubkey;
 
@@ -62,6 +68,10 @@ contract RootPN is Modifiers {
     ///         ECC already sits in this contract's reserves / `_deployedValues`
     ///         (it was the taker-fee share never credited to any note).
     mapping(uint32 => uint128) _protocolFees;
+
+    /// @notice SHELL that deals have written off, reported by them and never redeemable.
+    /// @dev    Accumulated, not destroyed — see `reportDealWriteOff`.
+    mapping(uint32 => uint128) _writtenOff;
 
     /// @notice Encode a uint64 into the bn254 Fr representation that halo2
     ///         emits for `voucherNominal` (32 LE bytes, padded with zeros,
@@ -147,6 +157,9 @@ contract RootPN is Modifiers {
     /// @param amount — Amount collected
     event ProtocolFeeCollected(uint32 tokenType, uint128 amount);
 
+    /// @notice A deal reported SHELL it wrote off its own record.
+    event DealWriteOffReported(address deal, uint128 amount);
+
     /// @notice Emitted when the owner withdraws accumulated protocol fees.
     /// @param to — Destination address
     /// @param dapp_id — Destination dapp id
@@ -154,9 +167,13 @@ contract RootPN is Modifiers {
     /// @param amount — Amount withdrawn
     event ProtocolFeeWithdrawn(address to, uint256 dapp_id, uint32 tokenType, uint128 amount);
 
-    /// @notice Root constructor
+    /// @notice Root constructor — intentionally unreachable.
+    /// @dev This root is only ever brought up via the stub + `updateCode`
+    ///      bootstrap, which installs the code and `_ownerPubkey` through
+    ///      `onCodeUpgrade` and does not run this constructor. A direct deploy is
+    ///      not a supported path, so it is rejected outright.
     constructor() {
-        tvm.accept();
+        require(false, ERR_NOT_ALLOWED_CONSTRUCTOR);
     }
 
     /// @notice Ensures minimal native balance for root operations
@@ -275,10 +292,17 @@ contract RootPN is Modifiers {
 
         address nullifier = address.makeAddrStd(0, tvm.hash(stateInit));
 
+        // `bounce: true` WRITTEN OUT, because this message carries currency. A deploy defaults to
+        // bounce:false, and under that default a message that fails leaves its `currencies` on the
+        // destination instead of returning them — the destination being an address derived from the
+        // voucher, so a repeat aims at an account that already exists and the coins simply stay
+        // there. Stated rather than inherited: the fate of money must not depend on a default
+        // nobody in this project could recite from memory.
         new Nullifier{
             stateInit: stateInit,
             value: 10 vmshell,
             flag: 1,
+            bounce: true,
             currencies: dataCur
         }(noteAddress);
 
@@ -330,23 +354,30 @@ contract RootPN is Modifiers {
         // Require a non-zero ephemeral key: eph=0 would make msg.pubkey()==0 pass
         // onlyOwnerPubkey on every PN method, so a zero key is rejected up front.
         require(ephemeralPubkey != 0, ERR_INVALID_PARAMS);
+        // Bind the message signer to the ephemeral key (mirrors
+        // sendEccShellToPrivateNote). The proof only commits ephemeralPubkey as a
+        // single field element via _u256ToFr, which is not injective over 256 bits
+        // (~5 congruent siblings share one Fr), so the zk check alone does NOT pin
+        // the full key: a third party could replay the proof with a congruent
+        // sibling and deploy the note at the same (dih-derived) address under a key
+        // nobody holds, permanently locking the deposit. Requiring the signer to
+        // hold the ephemeral secret closes this — at the cost of third-party deploy.
+        require(msg.pubkey() == ephemeralPubkey, ERR_INVALID_SENDER);
         // SHELL_FEE (300) is the gas-only token used by sendEccShellToPrivateNote.
         // RootPN custodies only type-2 ECC, not type-300, so a PN's main ledger
         // must not hold SHELL_FEE; deployment for the fee-only token is rejected.
         require(tokenType != CURRENCIES_ID_SHELL_FEE, ERR_INVALID_PARAMS);
 
-        // Bind ephemeralPubkey to the proof. The halo2 circuit emits
-        // ephemeralPubkey as instance 4; any mismatch between the caller-supplied
-        // value and the one baked into the proof aborts zkhalo2verify, so the
-        // pubkey cannot be substituted without re-running the prover against the
-        // committed secret.
+        // Bind ephemeralPubkey to the proof as instance 4. NOTE: _u256ToFr reduces
+        // mod FR_MODULUS, so this pins only the Fr projection of the key, not its
+        // full 256 bits — the msg.pubkey() gate above is what binds the exact key.
         //
         // CIRCUIT/PROVER CONTRACT:
         //   pubInputs[0] = depositIdentifierHash
         //   pubInputs[1] = finalLayerHistoricalHashRoot
         //   pubInputs[2] = voucherNominalFr
         //   pubInputs[3] = tokenTypeFr
-        //   pubInputs[4] = ephemeralPubkey (raw uint256 big-endian 32 bytes)
+        //   pubInputs[4] = ephemeralPubkey (Fr, _u256ToFr of the raw uint256)
         // The halo2 prover MUST expose the same 5-field instance vector.
         bytes pubInputs;
         pubInputs.append(bytes(bytes32(depositIdentifierHash)));
@@ -358,10 +389,35 @@ contract RootPN is Modifiers {
         require(gosh.zkhalo2verify(pubInputs, zkproof), ERR_INVALID_ZKPROOF);
         TvmCell stateInit = DexLib.buildPrivateNoteInitData(_privateNoteCode, depositIdentifierHash);
 
+        // THE GAS COLLECTED AT DEPOSIT IS HANDED OVER HERE, and it must ride as ECC[2] rather than
+        // as native value: a note is deployed CROSS-DAPP, and native does not cross that boundary —
+        // ECC does, converting on arrival. The `value: 50 vmshell` below pays for THIS message; it
+        // is not what the note ends up living on.
+        //
+        // The two sides balance IN AGGREGATE, never per note. One non-gas voucher yields exactly
+        // one deploy, so as many `GAS_DEPOSIT`s as were collected, that many notes were funded.
+        // Matching a particular deposit to a particular deploy is precisely what this scheme's
+        // privacy rests on being impossible, so no attempt is made to reconcile them pairwise.
+        mapping(uint32 => varuint32) gasCc;
+        gasCc[CURRENCIES_ID_SHELL] = varuint32(GAS_DEPOSIT);
+        // `bounce: true`, AND THIS IS THE LINE THAT CLOSES A LEAK. Nothing here refuses a voucher
+        // that was already used: the proof, the key and the token type all still check out on a
+        // second call, and the address derives from the same `stateInit`, so the deploy aims at the
+        // live note. Under the bounce:false default the constructor call failed, the transaction
+        // aborted, and `GAS_DEPOSIT` STAYED on that note — drawn from the root's pool, against a
+        // collection that happened once. The holder of one valid voucher could repeat it without
+        // limit.
+        //
+        // With the bounce written out the coins come home on every failure, so a repeat costs the
+        // caller his gas and moves no money. The voucher can still be presented again — that is
+        // accepted deliberately, not overlooked: a replay is now empty, and emptiness needs no
+        // guard.
         new PrivateNote{
             stateInit: stateInit,
             value: 50 vmshell,
-            flag: 1
+            flag: 1,
+            bounce: true,
+            currencies: gasCc
         }(value, ephemeralPubkey, tokenType, _pmpCode, _orderBookCode, _inferenceOrderBookCode,
           tvm.hash(_oracleCode), _oracleCode.depth(), tvm.hash(_oracleEventListCode), _oracleEventListCode.depth(),
           TOKEN_CONTRACT_CODE_HASH, TOKEN_CONTRACT_CODE_DEPTH, ROOT_MODEL_CODE_HASH, ROOT_MODEL_CODE_DEPTH);
@@ -397,6 +453,11 @@ contract RootPN is Modifiers {
         // setInferenceOrderBookCode — keeps this upgrade cell small enough to POST
         // to the shellnet BM gateway (a 7-code cell overflows the JSON-body limit).
         (_pmpCode, _privateNoteCode, _nullifierCode, _oracleCode, _oracleEventListCode, _orderBookCode, _ownerPubkey) = abi.decode(cell, (TvmCell, TvmCell, TvmCell, TvmCell, TvmCell, TvmCell, uint256));
+        // `onlyOwnerPubkey(k)` is `require(msg.pubkey() == k)`, so a zero key admits every
+        // unsigned message and this contract's own `updateCode` stops being owner-gated. The key
+        // arrives in the migration cell, which is where it has to be rejected — the constructor
+        // does not run on an account upgraded from a stub.
+        require(_ownerPubkey != 0, ERR_INVALID_PARAMS);
     }
 
     /// @notice Owner-only setter for the InferenceOrderBook code (§8 inference
@@ -474,15 +535,112 @@ contract RootPN is Modifiers {
 
     /// @notice Checks if the nominal is allowed for vault operations
     /// @param skUCommit Commitment of user secret key used in off-chain flows.
-    /// @param isFee Whether incoming shell tokens must be treated as fee token type.
+    /// @param isFee THIS FLAG NOW DECIDES TWO THINGS, and the owner calls it `isGas`.
+    ///
+    ///        1. whether incoming SHELL is remapped to the fee token type (2 -> 300), as before;
+    ///        2. whether `GAS_DEPOSIT` is deducted — a gas voucher pays no gas, since charging gas
+    ///           for buying gas would be circular.
+    ///
+    ///        The field is NOT renamed to `isGas` despite the owner's word for it, because this is
+    ///        ABI the client encodes (`encode_generatevoucher_body`) and renaming would break that
+    ///        for a word. The disagreement is written here so the next reader does not have to
+    ///        solve it: same field, two names, one of which lives outside this repository.
     function generateVoucher(uint256 skUCommit, bool isFee) public view internalMsg {
-		require(msg.currencies.keys().length == 1, 300);
-		uint32 tokenType = msg.currencies.keys()[0];
-		require(msg.currencies[tokenType] > 0, 303);
+        // EVERY NON-GAS DEPOSIT PAYS `GAS_DEPOSIT` IN SHELL, and this is where it is taken. The
+        // note that this voucher will deploy is created cross-dapp, where a plain native value
+        // does not reach — only ECC[2] crosses and converts. So without this collection a note
+        // would come into existence unable to do anything at all.
+        //
+        // `isFee` is the flag the owner calls `isGas`, and after this change that is the better
+        // name: it now decides whether gas is deducted, not only whether the voucher's type is
+        // remapped to SHELL_FEE. The field keeps its old name because it is ABI the client encodes
+        // (`encode_generatevoucher_body`), and renaming it would break that for a word.
+        //
+        // Four shapes, and nothing else is accepted:
+        //
+        //   one currency,  isFee=true   -> take nothing; the whole amount is the nominal. This is
+        //                                  the gas-voucher path itself (type 2 becomes 300 below),
+        //                                  and charging gas for buying gas would be circular.
+        //   one currency,  isFee=false  -> take GAS_DEPOSIT; nominal is the remainder. The currency
+        //                                  MUST be SHELL, since there is nothing else to take from.
+        //   two currencies              -> the SHELL leg is the gas, exactly GAS_DEPOSIT, and is
+        //                                  consumed whole; the other currency is the nominal,
+        //                                  whatever `isFee` says.
+        //   anything else               -> refused.
+        uint32[] keys = msg.currencies.keys();
+        require(keys.length == 1 || keys.length == 2, ERR_BAD_GAS_MIX);
+
+        uint32 tokenType;
+        uint voucherNominal;
+
+        if (keys.length == 2) {
+            // Which leg is the gas is decided by TYPE, not by position: a currency map has no
+            // order the caller controls, so reading `keys[0]` as "the gas one" would depend on
+            // something neither side promises.
+            uint32 a = keys[0];
+            uint32 b = keys[1];
+            uint32 shellLeg = a == CURRENCIES_ID_SHELL ? a : b;
+            tokenType       = a == CURRENCIES_ID_SHELL ? b : a;
+            require(shellLeg == CURRENCIES_ID_SHELL, ERR_BAD_GAS_MIX);
+            require(uint128(msg.currencies[shellLeg]) == GAS_DEPOSIT, ERR_BAD_GAS_MIX);
+            // A SHELL_FEE nominal cannot be deposited: `deployPrivateNote` refuses type 300, so the
+            // voucher would be money taken against a note that can never be placed.
+            require(tokenType != CURRENCIES_ID_SHELL_FEE, ERR_FEE_TYPE_NOT_DEPOSITABLE);
+            voucherNominal = msg.currencies[tokenType];
+        } else {
+            tokenType = keys[0];
+            voucherNominal = msg.currencies[tokenType];
+            // WHY A GAS VOUCHER PAYS NO GAS — read this before "fixing" the missing deduction.
+            //
+            // A fee voucher CANNOT DEPLOY A NOTE AT ALL. `deployPrivateNote` refuses type 300
+            // outright (`require(tokenType != CURRENCIES_ID_SHELL_FEE)`), and
+            // `sendEccShellToPrivateNote` demands it — so a fee voucher's only destination is a
+            // note that already exists, and it arrives there whole. Deducting 250 here would mean
+            // taking ECC from a deposit in order to hand the same ECC back to the same note.
+            //
+            // That is what makes part B's arithmetic EXACT rather than approximate:
+            //
+            //   250 is taken on exactly the path that ends in a deploy   (non-fee voucher)
+            //   250 is given out on exactly the deploy
+            //   the fee path takes part in neither side
+            //
+            // There is no balance to reconcile between the two paths, because the second path is
+            // not in this arithmetic at all. Not "it evens out on average" — it does not enter.
+            // A SINGLE-CURRENCY DEPOSIT IS SHELL OR IT IS NOTHING — both branches, one line.
+            //
+            // The non-fee branch has always needed it: there is nothing else to take the gas from.
+            // The fee branch needs it for the opposite reason, and the gap between the two was a
+            // MINT. `isFee` skips the deduction, while the remap to SHELL_FEE below is guarded by
+            // `tokenType == CURRENCIES_ID_SHELL` — so a NACKL deposit carrying the flag produced an
+            // ordinary NACKL voucher with no gas taken, that voucher deployed a note, and the root
+            // handed that note `GAS_DEPOSIT` out of the common pool. Nothing bounded the loop: the
+            // same NACKL comes back and mints another 250 SHELL every time.
+            //
+            // Hoisted out of the branch rather than written twice, because two copies of one
+            // requirement drift apart — and the drift is invisible until it is the whole defect.
+            require(tokenType == CURRENCIES_ID_SHELL, ERR_BAD_GAS_MIX);
+            if (!isFee) {
+                // BEFORE the subtraction, deliberately. Leaving it to the subtraction to revert
+                // would make correctness a property of what this compiler does with an underflow
+                // rather than of this contract; a wrapping subtraction turns a one-SHELL deposit
+                // into an astronomically large nominal. An amount EQUAL to GAS_DEPOSIT is allowed
+                // through here and dies one check later, on `require(voucherNominal > 0)` —
+                // `ERR_ZERO_TOKEN_AMOUNT` (128), not the nominal list (141), which it never
+                // reaches. Both refuse it, and the intended outcome is asserted rather than
+                // assumed; but a depositor reading 128 needs to find that number written here.
+                require(uint128(voucherNominal) >= GAS_DEPOSIT, ERR_BELOW_GAS_DEPOSIT);
+                voucherNominal -= GAS_DEPOSIT;
+            }
+        }
+
+        // Named, and named from the DEX table. The literal here used to be 303 — a code that
+        // exists in airegistry and not in dex, so a depositor looking it up found either nothing
+        // or somebody else's meaning. A raw number in a require is a message to whoever is reading
+        // the failure, and this one was addressed to the wrong contract set.
+        require(voucherNominal > 0, ERR_ZERO_TOKEN_AMOUNT);
 		tvm.accept();
         ensureBalance();
 
-		uint voucherNominal = msg.currencies[tokenType];
         require(isAllowedNominal(uint128(voucherNominal), tokenType), ERR_NOT_ALLOWED);
 
         if ((tokenType == CURRENCIES_ID_SHELL) && (isFee)) {
@@ -516,7 +674,14 @@ contract RootPN is Modifiers {
         // whole withdraw on the PN side (atomic: nothing is transferred). A
         // plain require would leave the PN's `_balance` permanently low.
         for ((uint32 tt, uint128 amt) : amounts) {
-            if (amt > 0 && (address(this).currencies[tt] < amt || _deployedValues[tt] < amt)) {
+            // Measure the custodial reserve WITHOUT whatever the note attached to this very
+            // message. That pool is not custody — it is the note's own physical currency, passed
+            // straight through to the destination as a separate term below — so counting it as
+            // reserve would clear a withdraw against currency that is merely in transit.
+            uint128 attached = msg.currencies.exists(tt) ? uint128(msg.currencies[tt]) : 0;
+            uint128 reserve  = uint128(address(this).currencies[tt]);
+            reserve = reserve > attached ? reserve - attached : 0;
+            if (amt > 0 && (reserve < amt || _deployedValues[tt] < amt)) {
                 // Bounce the note's attached PHYSICAL currency (its inference SHELL pool,
                 // drained on withdraw) back to it along with the revert, so it returns to
                 // the note when the custody withdraw is refused.
@@ -560,10 +725,98 @@ contract RootPN is Modifiers {
     /// @param oracleListHash Oracle list hash of the calling OrderBook.
     /// @param tokenType Token type of the collected protocol fee.
     /// @param amount Accumulated protocol fee amount.
+
+    /// @notice A deal reports SHELL it wrote off, so the custodian's ledger stops counting it.
+    /// @dev    THE DEAL BURNS NOTHING — it holds no currency, which is the whole of this
+    ///         generation. It subtracts a figure from its own record and tells this contract, where
+    ///         the backing actually sits. No uint64 chunking either: word size is a problem for
+    ///         whoever holds the coins, and that is here.
+    ///
+    ///         Same shape as `collectProtocolFee` above: derive the caller's canonical address from
+    ///         the codes this root already bakes into every note, and admit nobody else. What that
+    ///         proves is stronger than "a deal is calling" — it proves the caller runs CANONICAL
+    ///         BYTECODE. The amount cannot be inflated, because canonical code only writes off what
+    ///         the deal legitimately received, and it can only receive through funding that is
+    ///         itself guarded.
+    ///
+    ///         `_deployedValues` MUST come down by the same figure, and this is the line that would
+    ///         be easy to leave out. That ledger says how many claims are still unredeemed; a
+    ///         written-off figure will never be redeemed, so leaving it counted makes the ledger
+    ///         overstate what is owed. Today that only leaves the pool OVER-collateralised, which is
+    ///         safe — but accept the report without the subtraction, then burn what accumulates,
+    ///         and the pool becomes UNDER-collateralised and honest withdrawals start hitting a
+    ///         shortfall. That failure is silent, which is why the subtraction is not optional.
+    ///
+    ///         Floored rather than allowed to underflow: an accounting disagreement must not become
+    ///         a wrapped subtraction, which would turn a small mismatch into an enormous claim.
+    ///
+    ///         NOTHING IS BURNED HERE. The root accumulates, as it accumulates fees, and whether to
+    ///         destroy the currency is the owner's call — he holds it. A `gosh.burnecc` on
+    ///         `CURRENCIES_ID_SHELL` would go exactly here if that decision is ever taken.
+    ///
+    ///         Losing this message degrades SAFELY: no report, no accounting, and the pool stays
+    ///         over-collateralised — which is precisely today's state. That is why it is a plain
+    ///         one-way call and not something that retries.
+    /// @dev    ACCEPT BEFORE THE GUARD, and the order of these two lines is the whole point.
+    ///         Modifiers run in the order written, so a guard above `accept` is charged to the
+    ///         INCOMING message — and this guard is not a comparison, it is `_canonicalDeal`, a
+    ///         full address derivation. That is why this entry's floor was measured at 10 000 000
+    ///         while the deal sends exactly 10 000 000: no margin at all, and one byte of extra
+    ///         work ahead of `accept` would have turned the call into `-14` rather than into a
+    ///         refusal with a code. Nothing would have reported it: the deal sends this one-way,
+    ///         `bounce: false`, and a lost write-off leaves the root's books permanently off.
+    ///
+    ///         The cost of the swap is that the root now runs the derivation on its own gas for
+    ///         any message that arrives, including one it will reject. That is affordable here and
+    ///         not elsewhere: this root mints its own gas (`ensureBalance` -> `gosh.mintshellq`,
+    ///         :180) because it lives in a configured dapp. A deal cannot — its dapp is its own and
+    ///         has no configuration, which is why `TokenContract` carries no such call.
+    function reportDealWriteOff(uint256 sellerPubkey, uint64 nonce, uint128 amount)
+        public
+        accept
+        senderIs(_canonicalDeal(sellerPubkey, nonce))
+    {
+        ensureBalance();
+        _writtenOff[CURRENCIES_ID_SHELL] += amount;
+        uint128 pool = _deployedValues[CURRENCIES_ID_SHELL];
+        _deployedValues[CURRENCIES_ID_SHELL] = pool > amount ? pool - amount : 0;
+        emit DealWriteOffReported{dest: address.makeAddrExtern(ROOTPN_DEAL_WRITE_OFF, bitCntAddress)}(
+            msg.sender, amount);
+    }
+
+    /// @notice Canonical deal address for `(sellerPubkey, nonce)` from this root's baked codes.
+    /// @dev    `pure`, not `view`: every input is a constant of this contract or an argument, so
+    ///         the derivation reads no state and the compiler says so. Left as `view` it was the
+    ///         only warning in the whole set, and a build with one warning is a build nobody reads
+    ///         warnings in.
+    function _canonicalDeal(uint256 sellerPubkey, uint64 nonce) private pure returns (address) {
+        (, address tc) = DexLib.computeCanonicalTokenContractAddress(
+            ROOT_MODEL_CODE_HASH, ROOT_MODEL_CODE_DEPTH,
+            TOKEN_CONTRACT_CODE_HASH, TOKEN_CONTRACT_CODE_DEPTH,
+            address.makeAddrStd(0, SUPER_ROOT_ADDR), sellerPubkey, nonce);
+        return tc;
+    }
+
+    /// @notice An OrderBook reports the protocol fee it collected before shutting down.
+    /// @param eventId PMP event id the book was bound to.
+    /// @param oracleListHash Oracle set hash the book was bound to.
+    /// @param tokenType Token type of the collected fee.
+    /// @param amount Amount collected.
+    /// @dev    ACCEPT BEFORE THE GUARD, for the same reason as `reportDealWriteOff` above and with
+    ///         a heavier guard: this one derives the book's address from THREE code cells — the
+    ///         note's, the PMP's and the book's own — plus the event id, the oracle-set hash and
+    ///         the token type. Above `accept` all of that was billed to the caller.
+    ///
+    ///         Unlike the write-off, this entry was never close to its floor: `OrderBook` sends
+    ///         `0.1 vmshell` here (`OrderBook.sol:1502`), ten times what a deal attaches anywhere.
+    ///         So the swap buys headroom that was not in danger — worth doing because the failure
+    ///         it guards against is the same silent one. The book calls this once, on its way to
+    ///         shutting down; a call that ran out of gas would take the protocol fee with it and
+    ///         say nothing.
     function collectProtocolFee(uint256 eventId, uint256 oracleListHash, uint32 tokenType, uint128 amount)
         public
-        senderIs(DexLib.computeOrderBookAddress(_privateNoteCode, _orderBookCode, eventId, oracleListHash, tokenType))
         accept
+        senderIs(DexLib.computeOrderBookAddressFromPmpCode(_privateNoteCode, _pmpCode, _orderBookCode, eventId, oracleListHash, tokenType))
     {
         ensureBalance();
         _protocolFees[tokenType] += amount;

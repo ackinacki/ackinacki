@@ -213,6 +213,14 @@ mod tests {
         Ok(false)
     }
 
+    fn query_plan(conn: &Connection, sql: &str) -> rusqlite::Result<String> {
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+        let details = stmt
+            .query_map([], |row| row.get::<_, String>(3))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(details.join("\n"))
+    }
+
     fn insert_test_block(
         conn: &Connection,
         id: &str,
@@ -350,7 +358,79 @@ mod tests {
         let conn = Connection::open(&db.path)?;
         let current_version: u32 =
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        assert_eq!(current_version, 8);
+        assert_eq!(current_version, 10);
+
+        Ok(())
+    }
+
+    #[test]
+    fn bm_archive_v9_migration_indexes_events_by_src_dapp_id_and_cursor() -> anyhow::Result<()> {
+        let root = testdir!();
+        let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
+        let opts = DbMaintenanceOptions { silent: true };
+
+        db.migrate(MigrateTo::Version(8), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!object_exists(
+            &conn,
+            "index",
+            "index_messages_events_src_dapp_id_msg_chain_order"
+        )?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(9), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(object_exists(
+            &conn,
+            "index",
+            "index_messages_events_src_dapp_id_msg_chain_order"
+        )?);
+        let plan = query_plan(
+            &conn,
+            "SELECT id FROM messages \
+             WHERE msg_type IN (2,4) AND src_dapp_id = 'dapp-id' \
+             AND msg_chain_order > '0001' \
+             ORDER BY msg_chain_order LIMIT 10",
+        )?;
+        assert!(
+            plan.contains("index_messages_events_src_dapp_id_msg_chain_order"),
+            "unexpected events query plan: {plan}"
+        );
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(8), opts)?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!object_exists(
+            &conn,
+            "index",
+            "index_messages_events_src_dapp_id_msg_chain_order"
+        )?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn bm_archive_v10_migration_adds_transaction_currency_delta_columns() -> anyhow::Result<()> {
+        let root = testdir!();
+        let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
+        let opts = DbMaintenanceOptions { silent: true };
+
+        db.migrate(MigrateTo::Version(9), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!column_exists(&conn, "transactions", "balance_delta_other")?);
+        assert!(!column_exists(&conn, "transactions", "total_fees_other")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(10), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(column_exists(&conn, "transactions", "balance_delta_other")?);
+        assert!(column_exists(&conn, "transactions", "total_fees_other")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(9), opts)?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!column_exists(&conn, "transactions", "balance_delta_other")?);
+        assert!(!column_exists(&conn, "transactions", "total_fees_other")?);
 
         Ok(())
     }

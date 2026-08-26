@@ -98,7 +98,7 @@ pub fn promote_temporary_to_block_state(
             state.update_bk_sets(bk_set, snapshot.descendant_bk_set);
         }
         if let Some(v) = snapshot.producer_selector_data {
-            state.set_producer_selector_data(v)?;
+            state.set_descendant_producer_selector_data(v)?;
         }
         if let Some(v) = snapshot.block_version_state {
             state.set_block_version_state(v)?;

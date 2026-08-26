@@ -77,7 +77,10 @@ pub mod tests {
             ..Default::default()
         };
 
-        assert_eq!(bf.to_where().unwrap(), format!("WHERE key_block = true AND workchain_id = -1"));
+        assert_eq!(
+            bf.to_where().unwrap(),
+            "WHERE key_block = true AND workchain_id = -1".to_owned()
+        );
     }
 
     #[test]

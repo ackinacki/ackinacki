@@ -127,6 +127,16 @@
 			]
 		},
 		{
+			"name": "reportDealWriteOff",
+			"inputs": [
+				{"name":"sellerPubkey","type":"uint256"},
+				{"name":"nonce","type":"uint64"},
+				{"name":"amount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "collectProtocolFee",
 			"inputs": [
 				{"name":"eventId","type":"uint256"},
@@ -229,6 +239,15 @@
 			]
 		},
 		{
+			"name": "DealWriteOffReported",
+			"inputs": [
+				{"name":"deal","type":"address"},
+				{"name":"amount","type":"uint128"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "ProtocolFeeWithdrawn",
 			"inputs": [
 				{"name":"to","type":"address"},
@@ -253,6 +272,7 @@
 		{"init":false,"name":"_inferenceOrderBookCode","type":"cell"},
 		{"init":false,"name":"_ownerPubkey","type":"uint256"},
 		{"init":false,"name":"_deployedValues","type":"map(uint32,uint128)"},
-		{"init":false,"name":"_protocolFees","type":"map(uint32,uint128)"}
+		{"init":false,"name":"_protocolFees","type":"map(uint32,uint128)"},
+		{"init":false,"name":"_writtenOff","type":"map(uint32,uint128)"}
 	]
 }

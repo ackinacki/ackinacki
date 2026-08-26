@@ -744,7 +744,7 @@ impl ThreadAuthority {
                 }
             } else {
                 let Some(parent_block_producer_selector_data) =
-                    parent_block.guarded(|e| e.producer_selector_data().clone())
+                    parent_block.guarded(|e| e.descendant_producer_selector_data().clone())
                 else {
                     tracing::trace!("try_lock_send_attestation_action: parent selector is not set");
                     return ActionLockResult::Rejected;
@@ -964,8 +964,8 @@ impl ThreadAuthority {
                 existing.clone()
             } else {
                 was_lock_updated = true;
-                let parent_block_producer_selector_data =
-                    parent_block.guarded(|e| e.producer_selector_data().clone().unwrap());
+                let parent_block_producer_selector_data = parent_block
+                    .guarded(|e| e.descendant_producer_selector_data().clone().unwrap());
                 let new_lock = ActionLock::builder()
                     .parent_prefinalization_proof(parent_prefinalization_proof)
                     .parent_block_producer_selector_data(parent_block_producer_selector_data)
@@ -1855,7 +1855,7 @@ impl ThreadAuthority {
         };
 
         let Some(parent_producer_selector) =
-            parent_state.guarded(|e| e.producer_selector_data().clone())
+            parent_state.guarded(|e| e.descendant_producer_selector_data().clone())
         else {
             tracing::trace!("Incoming next round success failure: parent block ({parent_id:?}) has no producer_selector_data");
             return OnNextRoundSuccessResult::CantBeProcessedNow;

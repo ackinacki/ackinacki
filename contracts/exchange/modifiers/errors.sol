@@ -14,4 +14,5 @@ abstract contract eccUSDCBridgeErrors {
     uint16 constant ERR_INVALID_ZKPROOF = 220;
     uint16 constant ERR_UNSUPPORTED_TOKEN = 221;
     uint16 constant ERR_UNSUPPORTED_SRC_CHAIN = 222;
+    uint16 constant ERR_RECIPIENT_EMPTY = 223;
 }

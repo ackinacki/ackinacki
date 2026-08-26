@@ -10,7 +10,7 @@ import "./libraries/DexLib.sol";
 contract Oracle is Modifiers {
 
     /// @notice Contract semantic version.
-    string constant version = "4.0.27";
+    string constant version = "4.0.35";
 
     /// @notice Oracle owner pubkey used for access control.
     uint256 _oraclePubkey;
@@ -31,10 +31,6 @@ contract Oracle is Modifiers {
     /// @param description Human-readable description of the list.
     event OracleEventListDeployed(address eventListAddress, uint128 index, string description);
 
-    /// @notice Reserved event for external publication flow.
-    /// @param eventId Event identifier.
-    /// @param eventName Human-readable event name.
-    event EventPublished(uint256 eventId, string eventName);
 
     /// @notice Initializes Oracle and deploys default OracleEventList with index 0.
     /// @param oraclePubkey Oracle owner public key.

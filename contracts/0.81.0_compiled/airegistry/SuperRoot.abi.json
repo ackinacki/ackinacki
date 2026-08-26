@@ -30,7 +30,7 @@
 			]
 		},
 		{
-			"name": "registerRoot",
+			"name": "deployRootModel",
 			"inputs": [
 				{"name":"ownerPubkey","type":"uint256"}
 			],

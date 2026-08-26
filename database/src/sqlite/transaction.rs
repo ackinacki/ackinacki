@@ -113,7 +113,9 @@ pub struct ArchTransaction {
     pub account_addr: String,
     pub(crate) workchain_id: i32,
     pub total_fees: String,
+    pub(crate) total_fees_other: Option<String>,
     pub(crate) balance_delta: String,
+    pub(crate) balance_delta_other: Option<String>,
     pub(crate) old_hash: String,
     pub(crate) new_hash: String,
     pub chain_order: String,
@@ -169,7 +171,9 @@ pub struct FlatTransaction {
     pub account_addr: String,
     pub workchain_id: i32,
     pub total_fees: String,
+    pub total_fees_other: Option<String>,
     pub balance_delta: String,
+    pub balance_delta_other: Option<String>,
     pub old_hash: String,
     pub new_hash: String,
     pub chain_order: String,
@@ -239,7 +243,9 @@ impl From<ArchTransaction> for FlatTransaction {
             account_addr: tr.account_addr,
             workchain_id: tr.workchain_id,
             total_fees: tr.total_fees,
+            total_fees_other: tr.total_fees_other,
             balance_delta: tr.balance_delta,
+            balance_delta_other: tr.balance_delta_other,
             old_hash: tr.old_hash,
             new_hash: tr.new_hash,
             chain_order: tr.chain_order,
@@ -251,6 +257,9 @@ impl From<TransactionSerializationSet> for ArchTransaction {
     fn from(trx: TransactionSerializationSet) -> Self {
         let cc = trx.transaction.total_fees();
         let total_fees = format!("{:x}", cc.grams.as_u128());
+        let total_fees_other = SignedCurrencyCollection::from_cc(cc)
+            .expect("Failed to convert total fees to SCC")
+            .other_to_json();
         let mut arch_transaction = Self {
             id: trx.id.to_hex_string(),
             block_id: trx.block_id.unwrap().to_hex_string(),
@@ -265,6 +274,7 @@ impl From<TransactionSerializationSet> for ArchTransaction {
             proof: trx.proof,
             status: trx.status as u8,
             total_fees,
+            total_fees_other,
             ..Default::default()
         };
 
@@ -360,6 +370,7 @@ impl From<TransactionSerializationSet> for ArchTransaction {
             .sub(&SignedCurrencyCollection::from_cc(trx.transaction.total_fees()).expect(""));
         // ??? bigint_to_string()
         arch_transaction.balance_delta = balance_delta.grams.to_string();
+        arch_transaction.balance_delta_other = balance_delta.other_to_json();
 
         arch_transaction.out_msgs = out_ids;
         let account_addr =
@@ -516,3 +527,130 @@ fn serialize_bounce_phase(ph: Option<&TrBouncePhase>) -> Option<TransactionBounc
 //         format!("{:x}", value)
 //     }
 // }
+
+#[cfg(test)]
+mod tests {
+    use tvm_block::AccountStatus;
+    use tvm_block::CurrencyCollection;
+    use tvm_block::InternalMessageHeader;
+    use tvm_block::MsgAddressInt;
+    use tvm_block::Transaction;
+    use tvm_block::TransactionDescrOrdinary;
+    use tvm_types::AccountId;
+
+    use super::*;
+    use crate::serialization::TransactionSerializationSet;
+
+    fn address(byte: u8) -> MsgAddressInt {
+        MsgAddressInt::with_standart(None, 0, AccountId::from([byte; 32])).expect("address")
+    }
+
+    fn value(grams: u64, extra: &[(u32, u128)]) -> CurrencyCollection {
+        let mut value = CurrencyCollection::with_grams(grams);
+        for &(currency, amount) in extra {
+            value.set_other(currency, amount).expect("set extra currency");
+        }
+        value
+    }
+
+    fn internal_message(src: u8, dst: u8, value: CurrencyCollection) -> Message {
+        Message::with_int_header(InternalMessageHeader::with_addresses(
+            address(src),
+            address(dst),
+            value,
+        ))
+    }
+
+    /// Runs a transaction through the same conversion the block manager uses:
+    /// an account receives two extra currencies and forwards part of one of them.
+    #[test]
+    fn balance_delta_other_nets_the_extra_currencies_of_a_real_transaction() {
+        let mut transaction = Transaction::with_address_and_status(
+            AccountId::from([0xaa; 32]),
+            AccountStatus::AccStateActive,
+        );
+        transaction
+            .write_description(&TransactionDescr::Ordinary(TransactionDescrOrdinary::default()))
+            .expect("description");
+        transaction.set_total_fees(value(1_000, &[]));
+        transaction
+            .write_in_msg(Some(&internal_message(0xbb, 0xaa, value(5_000, &[(1, 500), (7, 42)]))))
+            .expect("in msg");
+        transaction
+            .add_out_message(&internal_message(0xaa, 0xcc, value(2_000, &[(1, 200)])))
+            .expect("out msg");
+
+        let archived: ArchTransaction = TransactionSerializationSet {
+            transaction,
+            block_id: Some(Default::default()),
+            ..Default::default()
+        }
+        .into();
+
+        // grams: 5000 received - 2000 sent - 1000 fees
+        assert_eq!(archived.balance_delta, "2000");
+        // currency 1: 500 received - 200 forwarded; currency 7: received and kept
+        assert_eq!(
+            archived.balance_delta_other.as_deref(),
+            Some(r#"[{"currency":1,"value":"300"},{"currency":7,"value":"42"}]"#)
+        );
+        // No extra currency fees were collected.
+        assert_eq!(archived.total_fees_other, None);
+    }
+
+    /// An account that forwards everything it received has no extra currency
+    /// delta at all, even though the transaction did move extra currencies.
+    #[test]
+    fn balance_delta_other_is_absent_when_the_extra_currency_is_forwarded() {
+        let mut transaction = Transaction::with_address_and_status(
+            AccountId::from([0xaa; 32]),
+            AccountStatus::AccStateActive,
+        );
+        transaction
+            .write_description(&TransactionDescr::Ordinary(TransactionDescrOrdinary::default()))
+            .expect("description");
+        transaction
+            .write_in_msg(Some(&internal_message(0xbb, 0xaa, value(5_000, &[(1, 500)]))))
+            .expect("in msg");
+        transaction
+            .add_out_message(&internal_message(0xaa, 0xcc, value(1_000, &[(1, 500)])))
+            .expect("out msg");
+
+        let archived: ArchTransaction = TransactionSerializationSet {
+            transaction,
+            block_id: Some(Default::default()),
+            ..Default::default()
+        }
+        .into();
+
+        assert_eq!(archived.balance_delta_other, None);
+    }
+
+    /// Sending out more than was received leaves a negative amount, which is the
+    /// reason the deltas cannot reuse the unsigned `ExtraCurrencyCollection`.
+    #[test]
+    fn balance_delta_other_keeps_a_negative_amount() {
+        let mut transaction = Transaction::with_address_and_status(
+            AccountId::from([0xaa; 32]),
+            AccountStatus::AccStateActive,
+        );
+        transaction
+            .write_description(&TransactionDescr::Ordinary(TransactionDescrOrdinary::default()))
+            .expect("description");
+        transaction
+            .add_out_message(&internal_message(0xaa, 0xcc, value(1_000, &[(1, 700)])))
+            .expect("out msg");
+
+        let archived: ArchTransaction = TransactionSerializationSet {
+            transaction,
+            block_id: Some(Default::default()),
+            ..Default::default()
+        }
+        .into();
+
+        assert_eq!(
+            archived.balance_delta_other.as_deref(),
+            Some(r#"[{"currency":1,"value":"-700"}]"#)
+        );
+    }
+}

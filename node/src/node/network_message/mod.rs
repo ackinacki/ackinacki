@@ -31,7 +31,7 @@ mod serde_network_message;
 #[derive(Clone, Serialize, Deserialize, Getters)]
 pub struct NetBlock {
     pub producer_id: NodeIdentifier,
-    pub producer_selector: Option<ProducerSelector>,
+    pub descendant_producer_selector: Option<ProducerSelector>,
     pub thread_id: ThreadIdentifier,
     pub identifier: BlockIdentifier,
     pub seq_no: BlockSeqNo,
@@ -45,7 +45,7 @@ impl NetBlock {
         let common_section = block.common_section();
         Ok(Self {
             producer_id: common_section.producer_id().clone(),
-            producer_selector: common_section.producer_selector().clone(),
+            descendant_producer_selector: common_section.descendant_producer_selector().clone(),
             thread_id: *common_section.thread_id(),
             identifier: block.identifier(),
             seq_no: block.seq_no(),

@@ -86,11 +86,10 @@ pub fn load_blockchain_config() -> anyhow::Result<BlockchainConfigRead> {
         .expect("Failed to parse old blockchain config params");
     let old = BlockchainConfig::with_config(old_config_params)
         .map_err(|e| anyhow::format_err!("Failed to create old blockchain config: {e}"))?;
-
-    Ok(BlockchainConfigRead {
-        bc_configs: HashMap::from_iter([
-            (DEFAULT_BLOCKCAHIN_CONFIG_HASH.clone(), Arc::new(new)),
-            (OLD_BLOCKCAHIN_CONFIG_HASH.clone(), Arc::new(old)),
-        ]),
-    })
+    let bc_configs = HashMap::from_iter([
+        (DEFAULT_BLOCKCAHIN_CONFIG_HASH.clone(), Arc::new(new)),
+        (OLD_BLOCKCAHIN_CONFIG_HASH.clone(), Arc::new(old)),
+    ]);
+    tracing::trace!(target: "monit", "supported bc configs: {:?}", bc_configs.keys().collect::<Vec<_>>());
+    Ok(BlockchainConfigRead { bc_configs })
 }

@@ -654,7 +654,7 @@ fn main() -> anyhow::Result<()> {
             let rng_seed = RndSeed::from(gen_bls_key_pair().1.to_bytes());
             if let Some(path) = bls_cmd.path {
                 if !bls_cmd.quiet {
-                    let pubkey = json!({"pubkey": format!("{}", hex::encode(keypair.public))});
+                    let pubkey = json!({"pubkey": hex::encode(keypair.public)});
                     println!("{}", serde_json::to_string_pretty(&pubkey)?);
                 }
                 let mut bls_keys_map = if bls_cmd.remove_old {

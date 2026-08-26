@@ -537,6 +537,7 @@ impl Message {
     pub async fn blockchain_events(
         db_connector: &DBConnector,
         projection: &SqlProjection,
+        src_dapp_id: Option<String>,
         pagination: &PaginationArgs,
     ) -> anyhow::Result<Vec<Message>> {
         let limit = pagination.get_limit();
@@ -549,6 +550,10 @@ impl Message {
 
         let cursor_field = "msg_chain_order";
         let mut where_ops = vec![EVENT_MSG_TYPE_FILTER.to_string()];
+
+        if let Some(ref dapp_id) = src_dapp_id {
+            where_ops.push(format!("src_dapp_id={dapp_id:?}"));
+        }
 
         if let Some(after) = &pagination.after {
             if !after.is_empty() {
@@ -674,7 +679,7 @@ mod tests {
             "src_dapp_id",
         ]);
 
-        Message::blockchain_events(&db_connector, &projection, &default_pagination())
+        Message::blockchain_events(&db_connector, &projection, None, &default_pagination())
             .await
             .expect("blockchain events query should work with attached archive DB");
     }

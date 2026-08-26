@@ -693,13 +693,13 @@ impl SqliteHelper {
                 action_spec_actions, action_skipped_actions, action_msgs_created, action_list_hash,
                 action_tot_msg_size_cells, action_tot_msg_size_bits, credit_first, aborted, destroyed,
                 tr_type, lt, prev_trans_hash, prev_trans_lt, now, outmsg_cnt, orig_status, end_status,
-                in_msg, out_msgs, account_addr, workchain_id, total_fees, balance_delta, old_hash,
-                new_hash, chain_order
+                in_msg, out_msgs, account_addr, workchain_id, total_fees, total_fees_other,
+                balance_delta, balance_delta_other, old_hash, new_hash, chain_order
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6,   ?7, ?8, ?9, ?10, ?11,   ?12, ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19, ?20,   ?21, ?22, ?23, ?24, ?25,   ?26, ?27, ?28, ?29,
                 ?30, ?31, ?32, ?33, ?34,   ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42,
-                ?43, ?44, ?45, ?46, ?47, ?48, ?49,   ?50, ?51
+                ?43, ?44, ?45, ?46, ?47, ?48, ?49,   ?50, ?51, ?52, ?53
             ) ON CONFLICT(id) DO NOTHING")?;
 
             for trx in
@@ -754,7 +754,9 @@ impl SqliteHelper {
                     trx.account_addr,
                     trx.workchain_id,
                     Some(trx.total_fees),
+                    trx.total_fees_other,
                     trx.balance_delta,
+                    trx.balance_delta_other,
                     trx.old_hash,
                     trx.new_hash,
                     trx.chain_order,
@@ -986,6 +988,7 @@ mod test {
     use crate::sqlite::block::ExtBlkRef;
     use crate::sqlite::sqlite_helper::print_sqlite_info;
     use crate::sqlite::ArchBlock;
+    use crate::sqlite::ArchTransaction;
 
     #[test]
     fn test_sqlite_features() -> anyhow::Result<()> {
@@ -1128,6 +1131,57 @@ mod test {
         assert_eq!(row.14, block_merkle_leaves);
         assert_eq!(row.15, history_proofs);
         assert_eq!(row.16, proof_block_refs);
+
+        Ok(())
+    }
+
+    #[test]
+    fn store_transactions_insert_matches_columns_and_params() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let db_maintenance = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &db_dir);
+        db_maintenance.migrate(MigrateTo::Latest, DbMaintenanceOptions { silent: true })?;
+        let conn = Arc::new(Mutex::new(Some(Connection::open(&db_maintenance.path)?)));
+        let mut context = SqliteHelperContext {
+            config: SqliteHelperConfig::new(PathBuf::new(), None),
+            conn: conn.clone(),
+        };
+
+        let balance_delta_other = r#"[{"currency":1,"value":"-300"}]"#.to_string();
+        let transaction = ArchTransaction {
+            id: "trx-1".to_string(),
+            account_addr: "0:aa".to_string(),
+            total_fees: "2a".to_string(),
+            balance_delta: "-1000".to_string(),
+            balance_delta_other: Some(balance_delta_other.clone()),
+            // A transaction that collected no extra currency fees stores NULL.
+            total_fees_other: None,
+            ..Default::default()
+        };
+
+        SqliteHelper::store_transactions(&mut context, vec![transaction])?;
+
+        let guard = conn.lock();
+        let db = guard.as_ref().expect("connection is present");
+        let row = db.query_row(
+            "SELECT account_addr, total_fees, total_fees_other, balance_delta, balance_delta_other
+             FROM transactions WHERE id = 'trx-1'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )?;
+
+        assert_eq!(row.0, "0:aa");
+        assert_eq!(row.1, "2a");
+        assert_eq!(row.2, None);
+        assert_eq!(row.3, "-1000");
+        assert_eq!(row.4, Some(balance_delta_other));
 
         Ok(())
     }

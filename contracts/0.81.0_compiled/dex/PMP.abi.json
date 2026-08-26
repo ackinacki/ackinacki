@@ -223,6 +223,17 @@
 			]
 		},
 		{
+			"name": "StakeForfeited",
+			"inputs": [
+				{"name":"wallet","type":"address"},
+				{"name":"stakeAmount","type":"uint128[]"},
+				{"name":"debtAmount","type":"uint128[]"},
+				{"name":"couponsAmount","type":"uint128[]"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "ApprovedByOracle",
 			"inputs": [
 				{"name":"oracleEventList","type":"address"},
@@ -264,14 +275,6 @@
 				{"name":"stakeEnd","type":"uint64"},
 				{"name":"resultStart","type":"uint64"},
 				{"name":"resultEnd","type":"uint64"}
-			],
-			"outputs": [
-			]
-		},
-		{
-			"name": "NumOutcomesSet",
-			"inputs": [
-				{"name":"numOutcomes","type":"uint32"}
 			],
 			"outputs": [
 			]
@@ -339,7 +342,7 @@
 		{"init":false,"name":"_totalPool","type":"uint128"},
 		{"init":false,"name":"_typedOutcomePools","type":"map(uint32,map(uint8,uint128))"},
 		{"init":false,"name":"_forfeited","type":"map(uint32,map(uint8,uint128))"},
-		{"init":false,"name":"_typedOutcomeCounts","type":"map(uint32,map(uint8,uint128))"},
+		{"init":false,"name":"_creatorForfeitedClean","type":"map(uint32,uint128)"},
 		{"init":false,"name":"_totalCouponPool","type":"uint128"},
 		{"init":false,"name":"_totalCleanPool","type":"uint128"},
 		{"init":false,"name":"_totalDebtPool","type":"uint128"},
@@ -358,6 +361,7 @@
 		{"init":false,"name":"_stakeStart","type":"uint64"},
 		{"init":false,"name":"_resultStart","type":"uint64"},
 		{"init":false,"name":"_isCancelled","type":"bool"},
+		{"init":false,"name":"_countReleased","type":"bool"},
 		{"init":false,"name":"_oracleEventsConfirmed","type":"map(uint256,bool)"},
 		{"init":false,"name":"_oracleEventsPubkeys","type":"map(uint256,bool)"},
 		{"init":false,"name":"_oracleEventsAddress","type":"map(uint256,uint256)"},

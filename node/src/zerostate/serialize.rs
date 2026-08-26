@@ -3,14 +3,12 @@
 
 use std::path::Path;
 
-use versioned_struct::Transitioning;
-
 use crate::zerostate::ZeroState;
 
 impl ZeroState {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path.as_ref())?;
-        let (zs, _is_new) = ZeroState::deserialize_data_compat(&bytes).map_err(|e| {
+        let zs: ZeroState = bincode::deserialize(&bytes).map_err(|e| {
             anyhow::format_err!("Failed to load zerostate from {:?}: {e}", path.as_ref())
         })?;
         Ok(zs)

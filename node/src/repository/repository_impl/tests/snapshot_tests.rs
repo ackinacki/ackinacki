@@ -798,7 +798,7 @@ fn test_repository_impl_export_durable_snapshot_archive() -> anyhow::Result<()> 
             e.bk_set().clone(),
             e.block_stats().clone(),
             *e.attestation_target(),
-            e.producer_selector_data().clone(),
+            e.descendant_producer_selector_data().clone(),
             *e.block_height(),
             e.prefinalization_proof().clone(),
             e.future_bk_set().clone(),

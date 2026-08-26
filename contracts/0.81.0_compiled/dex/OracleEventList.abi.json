@@ -178,6 +178,7 @@
 		{"init":false,"name":"_pmpSaltedCodeHash","type":"uint256"},
 		{"init":false,"name":"_pmpSaltedCodeDepth","type":"uint16"},
 		{"init":false,"name":"_description","type":"string"},
-		{"components":[{"name":"eventName","type":"string"},{"name":"oracleFee","type":"uint128"},{"name":"deadline","type":"uint64"},{"name":"describe","type":"string"},{"name":"outcomeNames","type":"map(uint32,string)"},{"name":"count","type":"uint128"},{"name":"trustAddr","type":"optional(uint256)"}],"init":false,"name":"_events","type":"map(uint256,tuple)"}
+		{"components":[{"name":"eventName","type":"string"},{"name":"oracleFee","type":"uint128"},{"name":"deadline","type":"uint64"},{"name":"describe","type":"string"},{"name":"outcomeNames","type":"map(uint32,string)"},{"name":"count","type":"uint128"},{"name":"trustAddr","type":"optional(uint256)"}],"init":false,"name":"_events","type":"map(uint256,tuple)"},
+		{"init":false,"name":"_pmpConfirmed","type":"map(uint256,uint256)"}
 	]
 }

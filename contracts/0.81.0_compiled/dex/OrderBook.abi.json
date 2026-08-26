@@ -6,8 +6,6 @@
 		{
 			"name": "constructor",
 			"inputs": [
-				{"name":"pmpSaltedCodeHash","type":"uint256"},
-				{"name":"pmpSaltedCodeDepth","type":"uint16"},
 				{"name":"resultStart","type":"uint64"},
 				{"name":"numOutcomes","type":"uint32"}
 			],
