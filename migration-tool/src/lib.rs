@@ -40,6 +40,8 @@ pub struct DbMaintenance {
 #[derive(Default, Clone)]
 pub struct DbMaintenanceOptions {
     pub silent: bool,
+    pub no_journal: bool,
+    pub no_check_constraints: bool,
 }
 
 impl DbMaintenance {
@@ -58,6 +60,57 @@ impl DbMaintenance {
         Self { path: db_dir.as_ref().join(info.name.as_ref()), info }
     }
 
+    fn migrate_up_nocheck(
+        &self,
+        conn: &mut Connection,
+        from: usize,
+        to: usize,
+    ) -> anyhow::Result<()> {
+        let mut dirs: Vec<_> = self.info.migrations.dirs().collect();
+        dirs.sort_by_key(|d| d.path().to_string_lossy().to_string());
+
+        let tx = conn.transaction()?;
+        for version in from..to {
+            let dir = dirs.get(version).with_context(|| {
+                format!("migration directory not found for version {}", version + 1)
+            })?;
+            // Lexicographic order is only a proxy for the numeric one: a stray or
+            // missing directory would shift every index, apply the wrong SQL and
+            // then stamp the requested version on top of it.
+            let prefix = dir
+                .path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.split_once('-'))
+                .and_then(|(p, _)| p.parse::<usize>().ok());
+            anyhow::ensure!(
+                prefix == Some(version + 1),
+                "migration directory {:?} does not carry version {}",
+                dir.path(),
+                version + 1
+            );
+
+            let sql = if let Some(f) = dir.get_file(dir.path().join("up-nocheck.sql")) {
+                f.contents_utf8().with_context(|| {
+                    format!("invalid utf8 in up-nocheck.sql for version {}", version + 1)
+                })?
+            } else {
+                let f = dir
+                    .get_file(dir.path().join("up.sql"))
+                    .with_context(|| format!("up.sql not found for version {}", version + 1))?;
+                f.contents_utf8().with_context(|| {
+                    format!("invalid utf8 in up.sql for version {}", version + 1)
+                })?
+            };
+
+            tx.execute_batch(sql)
+                .with_context(|| format!("failed to execute migration version {}", version + 1))?;
+        }
+        tx.pragma_update(None, "user_version", to as u32)?;
+        tx.commit().context("failed to commit migration")?;
+        Ok(())
+    }
+
     pub fn migrate(
         &self,
         migrate_to: MigrateTo,
@@ -68,8 +121,19 @@ impl DbMaintenance {
         }
 
         let mut conn = Connection::open(self.path.clone())?;
-        let current_version =
-            conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap_or(0);
+        // The vendored SQLite is a plain `bundled` build (SQLITE_TEMP_STORE=1),
+        // so temp tables and sort spills already go to disk, under SQLITE_TMPDIR.
+        // What the cache does control is the sorter's in-memory run (PMA) size,
+        // which SQLite caps at 512 MiB: with the 2 MB default a CREATE INDEX over
+        // a multi-billion-row table writes thousands of tiny runs and spends
+        // hours merging them back; 1 GiB lets it work at the cap.
+        conn.pragma_update(None, "cache_size", "-1048576")?; // ~1 GiB
+                                                             // Never default to 0: open() is lazy, so on a locked or non-SQLite file
+                                                             // the read fails and 0 would masquerade as "fresh DB, migrate from
+                                                             // scratch" — the same trap already fixed in bm-archive-processor.
+        let current_version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .with_context(|| format!("failed to read user_version from {:?}", self.path))?;
 
         let migrations = Migrations::from_directory(&self.info.migrations)?;
         migrations.validate()?;
@@ -101,8 +165,25 @@ impl DbMaintenance {
                 } else {
                     print!("    downgrading to {migrate_to_number}... ",);
                 }
+                if options.no_check_constraints {
+                    print!("(no-check-constraints) ");
+                }
             }
-            migrations.to_version(&mut conn, migrate_to_number as usize)?;
+            // Only here, once a migration is actually going to run: journal_mode
+            // is persisted in the file header, so applying it earlier would knock
+            // an up-to-date live database out of WAL on an idempotent re-run.
+            if options.no_journal {
+                force_delete_journal(&conn, &self.path)?;
+            }
+            if options.no_check_constraints && current_version < migrate_to_number {
+                self.migrate_up_nocheck(
+                    &mut conn,
+                    current_version as usize,
+                    migrate_to_number as usize,
+                )?;
+            } else {
+                migrations.to_version(&mut conn, migrate_to_number as usize)?;
+            }
             if !options.silent {
                 println!("done.");
             }
@@ -113,6 +194,25 @@ impl DbMaintenance {
 
         Ok(())
     }
+}
+
+/// Switches the database to `journal_mode=DELETE` and verifies the switch took.
+///
+/// The pragma answers with the mode now in effect instead of failing: if the
+/// WAL cannot be reset (another connection holds it), SQLite reports the old
+/// mode with `SQLITE_OK`, and `execute_batch` would throw that answer away —
+/// leaving a cold archive with its WAL2 header intact and unreadable for stock
+/// SQLite consumers.
+pub fn force_delete_journal(conn: &Connection, path: &Path) -> anyhow::Result<()> {
+    let mode: String = conn
+        .pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))
+        .with_context(|| format!("failed to set journal_mode=DELETE on {}", path.display()))?;
+    anyhow::ensure!(
+        mode.eq_ignore_ascii_case("delete"),
+        "journal_mode=DELETE refused on {}: database still reports {mode:?}",
+        path.display()
+    );
+    Ok(())
 }
 
 pub enum MigrateTo {
@@ -238,7 +338,7 @@ mod tests {
     fn bm_archive_v3_migration_up_and_down_creates_and_drops_new_objects() -> anyhow::Result<()> {
         let root = testdir!();
         let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
-        let opts = DbMaintenanceOptions { silent: true };
+        let opts = DbMaintenanceOptions { silent: true, ..Default::default() };
 
         db.migrate(MigrateTo::Version(2), opts.clone())?;
         let conn = Connection::open(&db.path)?;
@@ -274,7 +374,7 @@ mod tests {
     fn bm_archive_v5_migration_up_and_down_creates_and_drops_events_index() -> anyhow::Result<()> {
         let root = testdir!();
         let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
-        let opts = DbMaintenanceOptions { silent: true };
+        let opts = DbMaintenanceOptions { silent: true, ..Default::default() };
 
         db.migrate(MigrateTo::Version(4), opts.clone())?;
         let conn = Connection::open(&db.path)?;
@@ -297,7 +397,7 @@ mod tests {
     fn bm_archive_v6_migration_up_and_down_creates_and_drops_new_indexes() -> anyhow::Result<()> {
         let root = testdir!();
         let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
-        let opts = DbMaintenanceOptions { silent: true };
+        let opts = DbMaintenanceOptions { silent: true, ..Default::default() };
 
         db.migrate(MigrateTo::Version(5), opts.clone())?;
         let conn = Connection::open(&db.path)?;
@@ -323,7 +423,7 @@ mod tests {
     fn bm_archive_v8_migration_adds_final_poseidon_columns() -> anyhow::Result<()> {
         let root = testdir!();
         let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
-        let opts = DbMaintenanceOptions { silent: true };
+        let opts = DbMaintenanceOptions { silent: true, ..Default::default() };
 
         db.migrate(MigrateTo::Version(7), opts.clone())?;
         let conn = Connection::open(&db.path)?;
@@ -367,7 +467,7 @@ mod tests {
     fn bm_archive_v9_migration_indexes_events_by_src_dapp_id_and_cursor() -> anyhow::Result<()> {
         let root = testdir!();
         let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
-        let opts = DbMaintenanceOptions { silent: true };
+        let opts = DbMaintenanceOptions { silent: true, ..Default::default() };
 
         db.migrate(MigrateTo::Version(8), opts.clone())?;
         let conn = Connection::open(&db.path)?;
@@ -409,11 +509,80 @@ mod tests {
         Ok(())
     }
 
+    fn journal_mode(path: &Path) -> anyhow::Result<String> {
+        let conn = Connection::open(path)?;
+        Ok(conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?)
+    }
+
+    #[test]
+    fn no_check_constraints_applies_the_nocheck_variant_and_stamps_the_version(
+    ) -> anyhow::Result<()> {
+        let root = testdir!();
+        let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
+        let opts = DbMaintenanceOptions { silent: true, ..Default::default() };
+        db.migrate(MigrateTo::Version(7), opts.clone())?;
+
+        db.migrate(
+            MigrateTo::Version(8),
+            DbMaintenanceOptions { no_check_constraints: true, ..opts.clone() },
+        )?;
+
+        // The same step with CHECKs, for comparison.
+        let checked = DbMaintenance::new(&DbInfo::BM_ARCHIVE, root.join("checked"));
+        checked.migrate(MigrateTo::Version(8), opts)?;
+
+        let blocks_ddl = |path: &Path| -> anyhow::Result<String> {
+            let conn = Connection::open(path)?;
+            Ok(conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'blocks'",
+                [],
+                |row| row.get(0),
+            )?)
+        };
+        let conn = Connection::open(&db.path)?;
+        let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(version, 8);
+        assert!(column_exists(&conn, "blocks", "block_merkle_leaves")?);
+        assert!(column_exists(&conn, "blocks", "proof_block_refs")?);
+        drop(conn);
+
+        // Earlier migrations carry CHECKs of their own, so look for the ones
+        // 008 adds rather than for the keyword.
+        let poseidon_check = "length(block_merkle_leaves)";
+        assert!(blocks_ddl(&checked.path)?.contains(poseidon_check));
+        let ddl = blocks_ddl(&db.path)?;
+        assert!(!ddl.contains(poseidon_check), "nocheck variant must skip 008's CHECKs: {ddl}");
+        assert!(!ddl.contains("length(history_proofs)"), "{ddl}");
+        Ok(())
+    }
+
+    #[test]
+    fn no_journal_only_touches_the_journal_when_a_migration_runs() -> anyhow::Result<()> {
+        let root = testdir!();
+        let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
+        let opts = DbMaintenanceOptions { silent: true, ..Default::default() };
+        db.migrate(MigrateTo::Version(9), opts.clone())?;
+        Connection::open(&db.path)?.execute_batch("PRAGMA journal_mode=WAL")?;
+        assert_eq!(journal_mode(&db.path)?, "wal");
+
+        // An idempotent cron/Ansible re-run on an up-to-date database, and a
+        // plain inspection: neither may knock a live database out of WAL.
+        let no_journal = DbMaintenanceOptions { no_journal: true, ..opts };
+        db.migrate(MigrateTo::Version(9), no_journal.clone())?;
+        assert_eq!(journal_mode(&db.path)?, "wal");
+        db.migrate(MigrateTo::None, no_journal.clone())?;
+        assert_eq!(journal_mode(&db.path)?, "wal");
+
+        db.migrate(MigrateTo::Version(10), no_journal)?;
+        assert_eq!(journal_mode(&db.path)?, "delete");
+        Ok(())
+    }
+
     #[test]
     fn bm_archive_v10_migration_adds_transaction_currency_delta_columns() -> anyhow::Result<()> {
         let root = testdir!();
         let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
-        let opts = DbMaintenanceOptions { silent: true };
+        let opts = DbMaintenanceOptions { silent: true, ..Default::default() };
 
         db.migrate(MigrateTo::Version(9), opts.clone())?;
         let conn = Connection::open(&db.path)?;

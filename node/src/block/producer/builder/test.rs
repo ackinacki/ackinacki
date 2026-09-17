@@ -283,8 +283,12 @@ mod tests {
             let _ = stop_tx.send(());
         })?;
 
-        let mut ext_queue =
-            ExtMessages::empty(ExtMessagesLimits { total: 10, per_dapp: 10, per_account: 10 });
+        let mut ext_queue = ExtMessages::empty(ExtMessagesLimits {
+            total: 10,
+            per_dapp: 10,
+            per_account: 10,
+            low_priority_percentage: 80,
+        });
         let (dst, entry) = make_test_ext_message(1, 5_000_000)?;
         let enqueued_stamp = entry.0.clone();
         let _ = dst;
@@ -335,7 +339,12 @@ mod tests {
         let thread_state = ExternalMessagesThreadState::builder()
             .with_report_metrics(None)
             .with_thread_id(ThreadIdentifier::default())
-            .with_limits(ExtMessagesLimits { total: 10, per_dapp: 10, per_account: 10 })
+            .with_limits(ExtMessagesLimits {
+                total: 10,
+                per_dapp: 10,
+                per_account: 10,
+                low_priority_percentage: 80,
+            })
             .with_feedback_sender(feedback_tx)
             .with_is_producing(Arc::new(AtomicBool::new(true)))
             .build()?;

@@ -48,6 +48,14 @@ struct BlockProductionMetricsInner {
     last_finalized_seqno: Gauge<u64>,
     ext_msg_queue_size: Gauge<u64>,
     ext_msg_queue_size_by_dapp: Gauge<u64>,
+    ext_msg_queue_low_priority_percentage: Gauge<f64>,
+    ext_msg_queue_low_priority_total_limit_percentage: Gauge<f64>,
+    ext_msg_processed_per_block: Histogram<u64>,
+    ext_msg_high_priority_processed_per_block: Histogram<u64>,
+    ext_msg_low_priority_processed_per_block: Histogram<u64>,
+    ext_msg_received: Counter<u64>,
+    ext_msg_low_priority_received: Counter<u64>,
+    ext_msg_low_priority_filtered: Counter<u64>,
     int_msg_queue_size: Gauge<u64>,
     block_finalized: Counter<u64>,
     block_invalidated: Counter<u64>,
@@ -80,6 +88,7 @@ struct BlockProductionMetricsInner {
     attn_target_descendant_generations: Histogram<u64>,
     blocks_requested: Counter<u64>,
     unfinalized_blocks_queue: Gauge<u64>,
+    catch_up_status: Gauge<u64>,
     attestation_tracking_collection_size: Gauge<u64>,
     finalized_block_attestations_cnt: Gauge<u64>,
     bk_set_size: Gauge<u64>,
@@ -138,6 +147,7 @@ struct BlockProductionMetricsInner {
 }
 
 pub const BK_SET_UPDATE_CHANNEL: &str = "bk_set_update";
+pub const BK_SET_BLOCK_SAVE_CHANNEL: &str = "bk_set_block_save";
 pub const BLOCK_STATE_CHANNEL: &str = "block_state";
 pub const BLOB_SYNC_COMMAND_CHANNEL: &str = "block_sync_command";
 pub const EPOCH_BK_DATA_CHANNEL: &str = "epoch_bk_data";
@@ -262,6 +272,37 @@ impl BlockProductionMetrics {
             last_finalized_seqno: meter.u64_gauge("node_last_finalized_seqno").build(),
             ext_msg_queue_size: meter.u64_gauge("node_ext_msg_queue_size").build(),
             ext_msg_queue_size_by_dapp: meter.u64_gauge("node_ext_msg_queue_size_by_dapp").build(),
+            ext_msg_queue_low_priority_percentage: meter
+                .f64_gauge("node_ext_msg_queue_low_priority_percentage")
+                .build(),
+            ext_msg_queue_low_priority_total_limit_percentage: meter
+                .f64_gauge("node_ext_msg_queue_low_priority_total_limit_percentage")
+                .build(),
+            ext_msg_processed_per_block: meter
+                .u64_histogram("node_ext_msg_processed_per_block")
+                .with_boundaries(vec![
+                    0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0,
+                ])
+                .build(),
+            ext_msg_high_priority_processed_per_block: meter
+                .u64_histogram("node_ext_msg_high_priority_processed_per_block")
+                .with_boundaries(vec![
+                    0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0,
+                ])
+                .build(),
+            ext_msg_low_priority_processed_per_block: meter
+                .u64_histogram("node_ext_msg_low_priority_processed_per_block")
+                .with_boundaries(vec![
+                    0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0,
+                ])
+                .build(),
+            ext_msg_received: meter.u64_counter("node_ext_msg_received").build(),
+            ext_msg_low_priority_received: meter
+                .u64_counter("node_ext_msg_low_priority_received")
+                .build(),
+            ext_msg_low_priority_filtered: meter
+                .u64_counter("node_ext_msg_low_priority_filtered")
+                .build(),
             int_msg_queue_size: meter.u64_gauge("node_int_msg_queue_size").build(),
             block_finalized: meter.u64_counter("node_block_finalized").build(),
             block_invalidated: meter.u64_counter("node_block_invalidated").build(),
@@ -316,6 +357,7 @@ impl BlockProductionMetrics {
             blocks_requested: meter.u64_counter("node_blocks_requested").build(),
 
             unfinalized_blocks_queue: meter.u64_gauge("node_unfinalized_blocks_queue").build(),
+            catch_up_status: meter.u64_gauge("node_catch_up_status").build(),
             finalized_block_attestations_cnt: meter
                 .u64_gauge("node_finalized_block_attestations_cnt")
                 .build(),
@@ -626,6 +668,51 @@ impl BlockProductionMetrics {
         );
     }
 
+    pub fn report_ext_msg_queue_low_priority_percentage(
+        &self,
+        value: f64,
+        thread_id: &ThreadIdentifier,
+    ) {
+        self.0.ext_msg_queue_low_priority_percentage.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_ext_msg_queue_low_priority_total_limit_percentage(
+        &self,
+        value: f64,
+        thread_id: &ThreadIdentifier,
+    ) {
+        self.0
+            .ext_msg_queue_low_priority_total_limit_percentage
+            .record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_ext_msg_processed_per_block(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.ext_msg_processed_per_block.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_ext_msg_priority_processed_per_block(
+        &self,
+        high_priority: u64,
+        low_priority: u64,
+        thread_id: &ThreadIdentifier,
+    ) {
+        let attrs = [thread_id_attr(thread_id)];
+        self.0.ext_msg_high_priority_processed_per_block.record(high_priority, &attrs);
+        self.0.ext_msg_low_priority_processed_per_block.record(low_priority, &attrs);
+    }
+
+    pub fn report_ext_msg_received(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.ext_msg_received.add(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_ext_msg_low_priority_received(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.ext_msg_low_priority_received.add(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_ext_msg_low_priority_filtered(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.ext_msg_low_priority_filtered.add(value, &[thread_id_attr(thread_id)]);
+    }
+
     pub fn report_int_msg_queue_size(&self, value: usize, thread_id: &ThreadIdentifier) {
         self.0.int_msg_queue_size.record(
             value as u64,
@@ -713,6 +800,10 @@ impl BlockProductionMetrics {
 
     pub fn report_unfinalized_blocks_queue(&self, value: u64, thread_id: &ThreadIdentifier) {
         self.0.unfinalized_blocks_queue.record(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_catch_up_status(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.catch_up_status.record(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_finalized_block_attestations_cnt(

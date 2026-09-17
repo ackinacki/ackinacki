@@ -8,6 +8,7 @@
 #[cfg(test)]
 mod integration_tests {
     use std::collections::BTreeMap;
+    use std::collections::HashSet;
     use std::path::PathBuf;
 
     use crate::cli::PostUploadAction;
@@ -64,6 +65,11 @@ mod integration_tests {
             compression: CompressionMode::None,
             post_upload: PostUploadAction::Move,
             skip_upload: false,
+            upload_later: false,
+            upload_only: None,
+            upload_queue_dir: PathBuf::from("/upload-queue"),
+            paranoid: false,
+            daily_hook: None,
             dry_run: false,
         }
     }
@@ -178,7 +184,9 @@ mod integration_tests {
 
         let result = app.run(db_client, Some(FailingS3Client), fs_client.clone()).await;
 
-        assert!(result.is_ok());
+        // A failed group is reported through the exit status so the wrapper does
+        // not record the day as applied; the sources still survive untouched.
+        assert!(result.is_err());
         assert_eq!(fs_client.move_processed_calls().len(), 2);
         assert_eq!(fs_client.remove_file_calls().len(), 0);
     }
@@ -271,5 +279,448 @@ mod integration_tests {
         // 4 files moved (2 per group: one from each server)
         let move_calls = fs_client.move_processed_calls();
         assert_eq!(move_calls.len(), 6);
+    }
+
+    #[derive(Clone)]
+    struct TrackingS3Client {
+        uploads: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    }
+
+    impl TrackingS3Client {
+        fn new() -> Self {
+            Self { uploads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())) }
+        }
+
+        fn upload_calls(&self) -> Vec<(String, String)> {
+            self.uploads.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl S3Client for TrackingS3Client {
+        async fn upload(
+            &self,
+            bucket: &str,
+            key: &str,
+            _file_path: &std::path::Path,
+        ) -> anyhow::Result<String> {
+            self.uploads.lock().unwrap().push((bucket.to_string(), key.to_string()));
+            Ok("fake-etag".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upload_later_enqueues_without_s3_upload() {
+        let tmp = testdir::testdir!();
+        let mut config = create_test_config();
+        config.upload_later = true;
+        config.skip_upload = true;
+        config.upload_queue_dir = tmp.join("upload-queue");
+
+        let app = App::new(config, None);
+        let db_client = MockDbClient::new();
+        let fs_client = create_test_filesystem(1, vec![1000]);
+
+        let result = app.run(db_client.clone(), None::<TrackingS3Client>, fs_client.clone()).await;
+        assert!(result.is_ok());
+
+        // DB operations happened
+        assert_eq!(db_client.create_daily_calls().len(), 1);
+        assert_eq!(db_client.merge_calls().len(), 1);
+
+        // Queue marker was created
+        let queue_dir = tmp.join("upload-queue");
+        assert!(queue_dir.is_dir());
+        let markers: Vec<_> =
+            std::fs::read_dir(&queue_dir).unwrap().filter_map(|e| e.ok()).collect();
+        assert_eq!(markers.len(), 1, "expected one queue marker");
+
+        let marker_content = std::fs::read_to_string(markers[0].path()).unwrap();
+        assert!(marker_content.contains("1000"), "marker should reference the daily file");
+    }
+
+    #[tokio::test]
+    async fn test_upload_only_uploads_file_to_s3() {
+        let tmp = testdir::testdir!();
+        let file_path = tmp.join("daily").join("1000.db.xz");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, b"fake compressed data").unwrap();
+
+        let mut config = create_test_config();
+        config.upload_only = Some(file_path.clone());
+        config.post_upload = PostUploadAction::Keep;
+
+        let app = App::new(config, None);
+        let s3_client = TrackingS3Client::new();
+
+        let result = app.run_upload_only(s3_client.clone()).await;
+        assert!(result.is_ok());
+
+        let calls = s3_client.upload_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1.contains("1000"), "S3 key should contain the timestamp");
+
+        // File still exists (post_upload = Keep)
+        assert!(file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_upload_only_deletes_after_upload() {
+        let tmp = testdir::testdir!();
+        let file_path = tmp.join("daily").join("2000.db.gz");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, b"fake compressed data").unwrap();
+
+        let mut config = create_test_config();
+        config.upload_only = Some(file_path.clone());
+        config.post_upload = PostUploadAction::Delete;
+
+        let app = App::new(config, None);
+        let s3_client = TrackingS3Client::new();
+
+        let result = app.run_upload_only(s3_client.clone()).await;
+        assert!(result.is_ok());
+        assert!(!file_path.exists(), "file should be deleted after upload");
+    }
+
+    #[tokio::test]
+    async fn test_upload_only_fails_for_missing_file() {
+        let mut config = create_test_config();
+        config.upload_only = Some(PathBuf::from("/nonexistent/file.db.xz"));
+
+        let app = App::new(config, None);
+        let s3_client = TrackingS3Client::new();
+
+        let result = app.run_upload_only(s3_client).await;
+        assert!(result.is_err());
+    }
+
+    /// Builds a config whose only interesting field is the daily hook.
+    fn config_with_hook(hook: Option<&str>) -> AppConfig {
+        AppConfig { daily_hook: hook.map(str::to_string), ..create_test_config() }
+    }
+
+    #[test]
+    fn daily_hook_absent_is_a_no_op() {
+        let app = App::new(config_with_hook(None), None);
+        assert!(app.run_daily_hook(&PathBuf::from("/daily/x.db")).is_ok());
+    }
+
+    #[test]
+    fn daily_hook_success_is_propagated() {
+        let app = App::new(config_with_hook(Some("true")), None);
+        assert!(app.run_daily_hook(&PathBuf::from("/daily/x.db")).is_ok());
+    }
+
+    #[test]
+    fn daily_hook_failure_aborts_the_group() {
+        let app = App::new(config_with_hook(Some("false")), None);
+        let err = app.run_daily_hook(&PathBuf::from("/daily/x.db")).unwrap_err();
+        assert!(err.to_string().contains("daily hook"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn daily_hook_missing_program_is_an_error() {
+        let app = App::new(config_with_hook(Some("definitely-not-on-path-12345")), None);
+        assert!(app.run_daily_hook(&PathBuf::from("/daily/x.db")).is_err());
+    }
+
+    #[test]
+    fn daily_hook_substitutes_the_placeholder() {
+        let dir = testdir::testdir!();
+        let marker = dir.join("seen.txt");
+        let daily = dir.join("bm-archive-1.db");
+        // No shell is involved: the placeholder is replaced inside whichever
+        // token carries it.
+        let hook = format!("cp {{}} {}", marker.display());
+        std::fs::write(&daily, b"payload").unwrap();
+
+        let app = App::new(config_with_hook(Some(&hook)), None);
+        app.run_daily_hook(&daily).unwrap();
+        assert_eq!(std::fs::read(&marker).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn daily_hook_appends_the_path_when_no_placeholder() {
+        let dir = testdir::testdir!();
+        let daily = dir.join("bm-archive-2.db");
+        std::fs::write(&daily, b"x").unwrap();
+
+        // `test -f <path>` only passes if the daily path was appended.
+        let app = App::new(config_with_hook(Some("test -f")), None);
+        assert!(app.run_daily_hook(&daily).is_ok());
+
+        let app = App::new(config_with_hook(Some("test -d")), None);
+        assert!(app.run_daily_hook(&daily).is_err());
+    }
+
+    #[test]
+    fn upload_queue_marker_is_named_after_the_timestamp_alone() {
+        let dir = testdir::testdir!();
+        let config = AppConfig { upload_queue_dir: dir.clone(), ..create_test_config() };
+        let app = App::new(config, None);
+
+        // Compressed dailies carry two extensions; a single file_stem() would
+        // name both `.db.xz` and `.db.gz` markers `1760418000.db` and collide.
+        app.enqueue_upload(&PathBuf::from("/daily/1760418000.db.xz")).unwrap();
+        let marker = dir.join("1760418000");
+        assert!(marker.exists(), "expected marker named after the timestamp only");
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "/daily/1760418000.db.xz");
+
+        app.enqueue_upload(&PathBuf::from("/daily/1760504400.db")).unwrap();
+        assert!(dir.join("1760504400").exists());
+    }
+
+    #[tokio::test]
+    async fn dry_run_upload_only_does_not_touch_s3() {
+        let dir = testdir::testdir!();
+        let file = dir.join("1760418000.db.xz");
+        std::fs::write(&file, b"payload").unwrap();
+
+        let config =
+            AppConfig { upload_only: Some(file.clone()), dry_run: true, ..create_test_config() };
+        let app = App::new(config, None);
+
+        // FailingS3Client errors on any upload, so reaching S3 at all shows up here.
+        app.run_upload_only(FailingS3Client).await.unwrap();
+        assert!(file.exists(), "dry run must not apply the post-upload action");
+    }
+
+    /// Builds a config with real dirs so the leftover scan has something to walk.
+    fn config_with_dirs(root: &std::path::Path, upload_later: bool) -> AppConfig {
+        let daily = root.join("daily");
+        let queue = root.join("upload-queue");
+        std::fs::create_dir_all(&daily).unwrap();
+        std::fs::create_dir_all(&queue).unwrap();
+        AppConfig {
+            daily_dir: daily,
+            upload_queue_dir: queue,
+            upload_later,
+            skip_upload: upload_later,
+            ..create_test_config()
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_later_queues_leftover_dailies_instead_of_stranding_them() {
+        let dir = testdir::testdir!();
+        let cfg = config_with_dirs(&dir, true);
+        let (daily_dir, queue_dir) = (cfg.daily_dir.clone(), cfg.upload_queue_dir.clone());
+
+        // A daily left behind by a crashed run: on disk, but never enqueued.
+        let stray = daily_dir.join("1760418000.db");
+        std::fs::write(&stray, b"db").unwrap();
+        // The lock file lives here too and must not be mistaken for an archive.
+        std::fs::write(daily_dir.join(".bm-archive-processor.lock"), b"").unwrap();
+
+        let app = App::new(cfg, None);
+        let fs_client = MockFileSystemClient::new();
+        app.process_leftover_daily(&None::<DryRunS3Client>, &fs_client, &HashSet::new()).await;
+
+        let marker = queue_dir.join("1760418000");
+        assert!(marker.exists(), "leftover daily should have been queued");
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), stray.to_string_lossy());
+        assert_eq!(std::fs::read_dir(&queue_dir).unwrap().count(), 1, "lock file must be ignored");
+    }
+
+    #[tokio::test]
+    async fn leftover_scan_never_overwrites_a_marker_the_uploader_owns() {
+        let dir = testdir::testdir!();
+        let cfg = config_with_dirs(&dir, true);
+        let (daily_dir, queue_dir) = (cfg.daily_dir.clone(), cfg.upload_queue_dir.clone());
+
+        // Mid-flight state: the uploader compressed the daily and repointed the
+        // marker at the .xz, but the .db entry was still visible when we scanned.
+        // Rewriting it would send the uploader after a file xz already consumed.
+        let raw = daily_dir.join("1760418000.db");
+        let compressed = daily_dir.join("1760418000.db.xz");
+        std::fs::write(&raw, b"db").unwrap();
+        std::fs::write(&compressed, b"xz").unwrap();
+        let marker = queue_dir.join("1760418000");
+        std::fs::write(&marker, compressed.to_string_lossy().as_bytes()).unwrap();
+
+        let app = App::new(cfg, None);
+        let fs_client = MockFileSystemClient::new();
+        app.process_leftover_daily(&None::<DryRunS3Client>, &fs_client, &HashSet::new()).await;
+
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            compressed.to_string_lossy(),
+            "the uploader's rewritten path must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn leftover_scan_skips_the_daily_handled_in_this_run() {
+        let dir = testdir::testdir!();
+        let cfg = config_with_dirs(&dir, true);
+        let (daily_dir, queue_dir) = (cfg.daily_dir.clone(), cfg.upload_queue_dir.clone());
+
+        let current = daily_dir.join("1760504400.db");
+        std::fs::write(&current, b"db").unwrap();
+        let mut handled = HashSet::new();
+        handled.insert(current.clone());
+
+        let app = App::new(cfg, None);
+        let fs_client = MockFileSystemClient::new();
+        app.process_leftover_daily(&None::<DryRunS3Client>, &fs_client, &handled).await;
+
+        assert_eq!(std::fs::read_dir(&queue_dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn leftover_scan_ignores_a_daily_left_by_a_failed_group() {
+        let dir = testdir::testdir!();
+        let cfg = config_with_dirs(&dir, true);
+        let (daily_dir, queue_dir) = (cfg.daily_dir.clone(), cfg.upload_queue_dir.clone());
+
+        // A group that died mid-trim leaves a half-processed daily behind. Shipping
+        // that to S3 as the day's backup would be worse than shipping nothing: the
+        // next run rebuilds it from the untouched incoming files.
+        let partial = daily_dir.join("1760418000.db");
+        std::fs::write(&partial, b"half-trimmed").unwrap();
+        let attempted: HashSet<PathBuf> = [partial].into_iter().collect();
+
+        let app = App::new(cfg, None);
+        let fs_client = MockFileSystemClient::new();
+        app.process_leftover_daily(&None::<DryRunS3Client>, &fs_client, &attempted).await;
+
+        assert_eq!(std::fs::read_dir(&queue_dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn leftover_compression_also_skips_a_daily_left_by_a_failed_group() {
+        let dir = testdir::testdir!();
+        let mut cfg = config_with_dirs(&dir, true);
+        // With compression enabled, step 1 used to compress the failed group's
+        // daily BEFORE consulting the handled set — renaming it to .db.xz out
+        // from under the guard, so the later scans no longer recognized it and
+        // shipped the partial archive anyway.
+        cfg.compression = CompressionMode::Xz;
+        let (daily_dir, queue_dir) = (cfg.daily_dir.clone(), cfg.upload_queue_dir.clone());
+
+        let partial = daily_dir.join("1760418000.db");
+        std::fs::write(&partial, b"half-trimmed").unwrap();
+        let attempted: HashSet<PathBuf> = [partial.clone()].into_iter().collect();
+
+        let app = App::new(cfg, None);
+        let fs_client = MockFileSystemClient::new();
+        app.process_leftover_daily(&None::<DryRunS3Client>, &fs_client, &attempted).await;
+
+        assert!(
+            fs_client.move_processed_calls().is_empty(),
+            "an attempted daily must not be compressed"
+        );
+        assert_eq!(std::fs::read_dir(&queue_dir).unwrap().count(), 0);
+        assert!(partial.exists(), "the partial daily must be left for the next run to rebuild");
+    }
+
+    #[tokio::test]
+    async fn leftover_compression_leaves_a_queued_daily_to_the_uploader() {
+        let dir = testdir::testdir!();
+        let mut cfg = config_with_dirs(&dir, true);
+        cfg.compression = CompressionMode::Xz;
+        let (daily_dir, queue_dir) = (cfg.daily_dir.clone(), cfg.upload_queue_dir.clone());
+
+        // Queued by an earlier run and not uploaded yet: renaming it to .db.xz
+        // now would leave the marker pointing at a file that no longer exists.
+        let queued = daily_dir.join("1760418000.db");
+        std::fs::write(&queued, b"db").unwrap();
+        std::fs::write(queue_dir.join("1760418000"), queued.to_string_lossy().as_bytes()).unwrap();
+
+        let app = App::new(cfg, None);
+        let fs_client = MockFileSystemClient::new();
+        app.process_leftover_daily(&None::<DryRunS3Client>, &fs_client, &HashSet::new()).await;
+
+        assert!(fs_client.move_processed_calls().is_empty(), "a queued daily must not be touched");
+        assert_eq!(std::fs::read_dir(&queue_dir).unwrap().count(), 1, "the marker stays as it was");
+    }
+
+    #[tokio::test]
+    async fn dry_run_leftover_scan_writes_no_queue_markers() {
+        let dir = testdir::testdir!();
+        let mut cfg = config_with_dirs(&dir, true);
+        cfg.dry_run = true;
+        let (daily_dir, queue_dir) = (cfg.daily_dir.clone(), cfg.upload_queue_dir.clone());
+        std::fs::write(daily_dir.join("1760418000.db"), b"db").unwrap();
+
+        let app = App::new(cfg, None);
+        let fs_client = MockFileSystemClient::new();
+        app.process_leftover_daily(&None::<DryRunS3Client>, &fs_client, &HashSet::new()).await;
+
+        // A marker written here would make the real uploader ship a raw,
+        // uncompressed daily the moment the dry run ends.
+        assert_eq!(std::fs::read_dir(&queue_dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn upload_later_with_post_upload_delete_removes_sources_once_queued() {
+        let tmp = testdir::testdir!();
+        let mut config = create_test_config();
+        config.upload_later = true;
+        config.skip_upload = true;
+        config.post_upload = PostUploadAction::Delete;
+        config.upload_queue_dir = tmp.join("upload-queue");
+        let app = App::new(config, None);
+
+        let fs_client = create_test_filesystem(2, vec![1000]);
+        let result =
+            app.run(MockDbClient::new(), None::<TrackingS3Client>, fs_client.clone()).await;
+        assert!(result.is_ok());
+
+        // Both sources are moved to processed/ and then removed; the daily
+        // itself stays on disk for the deferred uploader, held by the marker.
+        let move_calls = fs_client.move_processed_calls();
+        assert_eq!(move_calls.len(), 3);
+        let expected_removed: Vec<PathBuf> =
+            move_calls.iter().take(2).map(|(_, dest)| dest.clone()).collect();
+        assert_eq!(fs_client.remove_file_calls(), expected_removed);
+        assert_eq!(std::fs::read_dir(tmp.join("upload-queue")).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn failing_daily_hook_keeps_everything_out_of_the_full_db() {
+        let tmp = testdir::testdir!();
+        let mut config = create_test_config();
+        config.daily_hook = Some("false".to_string());
+        config.post_upload = PostUploadAction::Delete;
+        config.upload_queue_dir = tmp.join("upload-queue");
+        let app = App::new(config, None);
+
+        let db_client = MockDbClient::new();
+        let s3_client = TrackingS3Client::new();
+        let fs_client = create_test_filesystem(2, vec![1000]);
+        let result = app.run(db_client.clone(), Some(s3_client.clone()), fs_client.clone()).await;
+
+        assert!(result.is_err(), "a failed hook must fail the run");
+        assert_eq!(db_client.create_daily_calls().len(), 1, "the daily is built before the hook");
+        assert!(db_client.merge_calls().is_empty(), "nothing may reach the full DB");
+        assert!(s3_client.upload_calls().is_empty(), "nothing may reach S3");
+        assert!(fs_client.move_processed_calls().is_empty(), "sources stay in incoming/");
+        assert!(fs_client.remove_file_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn upload_only_fails_when_the_post_upload_action_fails() {
+        let tmp = testdir::testdir!();
+        let daily_dir = tmp.join("daily");
+        std::fs::create_dir_all(&daily_dir).unwrap();
+        let file_path = daily_dir.join("3000.db.xz");
+        std::fs::write(&file_path, b"archive").unwrap();
+        // `move` wants ../uploaded next to the daily dir; a plain file in its
+        // place makes the post-upload step fail after a successful upload.
+        std::fs::write(tmp.join("uploaded"), b"not a directory").unwrap();
+
+        let mut config = create_test_config();
+        config.daily_dir = daily_dir;
+        config.upload_only = Some(file_path.clone());
+        config.post_upload = PostUploadAction::Move;
+        let app = App::new(config, None);
+
+        let s3_client = TrackingS3Client::new();
+        let err = app.run_upload_only(s3_client.clone()).await.unwrap_err();
+        assert_eq!(s3_client.upload_calls().len(), 1, "the upload itself went through");
+        assert!(err.to_string().contains("uploaded dir"), "unexpected error: {err}");
+        assert!(file_path.exists(), "the file stays for the uploader to retry");
     }
 }

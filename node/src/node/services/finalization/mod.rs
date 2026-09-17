@@ -19,6 +19,7 @@ use crate::helper::SHUTDOWN_FINALIZATION_FLAG;
 use crate::helper::SHUTDOWN_FLAG;
 use crate::node::block_state::tools::connect;
 use crate::node::block_state::tools::invalidate_branch;
+use crate::node::services::bk_set_block_storage::BkSetBlockSaveCommand;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::node::services::sync::StateSyncService;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
@@ -42,6 +43,7 @@ pub fn finalization_loop(
     block_state_repository: BlockStateRepository,
     mut shared_services: SharedServices,
     mut raw_block_tx: InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
+    mut bk_set_block_tx: Option<InstrumentedSender<BkSetBlockSaveCommand>>,
     state_sync_service: impl StateSyncService<Repository = RepositoryImpl>,
     metrics: Option<BlockProductionMetrics>,
     _message_db: MessageDurableStorage,
@@ -104,6 +106,7 @@ pub fn finalization_loop(
         //       we need an extra candidate block to look in the parents finalizes_blocks field. (beta + 1 protocol)
 
         let mut height_cutoff = max_child_deadline + 1 + *last_finalized_block_height.height() + 1;
+        let mut catch_up_finalized_blocks = false;
         for (block_state, _candidate_block) in unprocessed_blocks.blocks().values() {
             if SHUTDOWN_FINALIZATION_FLAG.get() == Some(&true) {
                 tracing::trace!("break finalization loop");
@@ -134,6 +137,7 @@ pub fn finalization_loop(
                 &block_state_repository,
                 &mut shared_services,
                 &mut raw_block_tx,
+                bk_set_block_tx.as_mut(),
                 &metrics,
                 node_id,
                 authority.clone(),
@@ -144,8 +148,15 @@ pub fn finalization_loop(
             )
             .expect("try_finalize iteration failed")
             {
+                catch_up_finalized_blocks = true;
                 height_cutoff = new_border;
             }
+        }
+        if shared_services.is_thread_catching_up(&thread_identifier) && catch_up_finalized_blocks {
+            tracing::trace!(
+                "try_finalize_blocks: catch-up finalized blocks, skip wait_for_updates"
+            );
+            continue;
         }
         unprocessed_blocks_cache
             .notifications()
@@ -161,6 +172,7 @@ fn try_finalize(
     block_state_repository: &BlockStateRepository,
     shared_services: &mut SharedServices,
     raw_block_tx: &mut InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
+    mut bk_set_block_tx: Option<&mut InstrumentedSender<BkSetBlockSaveCommand>>,
     metrics: &Option<BlockProductionMetrics>,
     node_id: &NodeIdentifier,
     authority: Arc<Mutex<Authority>>,
@@ -240,6 +252,7 @@ fn try_finalize(
                 repository,
                 block_state_repository,
                 raw_block_tx,
+                bk_set_block_tx.as_deref_mut(),
                 state_sync_service.clone(),
                 last_block_attestations.clone(),
                 node_id,
@@ -296,6 +309,7 @@ pub fn on_block_finalized(
     repository: &mut RepositoryImpl,
     block_state_repository: &BlockStateRepository,
     raw_block_tx: &mut InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
+    bk_set_block_tx: Option<&mut InstrumentedSender<BkSetBlockSaveCommand>>,
     state_sync_service: Arc<impl StateSyncService<Repository = RepositoryImpl>>,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
     node_id: &NodeIdentifier,
@@ -369,6 +383,18 @@ pub fn on_block_finalized(
             Err(e) => {
                 if SHUTDOWN_FLAG.get() != Some(&true) {
                     anyhow::bail!("Failed to send block: {e}");
+                }
+            }
+        }
+        if !block.data().common_section().block_keeper_set_changes().is_empty() {
+            if let Some(bk_set_block_tx) = bk_set_block_tx {
+                match bk_set_block_tx.send(BkSetBlockSaveCommand::Save(block.clone())) {
+                    Ok(()) => {},
+                    Err(e) => {
+                        if SHUTDOWN_FLAG.get() != Some(&true) {
+                            anyhow::bail!("Failed to send BK set block to storage service: {e}");
+                        }
+                    }
                 }
             }
         }

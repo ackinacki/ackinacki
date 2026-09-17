@@ -32,6 +32,13 @@ pub trait MessageScheduler<M: SchedulableMessage>: Send {
         selection_cursor: &mut MessagesSelectionCursor<M>,
     ) -> Option<(Stamp, M)>;
 
+    fn next_low_priority_message(
+        &self,
+        ignore_list: &HashSet<M::Destination>,
+        requested_stamps: &StdBTreeSet<Stamp>,
+        selection_cursor: &mut MessagesSelectionCursor<M>,
+    ) -> Option<(Stamp, M)>;
+
     fn restore_processed(&mut self, processed: &[(Stamp, M)]);
 }
 
@@ -64,6 +71,15 @@ impl<M: SchedulableMessage> MessageScheduler<M> for Arc<Mutex<Messages<M>>> {
         self.lock().next_message(ignore_list, requested_stamps, selection_cursor)
     }
 
+    fn next_low_priority_message(
+        &self,
+        ignore_list: &HashSet<M::Destination>,
+        requested_stamps: &StdBTreeSet<Stamp>,
+        selection_cursor: &mut MessagesSelectionCursor<M>,
+    ) -> Option<(Stamp, M)> {
+        self.lock().next_low_priority_message(ignore_list, requested_stamps, selection_cursor)
+    }
+
     fn restore_processed(&mut self, processed: &[(Stamp, M)]) {
         self.lock().restore_processed(processed);
     }
@@ -81,6 +97,15 @@ impl<M: SchedulableMessage> MessageScheduler<M> for Messages<M> {
         selection_cursor: &mut MessagesSelectionCursor<M>,
     ) -> Option<(Stamp, M)> {
         self.next_message(ignore_list, requested_stamps, selection_cursor)
+    }
+
+    fn next_low_priority_message(
+        &self,
+        ignore_list: &HashSet<M::Destination>,
+        requested_stamps: &StdBTreeSet<Stamp>,
+        selection_cursor: &mut MessagesSelectionCursor<M>,
+    ) -> Option<(Stamp, M)> {
+        self.next_low_priority_message(ignore_list, requested_stamps, selection_cursor)
     }
 
     fn restore_processed(&mut self, processed: &[(Stamp, M)]) {
@@ -103,6 +128,22 @@ impl<M: SchedulableMessage> MessageScheduler<M> for OrderedMessages<M> {
             .iter()
             .find(|(stamp, message)| {
                 !requested_stamps.contains(stamp) && !ignore_list.contains(&message.destination())
+            })
+            .cloned()
+    }
+
+    fn next_low_priority_message(
+        &self,
+        ignore_list: &HashSet<M::Destination>,
+        requested_stamps: &StdBTreeSet<Stamp>,
+        _selection_cursor: &mut MessagesSelectionCursor<M>,
+    ) -> Option<(Stamp, M)> {
+        self.messages
+            .iter()
+            .find(|(stamp, message)| {
+                message.is_low_priority()
+                    && !requested_stamps.contains(stamp)
+                    && !ignore_list.contains(&message.destination())
             })
             .cloned()
     }

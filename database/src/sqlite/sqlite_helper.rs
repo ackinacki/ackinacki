@@ -1028,7 +1028,10 @@ mod test {
     fn store_block_insert_matches_columns_and_params() -> anyhow::Result<()> {
         let db_dir = testdir!();
         let db_maintenance = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &db_dir);
-        db_maintenance.migrate(MigrateTo::Latest, DbMaintenanceOptions { silent: true })?;
+        db_maintenance.migrate(
+            MigrateTo::Latest,
+            DbMaintenanceOptions { silent: true, ..Default::default() },
+        )?;
         let conn = Connection::open(&db_maintenance.path)?;
 
         let conn = Arc::new(Mutex::new(Some(conn)));
@@ -1139,7 +1142,10 @@ mod test {
     fn store_transactions_insert_matches_columns_and_params() -> anyhow::Result<()> {
         let db_dir = testdir!();
         let db_maintenance = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &db_dir);
-        db_maintenance.migrate(MigrateTo::Latest, DbMaintenanceOptions { silent: true })?;
+        db_maintenance.migrate(
+            MigrateTo::Latest,
+            DbMaintenanceOptions { silent: true, ..Default::default() },
+        )?;
         let conn = Arc::new(Mutex::new(Some(Connection::open(&db_maintenance.path)?)));
         let mut context = SqliteHelperContext {
             config: SqliteHelperConfig::new(PathBuf::new(), None),

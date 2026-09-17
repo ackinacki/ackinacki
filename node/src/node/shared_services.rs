@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -31,6 +32,7 @@ pub struct SharedServices {
     pub metrics: Option<BlockProductionMetrics>,
     limiter: Arc<DefaultKeyedRateLimiter<NodeIdentifier>>,
     pub last_finalization_timestamp: Arc<AtomicU64>,
+    catch_up_threads: Arc<Mutex<HashSet<ThreadIdentifier>>>,
 }
 
 #[allow(dead_code, non_snake_case)]
@@ -110,6 +112,7 @@ impl SharedServices {
                     .expect("Rate limit is non-zero"),
             ))),
             last_finalization_timestamp: Arc::new(AtomicU64::new(0)),
+            catch_up_threads: Arc::new(Mutex::new(HashSet::new())),
         };
         res.update_last_finalization_timestamp();
         res
@@ -134,6 +137,46 @@ impl SharedServices {
             .as_millis() as u64;
         let last_finalized = self.last_finalization_timestamp.load(Ordering::Relaxed);
         std::time::Duration::from_millis(now.saturating_sub(last_finalized))
+    }
+
+    pub fn is_node_catching_up(&self) -> bool {
+        !self.catch_up_threads.lock().expect("Can not be poisoned").is_empty()
+    }
+
+    pub fn is_thread_catching_up(&self, thread_id: &ThreadIdentifier) -> bool {
+        self.catch_up_threads.lock().expect("Can not be poisoned").contains(thread_id)
+    }
+
+    pub fn set_thread_catch_up_status(
+        &self,
+        thread_id: &ThreadIdentifier,
+        is_catching_up: bool,
+        reason: &'static str,
+        queue_len: Option<usize>,
+        finalization_delay_ms: Option<u64>,
+    ) {
+        let mut catch_up_threads = self.catch_up_threads.lock().expect("Can not be poisoned");
+        let changed = if is_catching_up {
+            catch_up_threads.insert(*thread_id)
+        } else {
+            catch_up_threads.remove(thread_id)
+        };
+        let node_is_catching_up = !catch_up_threads.is_empty();
+        drop(catch_up_threads);
+
+        if !changed {
+            return;
+        }
+
+        self.metrics.as_ref().inspect(|m| {
+            m.report_catch_up_status(u64::from(is_catching_up), thread_id);
+        });
+        tracing::info!(
+            target: "node",
+            "catch-up status changed: thread={thread_id:?} thread_catching_up={is_catching_up} \
+             node_catching_up={node_is_catching_up} reason={reason} queue_len={queue_len:?} \
+             finalization_delay_ms={finalization_delay_ms:?}"
+        );
     }
 
     pub fn exec<F, R>(&mut self, f: F) -> R

@@ -2,6 +2,43 @@
 
 All notable changes to `migration-tool` are documented in this file.
 
+## [0.7.0] - 2026-09-15
+
+### Added
+- `--no-journal`: runs the migration with `journal_mode=DELETE` instead of the
+  journal mode persisted in the database file (WAL/WAL2). Intended for cold
+  archive copies; do not use on live block-manager databases. The pragma is
+  applied only when a migration actually runs — an inspect-only invocation
+  (`migration-tool -p <db>` without `--block-manager`) leaves the journal mode
+  untouched.
+- `--no-check-constraints`: on upgrade, applies a migration's `up-nocheck.sql`
+  variant when it ships one (`008-poseidon` does) — the same DDL without CHECK
+  constraints. Avoids a full-table `pragma_quick_check` scan per `ALTER TABLE
+  ... ADD COLUMN ... CHECK` on multi-terabyte archives (hours → seconds). The
+  resulting database is stamped with the same schema version but does not
+  enforce the skipped CHECKs; use only on cold copies whose rows were already
+  validated at insert time. The tool refuses to run if the migration directory
+  it is about to apply does not carry the expected version number.
+
+### Changed
+- Migrations run with a 1 GiB page cache. The bundled SQLite is a plain
+  `bundled` build (`SQLITE_TEMP_STORE=1`), so index sorts already spill to
+  disk; what the cache changes is the size of the sorter's in-memory runs
+  (SQLite caps them at 512 MiB), which turns a `CREATE INDEX` over a
+  multi-billion-row table from thousands of tiny merge passes into a few large
+  ones. Temporary files land in `SQLITE_TMPDIR`: point it at a volume with free
+  space when migrating a multi-terabyte archive, or the root filesystem fills
+  up.
+
+### Fixed
+- `--no-journal` switches the journal mode only when a migration actually runs,
+  and fails if SQLite refuses the switch. Previously an inspection or an
+  idempotent re-run on an up-to-date database rewrote its journal mode, and a
+  refused switch went unnoticed.
+- A failed `user_version` read (locked, truncated or non-SQLite file) now aborts
+  with an explicit error instead of being treated as schema version 0 and
+  migrated from scratch.
+
 ## [0.6.0]
 
 ### Added

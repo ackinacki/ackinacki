@@ -341,16 +341,6 @@ impl HistoryBlockData {
         leaf_hash: [u8; 32],
         block_height: BlockHeight,
     ) -> anyhow::Result<()> {
-        tracing::trace!("HistoryBlockData: update: self.data_len={}, self.last_processed_block_height={}, new_height={}", self.data_len, self.last_processed_block_height.height(), block_height.height());
-        tracing::trace!(
-            "HistoryBlockData: update_from_pure_data leaf_hash={:?}",
-            hex::encode(leaf_hash)
-        );
-        tracing::trace!(
-            "HistoryBlockData: update_from_pure_data data_len={} data_tail={:?}",
-            self.data_len,
-            self.data.iter().next_back().map(hex::encode)
-        );
         ensure!(
             block_height.thread_identifier() == &self.thread_id,
             "History proof data is stored only for the default thread"
@@ -381,7 +371,6 @@ impl HistoryBlockData {
         last_layer_root_hash_of_the_same_layer: Option<[u8; 32]>,
         last_layer_root_hash_of_the_higher_layer: Option<[u8; 32]>,
     ) -> anyhow::Result<[u8; 32]> {
-        tracing::trace!("HistoryBlockData: calculate_root_hash: self.data_len={}, self.last_processed_block_height={}, last_layer_root_hash_of_the_same_layer={:?}, last_layer_root_hash_of_the_higher_layer={:?}", self.data_len, self.last_processed_block_height.height(), last_layer_root_hash_of_the_same_layer.as_ref().map(hex::encode), last_layer_root_hash_of_the_higher_layer.as_ref().map(hex::encode));
         ensure!(self.data_len == HISTORY_PROOF_WINDOW_SIZE, "History block data length mismatch");
 
         let hasher = PoseidonHasher::new();
@@ -397,7 +386,6 @@ impl HistoryBlockData {
         let root = dense_merkle_root(&hasher, &leaf_hashes);
         tracing::trace!("calculate_root_hash Poseidon insert: {} ms", start.elapsed().as_millis());
 
-        tracing::trace!("HistoryBlockData: calculate_root_hash root={:?}", hex::encode(root));
         Ok(root)
     }
 }

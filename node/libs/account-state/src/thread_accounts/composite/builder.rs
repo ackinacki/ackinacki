@@ -6,6 +6,7 @@ use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::DAppIdentifier;
 use node_types::ThreadIdentifier;
+use rayon::prelude::*;
 use tvm_block::MerkleUpdate;
 use tvm_block::Serializable;
 
@@ -31,6 +32,7 @@ const MERKLE_UPDATE_SIZE_FACTOR: f64 = 2.0;
 /// For small accounts the overhead of creating/applying merkle updates is not worth it.
 #[allow(unused)]
 const MERKLE_UPDATE_MIN_ACCOUNT_SIZE: usize = 256;
+const PARALLEL_MERKLE_UPDATE_CREATE_THRESHOLD: usize = 16;
 
 #[derive(Clone)]
 pub struct ThreadAccountsStateBuilder {
@@ -423,22 +425,52 @@ fn _optimize_durable_diff(
     old_tvm_accounts: &tvm_block::ShardAccounts,
     diff: HashMap<AccountRouting, BlockAccountOperation>,
 ) -> HashMap<AccountRouting, BlockAccountOperation> {
-    diff.into_iter()
-        .map(|(routing, update)| {
-            let optimized = match &update {
-                BlockAccountOperation::UpdateOrInsert(new_account) => _try_create_merkle_update(
+    if diff.len() < PARALLEL_MERKLE_UPDATE_CREATE_THRESHOLD {
+        diff.into_iter()
+            .map(|(routing, update)| {
+                _optimize_durable_diff_entry(
                     durable_repo,
                     original_durable,
                     old_tvm_accounts,
-                    &routing,
-                    new_account,
+                    routing,
+                    update,
                 )
-                .unwrap_or(update),
-                _ => update,
-            };
-            (routing, optimized)
-        })
-        .collect()
+            })
+            .collect()
+    } else {
+        diff.into_par_iter()
+            .map(|(routing, update)| {
+                _optimize_durable_diff_entry(
+                    durable_repo,
+                    original_durable,
+                    old_tvm_accounts,
+                    routing,
+                    update,
+                )
+            })
+            .collect()
+    }
+}
+
+fn _optimize_durable_diff_entry(
+    durable_repo: &crate::thread_accounts::durable::DurableThreadAccountsRepository,
+    original_durable: &DurableThreadAccountsState,
+    old_tvm_accounts: &tvm_block::ShardAccounts,
+    routing: AccountRouting,
+    update: BlockAccountOperation,
+) -> (AccountRouting, BlockAccountOperation) {
+    let optimized = match &update {
+        BlockAccountOperation::UpdateOrInsert(new_account) => _try_create_merkle_update(
+            durable_repo,
+            original_durable,
+            old_tvm_accounts,
+            &routing,
+            new_account,
+        )
+        .unwrap_or(update),
+        _ => update,
+    };
+    (routing, optimized)
 }
 
 fn _try_create_merkle_update(

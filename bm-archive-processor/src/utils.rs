@@ -24,7 +24,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use tempfile::TempDir;
+    use testdir::testdir;
 
     use super::*;
     use crate::cli::CompressionMode as CliCompressionMode;
@@ -46,8 +46,8 @@ mod tests {
         base.join("incoming").join(server).join(format!("bm-archive-{ts}.db"))
     }
 
-    fn build_tree(tmp: &TempDir, layout: &[(&str, &[i64])]) -> PathBuf {
-        let root = tmp.path().to_path_buf();
+    fn build_tree(root: &Path, layout: &[(&str, &[i64])]) -> PathBuf {
+        let root = root.to_path_buf();
         for (srv, tss) in layout {
             for ts in *tss {
                 let p = make_db_path(&root, srv, *ts);
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn test_find_groups_full_match_require_all() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = testdir!();
         let root = build_tree(
             &tmp,
             &[
@@ -95,6 +95,10 @@ mod tests {
             bucket: None,
             post_upload: PostUploadAction::Keep,
             skip_upload: true,
+            upload_later: false,
+            upload_only: None,
+            paranoid: false,
+            daily_hook: None,
             dry_run: true,
         };
 
@@ -138,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_find_groups_partial_when_not_require_all() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = testdir!();
 
         let root = build_tree(
             &tmp,
@@ -160,6 +164,10 @@ mod tests {
             bucket: None,
             post_upload: PostUploadAction::Keep,
             skip_upload: false,
+            upload_later: false,
+            upload_only: None,
+            paranoid: false,
+            daily_hook: None,
             dry_run: false,
         };
 

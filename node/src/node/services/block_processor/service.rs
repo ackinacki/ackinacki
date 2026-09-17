@@ -67,6 +67,7 @@ use crate::utilities::thread_spawn_critical::SpawnCritical;
 use crate::utilities::FixedSizeHashSet;
 
 pub const MAX_ATTESTATION_TARGET_BETA: usize = 30;
+const CATCH_UP_LAG_BLOCKS: u32 = (MAX_ATTESTATION_TARGET_BETA as u32 * 2) + 5;
 // const ALLOWED_BLOCK_PRODUCTION_TIME_LAG_MS: u64 = 50;
 
 use network::channel::NetBroadcastSender;
@@ -233,6 +234,31 @@ impl BlockProcessorService {
                             step_started_at.elapsed().as_millis(),
                             blocks_to_process.blocks().len(),
                         );
+                        if shared_services.is_thread_catching_up(&thread_identifier)
+                            && blocks_to_process.blocks().len() < CATCH_UP_LAG_BLOCKS as usize
+                        {
+                            let finalized_delay_ms = last_finalized_block.guarded(|e| {
+                                e.event_timestamps
+                                    .received_ms
+                                    .map(|received_ms| now_ms().saturating_sub(received_ms))
+                            });
+                            let catch_up_delay_limit_ms = (CATCH_UP_LAG_BLOCKS as u128)
+                                .saturating_mul(time_to_produce_block.as_millis());
+                            if finalized_delay_ms
+                                .map(|delay| (delay as u128) < catch_up_delay_limit_ms)
+                                .unwrap_or(false)
+                            {
+                                shared_services.set_thread_catch_up_status(
+                                    &thread_identifier,
+                                    false,
+                                    "queue_and_finalization_delay_below_limits",
+                                    Some(blocks_to_process.blocks().len()),
+                                    finalized_delay_ms,
+                                );
+                            }
+                        }
+                        let is_catching_up =
+                            shared_services.is_thread_catching_up(&thread_identifier);
 
                         shared_services.metrics.as_ref().inspect(|m| {
                             m.report_unfinalized_blocks_queue(blocks_to_process.blocks().len() as u64, &thread_identifier);
@@ -245,7 +271,16 @@ impl BlockProcessorService {
                             step_started_at.elapsed().as_millis(),
                         );
                         let mut first_unsuccessfully_processed_block_height: Option<BlockHeight> = None;
+                        let mut catch_up_made_progress = false;
                         for (block_state, block) in blocks_to_process.blocks().values() {
+                            let before_processing = block_state.guarded(|e| {
+                                (
+                                    e.is_block_already_applied(),
+                                    *e.has_cross_thread_ref_data_prepared(),
+                                    e.is_finalized(),
+                                    e.is_invalidated(),
+                                )
+                            });
                             {
                                 let (block_process_timestamp_was_reported, thread_identifier, received_ms) = block_state.guarded_mut(|e| {
                                     anyhow::Ok((
@@ -286,6 +321,7 @@ impl BlockProcessorService {
                                 &mut cross_thread_ref_data_availability_synchronization_service,
                                 &save_optimistic_service_sender,
                                 &filter,
+                                is_catching_up,
                             )?;
                             // Note: node iterates over blocks in order of their seq no and if it can't
                             // process block, it won't be able to process the next one.
@@ -299,17 +335,31 @@ impl BlockProcessorService {
                                     continue;
                                 };
                                 if first_unsuccessfully_processed_block_height.map(|prev_unsuccessful_height| prev_unsuccessful_height.signed_distance_to(&block_height).unwrap_or(0) > 1).unwrap_or(false) {
-                                    //break;
-                                    // Note: test to rule out hypothesis.
-                                    continue;
+                                    break;
                                 }
                                 if first_unsuccessfully_processed_block_height.is_none() {
                                     first_unsuccessfully_processed_block_height = Some(block_height);
                                 }
                                 continue;
                             } else {
+                                let after_processing = block_state.guarded(|e| {
+                                    (
+                                        e.is_block_already_applied(),
+                                        *e.has_cross_thread_ref_data_prepared(),
+                                        e.is_finalized(),
+                                        e.is_invalidated(),
+                                    )
+                                });
+                                catch_up_made_progress |= before_processing != after_processing;
                                 first_unsuccessfully_processed_block_height = None;
                             }
+                        }
+                        if is_catching_up && catch_up_made_progress {
+                            tracing::trace!(
+                                "block_processor timing: step=catch_up_skip_wait blocks={}",
+                                blocks_to_process.blocks().len(),
+                            );
+                            continue;
                         }
                     }
                     tracing::trace!(
@@ -378,6 +428,7 @@ fn process_candidate_block(
     cross_thread_ref_data_availability_synchronization_service: &mut CrossThreadRefDataAvailabilitySynchronizationServiceInterface,
     save_optimistic_service_sender: &InstrumentedSender<OptimisticStateSaveCommand>,
     filter_prehistoric: &FilterPrehistoric,
+    is_catching_up: bool,
 ) -> anyhow::Result<ProcessingIterationResult> {
     // if block_state.guarded(|e| e.is_block_already_applied()) {
     //     // This is the last flag this method sets. Skip this block checks if it is already set.
@@ -729,6 +780,7 @@ fn process_candidate_block(
         chain_pulse_monitor,
         filter_prehistoric,
         shared_services,
+        is_catching_up,
     )? {
         tracing::trace!("Process block candidate: can't process_block_attestations, skip it");
         return Ok(ProcessingIterationResult::Break);
@@ -814,9 +866,11 @@ fn process_candidate_block(
 
                 return Ok(ProcessingIterationResult::Continue);
             }
-            if block_state.guarded(|e| {
-                *e.must_be_validated() == Some(true) || !e.has_bad_block_nacks_resolved()
-            }) {
+            if !is_catching_up
+                && block_state.guarded(|e| {
+                    *e.must_be_validated() == Some(true) || !e.has_bad_block_nacks_resolved()
+                })
+            {
                 validation_service.send((block_state.clone(), candidate_block.clone()));
             }
             // let (_, last_finalized_seq_no) = repository
@@ -925,7 +979,8 @@ fn process_candidate_block(
 
             let common_section = candidate_block.data().common_section().clone();
             let parent_seq_no = parent_block_state.guarded(|e| *e.block_seq_no());
-            let must_save_state = *common_section.directives().share_state_resources()
+            let must_save_state = (!is_catching_up
+                && *common_section.directives().share_state_resources())
                 || candidate_block.data().is_thread_splitting()
                 || must_save_state_on_seq_no(block_seq_no, parent_seq_no, save_state_frequency);
             let optimistic_state = Arc::new(optimistic_state);
@@ -954,6 +1009,12 @@ fn process_candidate_block(
                 m.report_thread_load(0, &thread_id);
                 m.report_block_production_time_and_correction(0, 0, &thread_id);
                 m.report_ext_msg_queue_size(0, &thread_id);
+                m.report_ext_msg_queue_low_priority_percentage(0.0, &thread_id);
+                m.report_ext_msg_queue_low_priority_total_limit_percentage(0.0, &thread_id);
+                m.report_ext_msg_processed_per_block(0, &thread_id);
+                m.report_ext_msg_received(0, &thread_id);
+                m.report_ext_msg_low_priority_received(0, &thread_id);
+                m.report_ext_msg_low_priority_filtered(0, &thread_id);
             });
 
             let _ = chain_pulse_monitor
@@ -1072,7 +1133,6 @@ pub(crate) fn verify_all_block_signatures(
             return Some(false);
         }
     };
-    tracing::trace!("Block signature is valid (envelope)");
     let previously_verified_attestations: HashSet<(BlockIdentifier, AttestationTargetType)> =
         block_state.guarded(|e| {
             HashSet::from_iter(
@@ -1248,6 +1308,7 @@ fn process_block_attestations(
     chain_pulse_monitor: &Sender<ChainPulseEvent>,
     filter_prehistoric: &FilterPrehistoric,
     shared_services: &SharedServices,
+    is_catching_up: bool,
 ) -> anyhow::Result<bool> {
     if block_state.guarded(|e| e.has_block_attestations_processed() == &Some(true)) {
         return Ok(true);
@@ -1412,7 +1473,9 @@ fn process_block_attestations(
                 // Recalculate if must be validated.
                 if e.must_be_validated_in_fallback_case() == &Some(true) {
                     e.set_must_be_validated().expect("Failed to set must_be_validated");
-                    validation_service.send((block_state.clone(), candidate_block.clone()));
+                    if !is_catching_up {
+                        validation_service.send((block_state.clone(), candidate_block.clone()));
+                    }
                 }
             }
             e.set_requires_fallback_attestation()

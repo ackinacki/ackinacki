@@ -191,6 +191,7 @@ services:
         --ext-messages-total-limit {{ EXT_MESSAGES_TOTAL_LIMIT }}
         --ext-messages-dapp-limit {{ EXT_MESSAGES_DAPP_LIMIT }}
         --ext-messages-account-limit {{ EXT_MESSAGES_ACCOUNT_LIMIT }}
+        --ext-messages-low-priority-limit-percentage {{ EXT_MESSAGES_LOW_PRIORITY_LIMIT_PERCENTAGE }}
         --chitchat-cluster-id "{{ UPD_NETWORK_NAME | default(NETWORK_NAME) }}"
         --block-keeper-epoch-code-hash {{ CODE_HASH }}
         --bk-api-host-port {{ BK_HOSTNAME | default(inventory_hostname) }}
@@ -224,6 +225,7 @@ services:
         --ext-messages-total-limit {{ EXT_MESSAGES_TOTAL_LIMIT }}
         --ext-messages-dapp-limit {{ EXT_MESSAGES_DAPP_LIMIT }}
         --ext-messages-account-limit {{ EXT_MESSAGES_ACCOUNT_LIMIT }}
+        --ext-messages-low-priority-limit-percentage {{ EXT_MESSAGES_LOW_PRIORITY_LIMIT_PERCENTAGE }}
         --chitchat-cluster-id "{{ UPD_NETWORK_NAME | default(NETWORK_NAME) }}"
         --block-keeper-epoch-code-hash {{ CODE_HASH }}
         --bk-api-host-port {{ BK_HOSTNAME | default(inventory_hostname) }}

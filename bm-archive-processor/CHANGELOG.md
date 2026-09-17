@@ -2,6 +2,95 @@
 
 All notable changes to `bm-archive-processor` are documented in this file.
 
+## [0.5.0] - 2026-09-15
+
+### Added
+- `--daily-hook <CMD>`: command executed against the freshly built daily DB
+  after assembly and before it is merged into the full DB — e.g.
+  `cold-db-slim.py --run {} --daily` to trim it (NODE-3707). `{}` in the command
+  is replaced with the daily path; without it the path is appended as the last
+  argument. The first token is resolved through `PATH`; no shell is involved,
+  so quoting is not interpreted. A non-zero exit aborts the group: nothing
+  reaches the full DB, incoming files stay put, and the processor exits
+  non-zero so the wrapper does not mark the day as processed.
+- `--paranoid`: makes missing rows fatal instead of merely logged, and runs
+  `PRAGMA quick_check` on the assembled daily (hours on large databases). Off by
+  default — without it no integrity check runs at all, and missing rows only
+  show up in the log line and the metrics scraped from it.
+  The row check covers both merges and runs *after* the rows it checks are
+  committed. A failure while assembling the daily keeps everything out of the
+  full DB. A failure on the daily-to-full merge leaves that day **partially
+  applied** to the full DB: nothing is corrupted, since the merge is
+  `INSERT OR IGNORE` and a retry adds no duplicates, but the daily and the
+  sources stay on disk and the group fails again on every run until the cause is
+  fixed.
+- `--upload-later`: process and compress daily DBs without S3 upload; writes a
+  queue marker to `upload-queue/` for each compressed file, enabling a separate
+  uploader process.
+- `--upload-only <path>`: upload a single file to S3, apply `--post-upload`
+  action, then exit. Designed to be called by an external uploader service
+  reading from the upload queue.
+- `upload-queue/` directory: file-based queue where `--upload-later` writes
+  markers (filename = timestamp, content = path to the daily DB to upload).
+- The startup configuration line now includes `paranoid`.
+
+### Changed
+- **Smart merge**: removed per-source-DB migration before merge. All incoming
+  DBs must now be at the same schema version. This eliminates ~54 hours of
+  redundant migration work (7 DBs x ~9h each).
+- **Fast merge protocol**: when the full (target) DB is at v7 and source DBs are
+  v3+, merge proceeds without any migration — `create_merge_query` already
+  handles column differences by reading the target schema (extra columns like
+  `boc` in older sources are silently ignored).
+- **Version checks**: source DB versions must be equal to each other; if the
+  target DB is missing the processor fails immediately (it must be pre-created
+  via migration tool after rotation).
+- **Fallback migration**: when the target DB is not v7, the daily DB is migrated
+  once to the target version before merge (instead of migrating each source
+  individually). The migrated daily is what gets uploaded afterwards.
+- A source archive that has a non-empty `-wal`/`-wal2`/`-journal` sidecar next
+  to it is refused: the daily starts as a byte copy of the first source, and a
+  sidecar with content would mean un-checkpointed rows the copy silently
+  drops. Block-manager check-points archives on rotation, so this is a guard,
+  not an expected condition.
+- Exit status now reflects processing outcomes: if any archive group fails, the
+  processor exits non-zero. Wrappers that treat exit 0 as "day applied"
+  (iterative-apply) now see the failure instead of silently losing the day. A
+  group that keeps failing keeps every subsequent run non-zero on purpose,
+  until an operator looks at it.
+- The per-source verification line logs the exact `missing_keys=` count (the
+  value the wrapper scrapes into metrics) but at most 20 example keys instead
+  of the full list.
+- Daily DBs are switched to `journal_mode=DELETE` during assembly, and the
+  group fails if SQLite refuses the switch. They previously inherited WAL2 from
+  the BM archive they were copied from, making them unreadable for stock
+  SQLite; dailies uploaded to S3 before this change still require a
+  WAL2-enabled build to open.
+- With `--upload-later --post-upload delete`, processed source archives are
+  deleted right after the daily is queued for upload (the upload itself happens
+  later, in the external uploader).
+- Leftover dailies found in `daily/` are queued for deferred upload when running
+  with `--upload-later`; previously they were stranded (no S3 client in the
+  process, no queue marker ever written). An existing queue marker is never
+  overwritten, a daily that already has a marker is never compressed by the
+  leftover scan (it belongs to the uploader), and dailies belonging to groups
+  that failed in the same run are excluded from the scan.
+- Upload-queue marker names now take everything before the first dot
+  (`1760418000`, as documented in the README); previously a compressed daily
+  produced `1760418000.db`, and `.db.xz`/`.db.gz` of the same day collided.
+- Markers are written atomically (hidden temp file + rename), so a crash or a
+  full disk cannot leave a truncated marker in the queue.
+- `--dry-run` is honored by `--upload-only` (no upload, no post-upload action)
+  and by the leftover scan, which no longer writes queue markers in a dry run.
+
+### Fixed
+- `--upload-only` exits non-zero when the post-upload action (delete/move)
+  fails, so the deferred uploader keeps the queue marker instead of dropping it
+  and re-uploading the same file to S3 Deep Archive on every cycle.
+- A source or target DB whose schema version cannot be read (locked, truncated,
+  not SQLite) now fails the run with an explicit error instead of being treated
+  as version 0 and slipping past the version gates into the merge.
+
 ## [0.4.0] - 2026-03-20
 
 ### Added

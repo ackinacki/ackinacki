@@ -70,8 +70,39 @@ pub struct Args {
     pub post_upload: PostUploadAction,
 
     /// Skip uploading to S3 Glacier
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, conflicts_with = "upload_later")]
     pub skip_upload: bool,
+
+    /// Skip S3 upload and enqueue compressed daily for later upload via --upload-only
+    #[arg(long, default_value_t = false, conflicts_with = "skip_upload")]
+    pub upload_later: bool,
+
+    /// Upload a single file to S3 and apply post-upload action, then exit
+    #[arg(long, conflicts_with_all = ["skip_upload", "upload_later"])]
+    pub upload_only: Option<PathBuf>,
+
+    /// Make missing rows fatal instead of merely logged, and run PRAGMA
+    /// quick_check on the assembled daily (hours on large databases)
+    ///
+    /// The row check covers both merges — source into daily, and daily into the
+    /// full DB — and runs after the rows it checks are committed. A failure
+    /// while assembling the daily keeps everything out of the full DB; a failure
+    /// on the daily-to-full merge leaves that day partially applied there. The
+    /// merge is INSERT OR IGNORE, so a retry adds no duplicates, but the group
+    /// keeps failing until the cause is fixed.
+    #[arg(long, default_value_t = false)]
+    pub paranoid: bool,
+
+    /// Command to run on the daily DB after it is built and before it is merged
+    /// into the full DB, e.g. to trim it (see NODE-3707).
+    ///
+    /// Split on whitespace, no shell involved (quoting is not interpreted); the
+    /// first token is looked up on PATH. `{}` is replaced with the daily DB
+    /// path, or the path is appended when absent.
+    /// A non-zero exit status aborts processing of the group, so a failed trim
+    /// can never let an unverified daily reach the full DB.
+    #[arg(long, value_name = "CMD")]
+    pub daily_hook: Option<String>,
 
     /// Dry run mode (don't upload or move files)
     #[arg(long, default_value_t = false)]

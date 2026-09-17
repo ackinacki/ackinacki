@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.2] – 2026-09-15
+
+### New / Improvements
+- Changed node catch-up mode to start only after a sync snapshot is imported,
+  apply only to the synced thread, and exit once that thread's unfinalized block
+  queue and block receive-to-finalization delay are below the catch-up limits.
+  Added the per-thread `node_catch_up_status` gauge.
+- Sped up node catch-up after snapshot sync: while a node is replaying a large
+  backlog it skips block validation work, suppresses sync snapshot sharing,
+  stops scanning after the first blocked height, and removes several hot
+  per-block trace logs.
+- Added a node `ext_messages` DEBUG log for every received external message,
+  including `message_id`, `destination_addr`, `dapp_id` and `function_id`.
+- Added node external-message metrics: `node_ext_msg_processed_per_block`,
+  `node_ext_msg_received`, `node_ext_msg_low_priority_received`,
+  `node_ext_msg_low_priority_filtered`,
+  `node_ext_msg_queue_low_priority_percentage` and
+  `node_ext_msg_queue_low_priority_total_limit_percentage`.
+- Added block-producer external-message execution metrics
+  `node_ext_msg_high_priority_processed_per_block` and
+  `node_ext_msg_low_priority_processed_per_block`.
+- Updated TVM SDK/CLI dependency to the `v3.0.6.an` release
+- Applied durable account Merkle updates in parallel for larger block-state batches, reducing node block-apply latency before attestation generation.
+- Created durable account Merkle updates in parallel while producing blocks with larger account-update batches, reducing block generation latency.
+- Added low-priority scheduling for external messages whose function id is in the built-in low-priority set. These messages stay under the existing total, per-DApp and per-account queue limits, but are selected only after normal-priority external messages.
+- Added `ext_messages_low_priority_limit_percentage` (default `80`) to cap low-priority external messages at that share of each total, per-DApp and per-account external-message queue limit. `node-helper config` also accepts `--ext-messages-low-priority-limit-percentage` and `EXT_MESSAGES_LOW_PRIORITY_LIMIT_PERCENTAGE`.
+- Changed the default external-message queue limits in the `block-keeper` Ansible role: `EXT_MESSAGES_TOTAL_LIMIT` 1000 → 1200, `EXT_MESSAGES_DAPP_LIMIT` 500 → 600.
+- Added the optional node local config field `bk_set_changes_blocks_path`. When set, the node saves every finalized block that carries `block_keeper_set_changes` into that directory.
+- `bm-archive-processor`: added `--daily-hook <CMD>` (runs a command, e.g. a trim script, against the daily DB before it is merged) and `--paranoid` (makes missing rows fatal in both merges and runs `PRAGMA quick_check` on the daily; without it no integrity check runs and missing rows are only logged — note that a `--paranoid` failure on the merge into the full DB leaves that day partially applied there, harmless to retry but failing every run until fixed); daily DBs are now written in `journal_mode=DELETE` so stock SQLite can open them — dailies uploaded to S3 before this change still need a WAL2-enabled SQLite; `--upload-later` / `--upload-only` decouple S3 uploads from processing through an `upload-queue/` directory; a failed archive group now makes the processor exit non-zero, so a wrapper that treated exit 0 as "day applied" sees the failure instead of losing the day
+- `bm-archive-processor`: an archive group is now refused unless every incoming BM database is at the same schema version, and the full database must already exist — create and migrate `db/bm-archive.db` with `migration-tool` after a rotation, the processor no longer falls back to migrating each source itself. In exchange the per-source migration before a merge is gone (~54 hours off a seven-database day); when the full DB is ahead of the sources, the assembled daily is migrated once instead
+- `migration-tool`: added `--no-journal` and `--no-check-constraints` for migrating cold archive copies; `CREATE INDEX` migrations now sort in 512 MiB runs — point `SQLITE_TMPDIR` at a volume with free space when migrating a multi-terabyte archive, or the root filesystem fills up
+
+### Fixes
+- Fixed node snapshot sync so once a downloaded snapshot is accepted, remaining
+  pending or in-progress snapshot candidates are cancelled and cannot prune or
+  overwrite the catch-up chain.
+- Fixed node restart from shutdown so saved unfinalized blocks are relinked to
+  their parents and reapplied over the last finalized durable state.
+- Fixed block production external-message scheduling so a block producer tries
+  to execute one low-priority external message after every four high-priority
+  external messages when low-priority messages are available.
+- Removed empty DApp entries from the node account state when the last account in that DApp is deleted.
+
 ## [0.19.1] – 2026-08-24
 
 ### New / Improvements

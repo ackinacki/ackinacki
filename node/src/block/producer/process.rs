@@ -370,7 +370,8 @@ impl TVMBlockProducerProcess {
                 let force_sync = <u32>::from(next_seq_no(initial_state.block_seq_no))
                     % FORCE_SYNC_STATE_BLOCK_FREQUENCY
                     == 0;
-                (*flag == Some(next_seq_no(initial_state.block_seq_no))) || force_sync
+                !shared_services.is_thread_catching_up(&thread_id_clone)
+                    && ((*flag == Some(next_seq_no(initial_state.block_seq_no))) || force_sync)
             };
             if state_share_was_requested {
                 for block_ref in &refs {
@@ -1304,6 +1305,7 @@ mod tests {
                     total: 1,
                     per_dapp: 1,
                     per_account: 1,
+                    low_priority_percentage: 80,
                 })
                 .with_feedback_sender(feedback_sender)
                 .with_is_producing(Arc::new(AtomicBool::new(false)))

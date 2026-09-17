@@ -27,8 +27,9 @@ use crate::infra::sqlite_db::SqliteClient;
 pub fn create_db_client(
     tables: &'static [&'static str],
     metrics: Option<crate::app::metrics::Metrics>,
+    paranoid: bool,
 ) -> impl DbClient {
-    SqliteClient::new(tables, metrics)
+    SqliteClient::new(tables, metrics, paranoid)
 }
 
 /// Creates a filesystem client.
@@ -61,7 +62,7 @@ mod tests {
 
     #[test]
     fn test_create_db_client_without_metrics() {
-        let _client = create_db_client(TABLES, None);
+        let _client = create_db_client(TABLES, None, false);
         // Verify it can be created
     }
 

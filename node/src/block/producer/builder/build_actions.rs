@@ -124,6 +124,14 @@ const BK_SYSTEM_DAPP_ID: &str = "00000000000000000000000000000000000000000000000
 pub(crate) const MOVE_FROM_TVM_LIMIT: usize = 100;
 
 const SUSPICIOUS_EXECUTION_TIME: u64 = 150;
+const HIGH_PRIORITY_EXT_MESSAGES_BEFORE_LOW_PRIORITY: usize = 4;
+
+#[derive(Default)]
+struct ExtMessagesPriorityCounters {
+    high_priority_since_low_priority: usize,
+    executed_high_priority: u64,
+    executed_low_priority: u64,
+}
 
 #[cfg(test)]
 lazy_static::lazy_static!(
@@ -1551,23 +1559,53 @@ impl BlockBuilder {
         }
 
         // Third step: execute external messages if block is not full
-        let (ext_message_feedbacks, processed_stamps, unprocessed_ext_msgs_cnt) =
-            if !block_full && !ext_messages_source.is_empty() {
-                let (feedbacks, processed_stamps, is_full, unprocessed) = self
-                    .execute_external_messages(
-                        blockchain_config,
-                        &mut ext_messages_source,
-                        block_unixtime,
-                        block_lt,
-                        &mut check_messages_map,
-                        time_limits,
-                        mvconfig.clone(),
-                    )?;
-                block_full = is_full;
-                (feedbacks, processed_stamps, unprocessed)
-            } else {
-                (ExtMsgFeedbackList::new(), vec![], ext_messages_source.len())
-            };
+        let (
+            ext_message_feedbacks,
+            processed_stamps,
+            unprocessed_ext_msgs_cnt,
+            high_priority_ext_msgs_processed,
+            low_priority_ext_msgs_processed,
+        ) = if !block_full && !ext_messages_source.is_empty() {
+            let (
+                feedbacks,
+                processed_stamps,
+                is_full,
+                unprocessed,
+                high_priority_processed,
+                low_priority_processed,
+            ) = self.execute_external_messages(
+                blockchain_config,
+                &mut ext_messages_source,
+                block_unixtime,
+                block_lt,
+                &mut check_messages_map,
+                time_limits,
+                mvconfig.clone(),
+            )?;
+            block_full = is_full;
+            (
+                feedbacks,
+                processed_stamps,
+                unprocessed,
+                high_priority_processed,
+                low_priority_processed,
+            )
+        } else {
+            (ExtMsgFeedbackList::new(), vec![], ext_messages_source.len(), 0, 0)
+        };
+        if check_messages_map.is_none() {
+            self.metrics.as_ref().inspect(|metrics| {
+                metrics.report_ext_msg_processed_per_block(
+                    processed_stamps.len() as u64,
+                    &self.thread_id,
+                );
+                metrics.report_ext_msg_priority_processed_per_block(
+                    high_priority_ext_msgs_processed,
+                    low_priority_ext_msgs_processed,
+                    &self.thread_id,
+                );
+            });
+        }
 
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
@@ -2398,12 +2436,14 @@ impl BlockBuilder {
     fn fill_ext_msg_threads_pool(
         &mut self,
         ext_messages_source: &mut ExtMessagesSource,
-        active_ext_threads: &mut VecDeque<(Stamp, ExtMessageDst, ActiveThread)>,
+        active_ext_threads: &mut VecDeque<(Stamp, ExtMessageDst, bool, ActiveThread)>,
         active_destinations: &mut HashSet<ExtMessageDst>,
         requested_stamps: &mut StdBTreeSet<Stamp>,
         selection_cursor: &mut ExtMessagesSelectionCursor,
         ext_message_feedbacks: &mut ExtMsgFeedbackList,
         processed_stamps: &mut Vec<Stamp>,
+        priority_counters: &mut ExtMessagesPriorityCounters,
+        interleave_low_priority: bool,
         blockchain_config: &BlockchainConfig,
         block_unixtime: u32,
         block_lt: u64,
@@ -2429,14 +2469,19 @@ impl BlockBuilder {
                 break;
             }
 
-            let Some((stamp, ext_msg)) = ext_messages_source.next_message(
+            let next_message = Self::select_next_ext_message(
+                ext_messages_source,
                 active_destinations,
                 requested_stamps,
                 selection_cursor,
-            ) else {
+                priority_counters,
+                interleave_low_priority,
+            );
+            let Some((stamp, ext_msg)) = next_message else {
                 break;
             };
 
+            let is_low_priority = ext_msg.is_low_priority();
             let dst = *ext_msg.dst();
             let potential_thread = self.get_potential_thread(&dst).map_err(|e| {
                 tracing::error!(target: "builder", "Failed to get potential thread: {e}");
@@ -2495,8 +2540,13 @@ impl BlockBuilder {
             let thread = thread?;
             drop(span_guard);
 
+            if is_low_priority {
+                priority_counters.high_priority_since_low_priority = 0;
+            } else {
+                priority_counters.high_priority_since_low_priority += 1;
+            }
             requested_stamps.insert(stamp.clone());
-            active_ext_threads.push_back((stamp, active_dst, thread));
+            active_ext_threads.push_back((stamp, active_dst, is_low_priority, thread));
             active_destinations.insert(active_dst);
         }
 
@@ -2514,12 +2564,39 @@ impl BlockBuilder {
         Ok(())
     }
 
+    fn select_next_ext_message(
+        ext_messages_source: &mut ExtMessagesSource,
+        active_destinations: &HashSet<ExtMessageDst>,
+        requested_stamps: &StdBTreeSet<Stamp>,
+        selection_cursor: &mut ExtMessagesSelectionCursor,
+        priority_counters: &ExtMessagesPriorityCounters,
+        interleave_low_priority: bool,
+    ) -> Option<(Stamp, QueuedExtMessage)> {
+        if interleave_low_priority
+            && priority_counters.high_priority_since_low_priority
+                >= HIGH_PRIORITY_EXT_MESSAGES_BEFORE_LOW_PRIORITY
+        {
+            let mut low_priority_cursor = selection_cursor.clone();
+            if let Some(next_message) = ext_messages_source.next_low_priority_message(
+                active_destinations,
+                requested_stamps,
+                &mut low_priority_cursor,
+            ) {
+                *selection_cursor = low_priority_cursor;
+                return Some(next_message);
+            }
+        }
+
+        ext_messages_source.next_message(active_destinations, requested_stamps, selection_cursor)
+    }
+
     fn process_completed_ext_msg_threads(
         &mut self,
-        active_ext_threads: &mut VecDeque<(Stamp, ExtMessageDst, ActiveThread)>,
+        active_ext_threads: &mut VecDeque<(Stamp, ExtMessageDst, bool, ActiveThread)>,
         active_destinations: &mut HashSet<ExtMessageDst>,
         ext_message_feedbacks: &mut ExtMsgFeedbackList,
         processed_stamps: &mut Vec<Stamp>,
+        priority_counters: &mut ExtMessagesPriorityCounters,
         verification: bool, // verify_blokc is being built now
     ) -> anyhow::Result<bool> {
         // continue execution
@@ -2534,7 +2611,7 @@ impl BlockBuilder {
 
         while i < active_ext_threads.len() {
             let ready = {
-                let (_, _, thread) = &active_ext_threads[i];
+                let (_, _, _, thread) = &active_ext_threads[i];
                 match thread.result_rx.try_recv() {
                     Ok(result) => Some(result),
                     Err(std::sync::mpsc::TryRecvError::Empty) => None,
@@ -2554,7 +2631,8 @@ impl BlockBuilder {
             tracing::trace!(target: "ext_messages", "process completed: active_ext_threads={}", active_ext_threads.len());
 
             // unwrap is safe here, although it does require mental effort, unfortunately.
-            let (stamp, active_dst, thread) = active_ext_threads.remove(i).unwrap();
+            let (stamp, active_dst, is_low_priority, thread) =
+                active_ext_threads.remove(i).unwrap();
 
             if Self::stop_block_build_after_execution(&thread_result, verification)? {
                 let thread_result = thread_result?;
@@ -2580,6 +2658,11 @@ impl BlockBuilder {
                 active_destinations.remove(&active_dst);
                 ext_message_feedbacks.push(feedback);
                 processed_stamps.push(stamp);
+                if is_low_priority {
+                    priority_counters.executed_low_priority += 1;
+                } else {
+                    priority_counters.executed_high_priority += 1;
+                }
             } else {
                 return Ok(false);
             }
@@ -2600,7 +2683,7 @@ impl BlockBuilder {
         check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         time_limits: &ExecutionTimeLimits,
         mvconfig: MVConfig,
-    ) -> anyhow::Result<(ExtMsgFeedbackList, Vec<Stamp>, bool, usize)> {
+    ) -> anyhow::Result<(ExtMsgFeedbackList, Vec<Stamp>, bool, usize, u64, u64)> {
         let incoming_queue_len: usize = ext_messages_source.len();
 
         let span = tracing::span!(
@@ -2620,9 +2703,11 @@ impl BlockBuilder {
         let mut selection_cursor = ExtMessagesSelectionCursor::default();
         let mut block_full = false;
         let mut processed_stamps = vec![];
+        let mut priority_counters = ExtMessagesPriorityCounters::default();
+        let interleave_low_priority = check_messages_map.is_none();
         if self.should_stop_production() {
             // Don't even enter prcessing external messages.
-            return Ok((ext_message_feedbacks, processed_stamps, true, incoming_queue_len));
+            return Ok((ext_message_feedbacks, processed_stamps, true, incoming_queue_len, 0, 0));
         }
 
         loop {
@@ -2634,6 +2719,8 @@ impl BlockBuilder {
                 &mut selection_cursor,
                 &mut ext_message_feedbacks,
                 &mut processed_stamps,
+                &mut priority_counters,
+                interleave_low_priority,
                 blockchain_config,
                 block_unixtime,
                 block_lt,
@@ -2647,6 +2734,7 @@ impl BlockBuilder {
                 &mut active_destinations,
                 &mut ext_message_feedbacks,
                 &mut processed_stamps,
+                &mut priority_counters,
                 check_messages_map.is_some(),
             )? {
                 block_full = true;
@@ -2691,6 +2779,8 @@ impl BlockBuilder {
             processed_stamps,
             block_full,
             ext_messages_source.len().saturating_sub(requested_stamps.len()),
+            priority_counters.executed_high_priority,
+            priority_counters.executed_low_priority,
         ))
     }
 
@@ -2718,7 +2808,6 @@ impl BlockBuilder {
         verify_block_contains_missing_messages_from_prev_state: &mut bool,
     ) -> anyhow::Result<Option<(Message, MessageIdentifier)>> {
         let started_at = std::time::Instant::now();
-        tracing::info!(target: "builder", "get_next_int_message: start");
         let result = Ok::<_, anyhow::Error>(loop {
             {
                 if let Some(checker) = check_messages_map.as_ref() {
@@ -3088,6 +3177,43 @@ mod tests {
             selected_accounts,
             vec![first.dst().account_id, second.dst().account_id, third.dst().account_id]
         );
+    }
+
+    #[test]
+    fn select_next_ext_message_prefers_low_priority_after_four_high_priority() {
+        let normal = QueuedExtMessage::new_for_test(ExtMessageDst::new(test_account(1), None));
+        let low =
+            QueuedExtMessage::new_low_priority_for_test(ExtMessageDst::new(test_account(2), None));
+
+        let mut grouped = HashMap::new();
+        grouped
+            .entry(*normal.dst())
+            .or_insert_with(VecDeque::new)
+            .push_back((test_stamp(1), normal));
+        grouped
+            .entry(*low.dst())
+            .or_insert_with(VecDeque::new)
+            .push_back((test_stamp(2), low.clone()));
+
+        let mut source = inbound_external_messages::grouped_scheduler(grouped);
+        let mut selection_cursor = ExtMessagesSelectionCursor::default();
+        let priority_counters = ExtMessagesPriorityCounters {
+            high_priority_since_low_priority: HIGH_PRIORITY_EXT_MESSAGES_BEFORE_LOW_PRIORITY,
+            ..Default::default()
+        };
+
+        let (_stamp, selected) = BlockBuilder::select_next_ext_message(
+            &mut source,
+            &HashSet::new(),
+            &StdBTreeSet::new(),
+            &mut selection_cursor,
+            &priority_counters,
+            true,
+        )
+        .unwrap();
+
+        assert!(selected.is_low_priority());
+        assert_eq!(selected.dst().account_id, low.dst().account_id);
     }
 
     #[test]

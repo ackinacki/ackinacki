@@ -126,6 +126,13 @@ where
                 // IMPORTANT: KEEP BLOCKS THAT ARE INPROGRESS! OTHERWISE IT MAY DROP A BLOCK THAT WILL BE NEEDED LATER
                 .unwrap_or(true)
         });
+        self.shared_services.set_thread_catch_up_status(
+            &self.thread_id,
+            true,
+            "sync_snapshot_loaded",
+            None,
+            None,
+        );
         tracing::trace!("Consensus received sync: {synced_block_seq_no} {synced_block_id:?}");
         Ok(SynchronizationResult::Ok)
     }
@@ -643,6 +650,9 @@ where
         last_finalized_seq_no: BlockSeqNo,
         last_finalized_block_id: BlockIdentifier,
     ) -> anyhow::Result<()> {
+        if self.shared_services.is_thread_catching_up(&self.thread_id) {
+            return Ok(());
+        }
         if last_finalized_seq_no != BlockSeqNo::default() {
             let Some(last_finalized_block_height) = self
                 .block_state_repository

@@ -58,6 +58,7 @@ use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
 use crate::node::associated_types::NodeCredentials;
 use crate::node::services::attestations_target::service::AttestationTargetsService;
+use crate::node::services::bk_set_block_storage::BkSetBlockSaveCommand;
 use crate::protocol::authority_switch::action_lock::Authority;
 pub use crate::protocol::authority_switch::network_message::AuthoritySwitch;
 use crate::repository::repository_impl::RepositoryImpl;
@@ -108,6 +109,7 @@ where
     network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
     network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
     raw_block_tx: InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
+    bk_set_block_tx: Option<InstrumentedSender<BkSetBlockSaveCommand>>,
     bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
     last_block_attestations: Arc<Mutex<CollectedAttestations>>,
     aggregated_attestations_cache: AggregatedAttestationsCache,
@@ -173,6 +175,7 @@ where
         network_broadcast_tx: NetBroadcastSender<NodeIdentifier, NetworkMessage>,
         network_direct_tx: NetDirectSender<NodeIdentifier, NetworkMessage>,
         raw_block_tx: InstrumentedSender<RawBlockSaveCommand<(NodeIdentifier, Vec<u8>)>>,
+        bk_set_block_tx: Option<InstrumentedSender<BkSetBlockSaveCommand>>,
         bls_keys_map: Arc<Mutex<HashMap<PubKey, (Secret, RndSeed)>>>,
         config: Config,
         global_config: GlobalConfig,
@@ -257,6 +260,7 @@ where
             network_broadcast_tx: network_broadcast_tx.clone(),
             network_direct_tx: network_direct_tx.clone(),
             raw_block_tx: raw_block_tx.clone(),
+            bk_set_block_tx: bk_set_block_tx.clone(),
             bls_keys_map: bls_keys_map.clone(),
             last_block_attestations: last_block_attestations.clone(),
             aggregated_attestations_cache: aggregated_attestations_cache.clone(),
@@ -297,6 +301,7 @@ where
                             block_state_repository_clone,
                             shared_services_clone,
                             raw_block_tx,
+                            bk_set_block_tx,
                             state_sync_service,
                             metrics_clone,
                             message_db_clone,

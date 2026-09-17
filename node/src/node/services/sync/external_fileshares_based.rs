@@ -157,12 +157,15 @@ struct LoadCandidatesInner {
     completed_order: VecDeque<CandidateKey>,
     failed_recently: HashMap<CandidateKey, Instant>,
     failed_order: VecDeque<CandidateKey>,
+    closed: bool,
+    generation: u64,
 }
 
 #[derive(Clone, Debug)]
 struct ClaimedSnapshot {
     request: SyncSnapshotRequest,
     prune_decision: PruneDecision,
+    generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -204,6 +207,8 @@ impl LoadCandidates {
                 completed_order: VecDeque::with_capacity(COMPLETED_CANDIDATES_CAPACITY),
                 failed_recently: HashMap::new(),
                 failed_order: VecDeque::with_capacity(FAILED_CANDIDATES_CAPACITY),
+                closed: false,
+                generation: 0,
             }),
         }
     }
@@ -211,6 +216,7 @@ impl LoadCandidates {
     fn push_or_upgrade(&self, request: SyncSnapshotRequest) -> LoadCandidatePushResult {
         let key = CandidateKey::from(&request);
         let mut q = self.inner.write();
+        q.closed = false;
         if q.completed.contains(&key) {
             tracing::debug!(
                 target: "node",
@@ -291,6 +297,9 @@ impl LoadCandidates {
 
     fn claim_next(&self) -> Option<ClaimedSnapshot> {
         let mut q = self.inner.write();
+        if q.closed {
+            return None;
+        }
         while let Some(candidate) = q.pending.pop_front() {
             let key = CandidateKey::from(&candidate);
             if q.completed.contains(&key) || q.in_progress.contains_key(&key) {
@@ -319,7 +328,11 @@ impl LoadCandidates {
                 candidate.anchor.kind(),
                 candidate.address,
             );
-            return Some(ClaimedSnapshot { request: candidate, prune_decision });
+            return Some(ClaimedSnapshot {
+                request: candidate,
+                prune_decision,
+                generation: q.generation,
+            });
         }
         None
     }
@@ -351,6 +364,16 @@ impl LoadCandidates {
     fn mark_failure(&self, request: &SyncSnapshotRequest, error: &anyhow::Error) {
         let key = CandidateKey::from(request);
         let mut q = self.inner.write();
+        if q.closed {
+            q.in_progress.remove(&key);
+            tracing::debug!(
+                target: "node",
+                "snapshot candidate failure ignored after state-sync close: anchor_kind={}, address={:?}, error={error}",
+                request.anchor.kind(),
+                request.address,
+            );
+            return;
+        }
         q.in_progress.remove(&key);
         q.failed_recently.insert(key.clone(), Instant::now());
         q.failed_order.retain(|existing| existing != &key);
@@ -372,6 +395,15 @@ impl LoadCandidates {
         let key = CandidateKey::from(request);
         let mut q = self.inner.write();
         q.in_progress.remove(&key);
+        if q.closed {
+            tracing::debug!(
+                target: "node",
+                "snapshot candidate not returned to pool after state-sync close: anchor_kind={}, address={:?}, error={error},",
+                request.anchor.kind(),
+                request.address,
+            );
+            return;
+        }
         q.pending.push_back(request.clone());
         tracing::debug!(
             target: "node",
@@ -400,10 +432,22 @@ impl LoadCandidates {
         inner.pending.len() + inner.in_progress.len()
     }
 
-    fn clear_pending(&self) -> usize {
+    fn is_cancelled(&self, generation: u64) -> bool {
+        let inner = self.inner.read();
+        inner.closed || inner.generation != generation
+    }
+
+    fn is_closed(&self) -> bool {
+        self.inner.read().closed
+    }
+
+    fn close(&self) -> usize {
         let mut q = self.inner.write();
-        let dropped = q.pending.len();
+        let dropped = q.pending.len() + q.in_progress.len();
         q.pending.clear();
+        q.in_progress.clear();
+        q.closed = true;
+        q.generation = q.generation.wrapping_add(1);
         dropped
     }
 
@@ -571,11 +615,11 @@ impl StateSyncService for ExternalFileSharesBased {
     }
 
     fn clear_load_state_tasks(&mut self) {
-        let dropped = self.candidates.clear_pending();
+        let dropped = self.candidates.close();
         if dropped > 0 {
             tracing::debug!(
                 target: "node",
-                "cleared pending state-sync candidates: dropped={dropped}",
+                "cleared state-sync candidates: dropped={dropped}",
             );
         }
     }
@@ -614,6 +658,10 @@ fn run_load_worker(
             return;
         }
         let Some(claimed) = candidates.claim_next() else {
+            if candidates.is_closed() {
+                tracing::debug!(target: "node", "state load worker stops after state-sync close");
+                return;
+            }
             std::thread::sleep(WORKER_IDLE_SLEEP);
             continue;
         };
@@ -621,6 +669,16 @@ fn run_load_worker(
             return;
         }
         let candidate = claimed.request;
+        let generation = claimed.generation;
+        if candidates.is_cancelled(generation) {
+            tracing::debug!(
+                target: "node",
+                "state load worker stops before processing cancelled candidate: anchor_kind={}, address={:?}",
+                candidate.anchor.kind(),
+                candidate.address,
+            );
+            return;
+        }
         match decide_snapshot_import_for_request(&repository, &candidate) {
             Ok(SnapshotImportDecision::ImportNeeded { distance_from_last_finalized }) => {
                 tracing::debug!(
@@ -672,6 +730,15 @@ fn run_load_worker(
                 continue;
             }
         }
+        if candidates.is_cancelled(generation) {
+            tracing::debug!(
+                target: "node",
+                "state load worker stops before pruning cancelled candidate: anchor_kind={}, address={:?}",
+                candidate.anchor.kind(),
+                candidate.address,
+            );
+            return;
+        }
         match claimed.prune_decision {
             PruneDecision::PruneNow => {
                 tracing::info!(
@@ -698,14 +765,25 @@ fn run_load_worker(
             candidate.address,
             urls.len(),
         );
+        let candidates_for_cancel = Arc::clone(&candidates);
         match try_download_candidate(
             &candidate,
             &mut blob_sync,
             &repository,
             urls,
             metrics.as_ref(),
+            move || candidates_for_cancel.is_cancelled(generation),
         ) {
             Ok(SnapshotDownloadStatus::Imported) => {
+                if candidates.is_cancelled(generation) {
+                    tracing::debug!(
+                        target: "node",
+                        "state load worker drops imported cancelled candidate: anchor_kind={}, address={:?}",
+                        candidate.anchor.kind(),
+                        candidate.address,
+                    );
+                    return;
+                }
                 candidates.mark_success(&candidate);
                 tracing::info!(
                     target: "node",
@@ -731,6 +809,15 @@ fn run_load_worker(
                 return;
             }
             Err(e) => {
+                if candidates.is_cancelled(generation) {
+                    tracing::debug!(
+                        target: "node",
+                        "state load worker drops failed cancelled candidate: anchor_kind={}, address={:?}, error={e}",
+                        candidate.anchor.kind(),
+                        candidate.address,
+                    );
+                    return;
+                }
                 let mut mark_failure = true;
                 if let Some(download_err) = e.downcast_ref::<DownloadError>() {
                     if *download_err == DownloadError::MaxTriesExceeded {
@@ -838,6 +925,7 @@ fn try_download_candidate(
     repository: &RepositoryImpl,
     external_blob_share_services: Vec<Url>,
     metrics: Option<&crate::helper::metrics::BlockProductionMetrics>,
+    should_cancel: impl Fn() -> bool + Send + Sync + 'static,
 ) -> anyhow::Result<SnapshotDownloadStatus> {
     let address = candidate.address.clone();
     let SyncSnapshotAnchor::Height(anchor_height) = candidate.anchor;
@@ -846,12 +934,16 @@ fn try_download_candidate(
     let last_error = Arc::new(Mutex::new(None::<anyhow::Error>));
     let progress = Arc::new(Mutex::new(SnapshotCandidateProgress::default()));
     let repo = Arc::new(Mutex::new(repository.clone()));
+    let should_cancel = Arc::new(should_cancel);
 
     if let Some(m) = metrics {
         m.report_state_request();
     }
 
     for (thread_id, block_id) in &address {
+        if should_cancel() {
+            anyhow::bail!("snapshot candidate cancelled");
+        }
         let checker_clone = checker.clone();
         let checker_clone2 = checker.clone();
         let last_error_clone = last_error.clone();
@@ -859,6 +951,7 @@ fn try_download_candidate(
         let repo_clone = repo.clone();
         let metrics_on_error = metrics.cloned();
         let urls = external_blob_share_services.clone();
+        let should_cancel_before_import = should_cancel.clone();
         let thread_id_copy = *thread_id;
         let block_id_copy = *block_id;
 
@@ -869,9 +962,23 @@ fn try_download_candidate(
             Some(PER_CANDIDATE_RETRY_TIMEOUT),
             Some(Instant::now() + PER_CANDIDATE_DEADLINE),
             move |e| -> anyhow::Result<()> {
+                if should_cancel_before_import() {
+                    tracing::debug!(
+                        target: "node",
+                        "load worker: snapshot import cancelled for {thread_id_copy:?} (block={block_id_copy:?})",
+                    );
+                    return Err(anyhow::anyhow!("snapshot candidate cancelled"));
+                }
                 let mut header = [0u8; COMPRESSED_SNAPSHOT_MAGIC.len()];
                 match e.read_exact(&mut header) {
                     Ok(()) => {
+                        if should_cancel_before_import() {
+                            tracing::debug!(
+                                target: "node",
+                                "load worker: snapshot import cancelled after header read for {thread_id_copy:?} (block={block_id_copy:?})",
+                            );
+                            return Err(anyhow::anyhow!("snapshot candidate cancelled"));
+                        }
                         let res = if &header == COMPRESSED_SNAPSHOT_MAGIC {
                             tracing::trace!(
                                 "load worker: read COMPRESSED_SNAPSHOT_MAGIC for {thread_id_copy:?}",
@@ -945,8 +1052,8 @@ fn try_download_candidate(
     // (checker drains) or any one fails (on_error clears the checker
     // and sets last_error).
     loop {
-        if SHUTDOWN_FLAG.get() == Some(&true) {
-            return Err(anyhow::anyhow!("shutdown"));
+        if SHUTDOWN_FLAG.get() == Some(&true) || should_cancel() {
+            return Err(anyhow::anyhow!("shutdown or snapshot candidate cancelled"));
         }
         let is_empty = { checker.lock().is_empty() };
         if is_empty {
@@ -1237,5 +1344,56 @@ mod tests {
             second.prune_decision,
             PruneDecision::Defer { pending_count: 1, in_progress_count: 1 }
         ));
+    }
+
+    #[test]
+    fn close_clears_pending_and_in_progress_candidates() {
+        let candidates = LoadCandidates::new();
+        assert_eq!(
+            candidates.push_or_upgrade(candidate_with_height(1, 10)),
+            LoadCandidatePushResult::Pushed
+        );
+        assert_eq!(
+            candidates.push_or_upgrade(candidate_with_height(2, 11)),
+            LoadCandidatePushResult::Pushed
+        );
+
+        let claimed = candidates.claim_next().unwrap();
+        let generation = claimed.generation;
+
+        assert_eq!(candidates.close(), 2);
+        assert!(candidates.is_closed());
+        assert!(candidates.is_cancelled(generation));
+        assert_eq!(candidates.len(), 0);
+        assert!(candidates.claim_next().is_none());
+    }
+
+    #[test]
+    fn closed_queue_does_not_requeue_cancelled_candidate() {
+        let candidates = LoadCandidates::new();
+        let request = candidate_with_height(1, 10);
+        assert_eq!(candidates.push_or_upgrade(request), LoadCandidatePushResult::Pushed);
+
+        let claimed = candidates.claim_next().unwrap();
+        assert_eq!(candidates.close(), 1);
+        candidates.return_to_the_pool(&claimed.request, &anyhow::anyhow!("cancelled"));
+
+        assert_eq!(candidates.len(), 0);
+        assert!(candidates.claim_next().is_none());
+    }
+
+    #[test]
+    fn push_reopens_closed_queue_for_next_sync_session() {
+        let candidates = LoadCandidates::new();
+
+        assert_eq!(candidates.close(), 0);
+        assert!(candidates.is_closed());
+        assert_eq!(
+            candidates.push_or_upgrade(candidate_with_height(1, 10)),
+            LoadCandidatePushResult::Pushed
+        );
+
+        assert!(!candidates.is_closed());
+        assert!(candidates.claim_next().is_some());
     }
 }

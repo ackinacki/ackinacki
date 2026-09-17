@@ -451,6 +451,62 @@ fn test_builder_optimizes_large_account_update() -> anyhow::Result<()> {
 }
 
 #[test]
+fn test_builder_optimizes_large_account_updates_in_parallel_batch() -> anyhow::Result<()> {
+    let (repo, _dir) = setup_repo(true);
+    let state0 = new_state();
+    let block_id_1 = BlockIdentifier::new(new_u256("block", 401));
+    let accounts_count = 16;
+
+    let mut original_accounts = Vec::with_capacity(accounts_count);
+    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
+    for seed in 0..accounts_count {
+        let (routing, large_acc) = new_large_acc(10_000 + seed, 1024);
+        builder.insert_account(&routing, &large_acc);
+        original_accounts.push((routing, large_acc));
+    }
+
+    let transition1 = builder.build(None)?;
+    let state1 = transition1.new_state;
+    repo.finalize_thread_transition(
+        &block_id_1,
+        &ThreadIdentifier::default(),
+        0,
+        &state1,
+        transition1.account_operations,
+    )?;
+    assert_drained(&repo);
+    repo.state_save(&block_id_1, &state1)?;
+
+    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
+    for (index, (routing, account)) in original_accounts.iter().enumerate() {
+        let modified = modify_acc_balance(account, 2_000_000 + index as u64);
+        builder2.insert_account(routing, &modified);
+    }
+    let transition2 = builder2.build(None)?;
+
+    assert_eq!(transition2.diff.durable.accounts.len(), accounts_count);
+    for (routing, update) in &transition2.diff.durable.accounts {
+        assert!(
+            matches!(update, BlockAccountOperation::AccountMerkleUpdate(_)),
+            "large account {:?} should be optimized to account merkle update",
+            routing.account_id().to_hex_string()
+        );
+    }
+
+    let expected_state = transition2.new_state.clone();
+    let applied =
+        repo.state_apply_diff(&state1, transition2.diff, ThreadIdentifier::default(), 0)?;
+
+    for (routing, _) in original_accounts {
+        let expected = repo.state_account(&expected_state, &routing)?.unwrap();
+        let actual = repo.state_account(&applied.new_state, &routing)?.unwrap();
+        assert_eq!(expected.write_bytes()?, actual.write_bytes()?);
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_builder_skips_merkle_update_for_redirect_account() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
     let state0 = new_state();

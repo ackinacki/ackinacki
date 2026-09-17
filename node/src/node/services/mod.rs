@@ -5,6 +5,7 @@ use std::time::Duration;
 
 pub mod attestations_target;
 pub mod authority_switch;
+pub mod bk_set_block_storage;
 pub mod block_processor;
 pub mod finalization;
 pub mod join_handle_monitor;

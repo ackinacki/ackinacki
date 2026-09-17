@@ -23,15 +23,21 @@ pub struct AppConfig {
     pub compression: CompressionMode,
     pub post_upload: PostUploadAction,
     pub skip_upload: bool,
+    pub upload_later: bool,
+    pub upload_only: Option<PathBuf>,
+    pub upload_queue_dir: PathBuf,
+    pub paranoid: bool,
+    pub daily_hook: Option<String>,
     pub dry_run: bool,
 }
 
 impl AppConfig {
     pub fn from_args(args: Args) -> Self {
+        let root = &args.root;
         Self {
-            incoming_dir: args.root.join(&args.incoming),
-            daily_dir: args.root.join(&args.daily),
-            processed_dir: args.root.join(&args.processed),
+            incoming_dir: root.join(&args.incoming),
+            daily_dir: root.join(&args.daily),
+            processed_dir: root.join(&args.processed),
             full_db: args.full_db,
             bucket: args.bucket.unwrap_or_else(|| DEFAULT_AWS_BUCKET.to_string()),
             require_all_servers: matches!(args.servers_match_mode, ServersMatchMode::All),
@@ -41,7 +47,12 @@ impl AppConfig {
                 CliCompressionMode::Xz => CompressionMode::Xz,
             },
             post_upload: args.post_upload,
-            skip_upload: args.skip_upload,
+            skip_upload: args.skip_upload || args.upload_later,
+            upload_later: args.upload_later,
+            upload_only: args.upload_only,
+            upload_queue_dir: root.join("upload-queue"),
+            paranoid: args.paranoid,
+            daily_hook: args.daily_hook,
             dry_run: args.dry_run,
         }
     }
@@ -58,6 +69,11 @@ impl fmt::Display for AppConfig {
         writeln!(f, "compression={:?}", self.compression)?;
         writeln!(f, "post_upload={:?}", self.post_upload)?;
         writeln!(f, "skip_upload={}", self.skip_upload)?;
+        writeln!(f, "upload_later={}", self.upload_later)?;
+        writeln!(f, "upload_only={:?}", self.upload_only)?;
+        writeln!(f, "upload_queue_dir={}", self.upload_queue_dir.display())?;
+        writeln!(f, "daily_hook={:?}", self.daily_hook)?;
+        writeln!(f, "paranoid={}", self.paranoid)?;
         write!(f, "dry_run={}", self.dry_run)
     }
 }
@@ -79,6 +95,10 @@ mod tests {
             bucket: None,
             post_upload: PostUploadAction::Move,
             skip_upload: false,
+            upload_later: false,
+            upload_only: None,
+            paranoid: false,
+            daily_hook: None,
             dry_run: false,
         };
 

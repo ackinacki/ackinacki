@@ -165,9 +165,33 @@ impl ExternalMessagesThreadState {
         );
     }
 
-    fn report_queue_metrics(&self, queue_len: usize, dapp_queue_sizes: &[(DAppIdentifier, usize)]) {
+    fn report_queue_metrics(
+        &self,
+        queue_len: usize,
+        low_priority_queue_len: usize,
+        total_limit: usize,
+        dapp_queue_sizes: &[(DAppIdentifier, usize)],
+    ) {
         if let Some(metrics) = &self.report_metrics {
             metrics.report_ext_msg_queue_size(queue_len, &self.thread_id);
+            let low_priority_percentage = if queue_len == 0 {
+                0.0
+            } else {
+                low_priority_queue_len as f64 * 100.0 / queue_len as f64
+            };
+            metrics.report_ext_msg_queue_low_priority_percentage(
+                low_priority_percentage,
+                &self.thread_id,
+            );
+            let low_priority_total_limit_percentage = if total_limit == 0 {
+                0.0
+            } else {
+                low_priority_queue_len as f64 * 100.0 / total_limit as f64
+            };
+            metrics.report_ext_msg_queue_low_priority_total_limit_percentage(
+                low_priority_total_limit_percentage,
+                &self.thread_id,
+            );
             let metric_dapps = ext_messages_queue_size_metric_dapps();
 
             let current_dapps: StdBTreeSet<_> = dapp_queue_sizes
@@ -200,6 +224,12 @@ impl ExternalMessagesThreadState {
     pub fn push_external_messages(&self, ext_messages: &[QueuedExtMessage]) -> anyhow::Result<()> {
         tracing::trace!("add_external_messages: {}", ext_messages.len());
 
+        if let Some(metrics) = &self.report_metrics {
+            let low_priority_len = ext_messages.iter().filter(|msg| msg.is_low_priority()).count();
+            metrics.report_ext_msg_received(ext_messages.len() as u64, &self.thread_id);
+            metrics.report_ext_msg_low_priority_received(low_priority_len as u64, &self.thread_id);
+        }
+
         if !self.is_producing.load(Ordering::Acquire) {
             self.clear_queue_for_non_producer()?;
 
@@ -217,12 +247,23 @@ impl ExternalMessagesThreadState {
 
         let now = Utc::now();
 
-        let (report_len, dapp_queue_sizes, unused) = self.queue.guarded_mut(|q| {
-            let unused = q.push_external_messages(ext_messages, now);
-            (q.len(), q.dapp_queue_sizes(), unused)
-        });
+        let (report_len, low_priority_queue_len, total_limit, dapp_queue_sizes, unused) =
+            self.queue.guarded_mut(|q| {
+                let unused = q.push_external_messages(ext_messages, now);
+                (q.len(), q.low_priority_len(), q.limits().total, q.dapp_queue_sizes(), unused)
+            });
 
         self.report_queue_state(report_len, &dapp_queue_sizes);
+
+        let low_priority_filtered = unused.iter().filter(|msg| msg.is_low_priority()).count();
+        if low_priority_filtered > 0 {
+            self.report_metrics.as_ref().inspect(|metrics| {
+                metrics.report_ext_msg_low_priority_filtered(
+                    low_priority_filtered as u64,
+                    &self.thread_id,
+                )
+            });
+        }
 
         if !unused.is_empty() {
             let overflow_feedbacks: Vec<_> = unused
@@ -233,7 +274,12 @@ impl ExternalMessagesThreadState {
             let _ = self.feedback_sender.send(ExtMsgFeedbackList(overflow_feedbacks));
         }
 
-        self.report_queue_metrics(report_len, &dapp_queue_sizes);
+        self.report_queue_metrics(
+            report_len,
+            low_priority_queue_len,
+            total_limit,
+            &dapp_queue_sizes,
+        );
 
         Ok(())
     }
@@ -266,7 +312,8 @@ impl ExternalMessagesThreadState {
             let _ = self.feedback_sender.send(ExtMsgFeedbackList(feedbacks));
         }
 
-        self.report_queue_metrics(0, &[]);
+        let total_limit = self.queue.guarded(|q| q.limits().total);
+        self.report_queue_metrics(0, 0, total_limit, &[]);
 
         Ok(())
     }
@@ -274,15 +321,21 @@ impl ExternalMessagesThreadState {
     pub fn erase_processed(&self, processed: &[Stamp]) -> Vec<(Stamp, QueuedExtMessage)> {
         tracing::trace!("erase_processed ext messages: {}", processed.len());
 
-        let (report_len, dapp_queue_sizes, removed) = self.queue.guarded_mut(|q| {
-            let removed = q.erase_processed(processed);
-            (q.len(), q.dapp_queue_sizes(), removed)
-        });
+        let (report_len, low_priority_queue_len, total_limit, dapp_queue_sizes, removed) =
+            self.queue.guarded_mut(|q| {
+                let removed = q.erase_processed(processed);
+                (q.len(), q.low_priority_len(), q.limits().total, q.dapp_queue_sizes(), removed)
+            });
 
         tracing::trace!(target: "ext_messages", "on erase: queue_size={}", report_len);
         self.report_queue_state(report_len, &dapp_queue_sizes);
 
-        self.report_queue_metrics(report_len, &dapp_queue_sizes);
+        self.report_queue_metrics(
+            report_len,
+            low_priority_queue_len,
+            total_limit,
+            &dapp_queue_sizes,
+        );
 
         removed
     }
@@ -292,10 +345,11 @@ impl ExternalMessagesThreadState {
             return;
         }
 
-        let (report_len, dapp_queue_sizes) = self.queue.guarded_mut(|q| {
-            q.restore_processed(processed);
-            (q.len(), q.dapp_queue_sizes())
-        });
+        let (report_len, low_priority_queue_len, total_limit, dapp_queue_sizes) =
+            self.queue.guarded_mut(|q| {
+                q.restore_processed(processed);
+                (q.len(), q.low_priority_len(), q.limits().total, q.dapp_queue_sizes())
+            });
 
         tracing::trace!(
             target: "ext_messages",
@@ -305,7 +359,12 @@ impl ExternalMessagesThreadState {
         );
         self.report_queue_state(report_len, &dapp_queue_sizes);
 
-        self.report_queue_metrics(report_len, &dapp_queue_sizes);
+        self.report_queue_metrics(
+            report_len,
+            low_priority_queue_len,
+            total_limit,
+            &dapp_queue_sizes,
+        );
     }
 
     pub fn len(&self) -> usize {

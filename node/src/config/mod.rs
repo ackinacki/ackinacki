@@ -54,15 +54,19 @@ fn default_tracked_ext_out_account_routings() -> BTreeSet<AccountRouting> {
 }
 
 fn default_ext_messages_total_limit() -> usize {
-    2000
+    1200
 }
 
 fn default_ext_messages_dapp_limit() -> usize {
-    1000
+    600
 }
 
 fn default_ext_messages_account_limit() -> usize {
-    100
+    5
+}
+
+fn default_ext_messages_low_priority_limit_percentage() -> usize {
+    80
 }
 
 // TODO: These settings should be moved onchain.
@@ -192,6 +196,10 @@ pub struct NodeConfig {
     #[builder(default)]
     pub bk_set_update_path: Option<PathBuf>,
 
+    /// Optional directory where finalized blocks with BK set changes are saved.
+    #[builder(default)]
+    pub bk_set_changes_blocks_path: Option<PathBuf>,
+
     /// Local directory path which will be shared to other nodes.
     #[builder(default = PathBuf::from("/tmp"))]
     pub external_state_share_local_base_dir: PathBuf,
@@ -217,19 +225,24 @@ pub struct NodeConfig {
     pub rate_limit_on_incoming_block_req: u32,
 
     /// Total ext messages queue limit.
-    #[builder(default = 2000)]
+    #[builder(default = 1200)]
     #[serde(default = "default_ext_messages_total_limit")]
     pub ext_messages_total_limit: usize,
 
     /// Ext messages queue limit per dapp.
-    #[builder(default = 1000)]
+    #[builder(default = 600)]
     #[serde(default = "default_ext_messages_dapp_limit")]
     pub ext_messages_dapp_limit: usize,
 
     /// Ext messages queue limit per account.
-    #[builder(default = 100)]
+    #[builder(default = 5)]
     #[serde(default = "default_ext_messages_account_limit")]
     pub ext_messages_account_limit: usize,
+
+    /// Maximum low-priority share of each ext messages queue limit, in percent.
+    #[builder(default = 80)]
+    #[serde(default = "default_ext_messages_low_priority_limit_percentage")]
+    pub ext_messages_low_priority_limit_percentage: usize,
 
     /// BlockKeeper node owner wallet pubkey
     #[builder(default = "".to_string())]
@@ -422,6 +435,7 @@ impl Default for NodeConfig {
             key_path: "block_keeper.keys.json".to_string(),
             zerostate_path: None,
             bk_set_update_path: None,
+            bk_set_changes_blocks_path: None,
             external_state_share_local_base_dir: PathBuf::from("/tmp"),
             parallelization_level: 20,
             block_keeper_seed_path: "block_keeper.keys.json".to_string(),
@@ -429,9 +443,10 @@ impl Default for NodeConfig {
             state_cache_size: 10,
             unload_after: None,
             rate_limit_on_incoming_block_req: u32::MAX,
-            ext_messages_total_limit: 200,
-            ext_messages_dapp_limit: 200,
-            ext_messages_account_limit: 200,
+            ext_messages_total_limit: 1200,
+            ext_messages_dapp_limit: 600,
+            ext_messages_account_limit: 5,
+            ext_messages_low_priority_limit_percentage: 80,
             node_wallet_pubkey: "some_public_key".to_string(),
             signing_keys: None,
         }

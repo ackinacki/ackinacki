@@ -171,6 +171,10 @@ struct Config {
     #[arg(long, env)]
     pub bk_set_update_path: Option<PathBuf>,
 
+    /// Directory where finalized blocks with BK set changes are saved.
+    #[arg(long, env)]
+    pub bk_set_changes_blocks_path: Option<PathBuf>,
+
     /// Local shared path where to store files for sync.
     #[arg(long, env)]
     pub external_state_share_local_base_dir: Option<PathBuf>,
@@ -267,6 +271,10 @@ struct Config {
     /// Ext messages queue limit per account
     #[arg(long, env)]
     pub ext_messages_account_limit: Option<usize>,
+
+    /// Maximum low-priority share of each ext messages queue limit, in percent
+    #[arg(long, env)]
+    pub ext_messages_low_priority_limit_percentage: Option<usize>,
 
     /// Path to the local message durable storage
     #[arg(long)]
@@ -423,6 +431,10 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(bk_set_update_path) = config_cmd.bk_set_update_path {
                 config.local.bk_set_update_path = Some(bk_set_update_path);
+            }
+
+            if let Some(bk_set_changes_blocks_path) = config_cmd.bk_set_changes_blocks_path {
+                config.local.bk_set_changes_blocks_path = Some(bk_set_changes_blocks_path);
             }
 
             if let Some(external_state_share_local_base_dir) =
@@ -608,6 +620,10 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(limit) = config_cmd.ext_messages_account_limit {
                 config.local.ext_messages_account_limit = limit;
+            }
+
+            if let Some(limit) = config_cmd.ext_messages_low_priority_limit_percentage {
+                config.local.ext_messages_low_priority_limit_percentage = limit;
             }
 
             if !config_cmd.network_my_ed_secret.is_empty() {

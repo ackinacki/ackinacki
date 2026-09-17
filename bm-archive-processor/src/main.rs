@@ -33,29 +33,42 @@ async fn main() -> anyhow::Result<()> {
         fs::create_dir_all(path).context(format!("Failed to create {path:?} directory"))?;
     }
 
-    let lock_path = cfg.daily_dir.join(".bm-archive-processor.lock");
-    let lock_file =
-        File::create(&lock_path).context(format!("Failed to create lock file {lock_path:?}"))?;
-    if !try_lock_exclusive(&lock_file) {
-        anyhow::bail!("Another instance is already running (lock: {})", lock_path.display());
-    }
+    let is_upload_only = cfg.upload_only.is_some();
+
+    let _lock_file = if !is_upload_only {
+        let lock_path = cfg.daily_dir.join(".bm-archive-processor.lock");
+        let lock_file = File::create(&lock_path)
+            .context(format!("Failed to create lock file {lock_path:?}"))?;
+        if !try_lock_exclusive(&lock_file) {
+            anyhow::bail!("Another instance is already running (lock: {})", lock_path.display());
+        }
+        Some(lock_file)
+    } else {
+        None
+    };
 
     tracing::info!("Starting BM archives processor with config: {cfg}");
     let metrics = Metrics::new(&opentelemetry::global::meter("bmap_meter"));
+    let app = App::new(cfg.clone(), Some(metrics.clone()));
 
-    // Initialize dependencies
-    let db_client = create_db_client(TABLES, Some(metrics.clone()));
-    let fs_client = create_fs_client(cfg.incoming_dir.clone());
-    let s3_client = create_s3_client(cfg.skip_upload).await?;
+    if is_upload_only {
+        let s3_client =
+            create_s3_client(false).await?.expect("S3 client required for --upload-only");
+        if let Err(err) = app.run_upload_only(s3_client).await {
+            tracing::error!(error = %err, "Upload failed");
+            anyhow::bail!(err);
+        }
+    } else {
+        let db_client = create_db_client(TABLES, Some(metrics), cfg.paranoid);
+        let fs_client = create_fs_client(cfg.incoming_dir.clone());
+        let s3_client = create_s3_client(cfg.skip_upload).await?;
 
-    let app = App::new(cfg, Some(metrics));
-    if let Err(err) = app.run(db_client, s3_client, fs_client).await {
-        tracing::error!(error = %err, "Application failed");
-        anyhow::bail!(err);
+        if let Err(err) = app.run(db_client, s3_client, fs_client).await {
+            tracing::error!(error = %err, "Application failed");
+            anyhow::bail!(err);
+        }
     }
 
-    // lock_file is dropped here, releasing the flock automatically
-    drop(lock_file);
     Ok(())
 }
 

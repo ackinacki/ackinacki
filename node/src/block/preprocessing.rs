@@ -65,10 +65,10 @@ where
         in_table
     );
     let mut preprocessed_state = parent_block_state;
-    tracing::trace!(
-        "preprocessing: {} slashing_messages: {slashing_messages:?}",
-        slashing_messages.len()
-    );
+    // tracing::trace!(
+    //     "preprocessing: {} slashing_messages: {slashing_messages:?}",
+    //     slashing_messages.len()
+    // );
 
     // -- Ensure parent reference ---
     //
@@ -142,7 +142,7 @@ where
         Ok::<_, anyhow::Error>(preprocessed_state)
     })?;
 
-    tracing::trace!("Start crop");
+    // tracing::trace!("Start crop");
     // --- Handle split thread case ---
     preprocessed_state.crop(
         descendant_thread_identifier,

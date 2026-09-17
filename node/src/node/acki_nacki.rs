@@ -58,7 +58,9 @@ where
                     )?;
                     Ok::<bool, anyhow::Error>(e.validated().is_some())
                 })?;
-                if !already_validated {
+                if !already_validated
+                    && !self.shared_services.is_thread_catching_up(&self.thread_id)
+                {
                     self.validation_service.send((block_state, envelope.clone()));
                 }
             }

@@ -24,9 +24,23 @@ use crate::domain::models::BlockGap;
 use crate::domain::traits::DbClient;
 use crate::infra::sqlite_ddl::create_merge_query;
 
+/// Fast-merge protocol: a v7 full DB takes v3..=v7 dailies as they are, since
+/// the merge query reads its column list from the target schema and simply
+/// ignores columns the target dropped (`blocks.boc`).
+///
+/// Deliberately a strict equality. Past v7 the generic rule applies: an older
+/// daily is migrated up to the target version before the merge, and it is that
+/// migrated file which is uploaded afterwards — so a daily crossing v7 this way
+/// would lose `blocks.boc`. In steady state sources and target are on the same
+/// version and no migration runs; the case only arises when re-merging pre-v7
+/// archives, which no longer exist anywhere.
+const FAST_MERGE_TARGET_VERSION: u32 = 7;
+const FAST_MERGE_MIN_SOURCE_VERSION: u32 = 3;
+
 pub struct SqliteClient {
     tables: &'static [&'static str],
     metrics: Option<Metrics>,
+    paranoid: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,8 +50,8 @@ enum VerificationKey {
 }
 
 impl SqliteClient {
-    pub fn new(tables: &'static [&'static str], metrics: Option<Metrics>) -> Self {
-        SqliteClient { tables, metrics }
+    pub fn new(tables: &'static [&'static str], metrics: Option<Metrics>, paranoid: bool) -> Self {
+        SqliteClient { tables, metrics, paranoid }
     }
 
     fn detect_verification_key(conn: &Connection, table: &str) -> anyhow::Result<VerificationKey> {
@@ -113,27 +127,53 @@ impl SqliteClient {
             let mut rows = stmt
                 .query([])
                 .with_context(|| format!("failed to execute verify query for table `{tbl}`"))?;
-            let mut missing_keys = Vec::new();
+            // Bounded on purpose: a real divergence can be millions of rows, and
+            // collecting every key before the first log line is how this would
+            // end in the OOM killer. The exact count is what matters — the
+            // wrapper (run.sh) scrapes `missing_keys=N` off this line into the
+            // bm_cold_ap_{table,source}_missing_keys metrics, so keep the format.
+            const EXAMPLES: usize = 20;
+            let mut missing = 0usize;
+            let mut examples: Vec<String> = Vec::new();
             while let Some(row) = rows.next()? {
-                match &key {
-                    VerificationKey::Single(_) => {
-                        missing_keys.push(Self::value_ref_to_string(row, 0)?)
-                    }
+                missing += 1;
+                if examples.len() >= EXAMPLES {
+                    continue;
+                }
+                examples.push(match &key {
+                    VerificationKey::Single(_) => Self::value_ref_to_string(row, 0)?,
                     VerificationKey::Composite(cols) => {
                         let mut parts = Vec::with_capacity(cols.len());
                         for idx in 0..cols.len() {
                             parts.push(Self::value_ref_to_string(row, idx)?);
                         }
-                        missing_keys.push(parts.join(":"));
+                        parts.join(":")
                     }
-                }
+                });
             }
             info!(
-                "diff `{schema}.{tbl}` <-> main ({} ms): missing_keys={}, list={:?}",
-                started_at.elapsed().as_millis(),
-                missing_keys.len(),
-                missing_keys
+                "diff `{schema}.{tbl}` <-> main ({} ms): missing_keys={missing}, examples={examples:?}",
+                started_at.elapsed().as_millis()
             );
+            // Rows can go missing silently: the merge runs INSERT OR IGNORE, which
+            // swallows CHECK and NOT NULL violations along with duplicates. By
+            // default this only reports and the metrics scraped above raise the
+            // alarm; under --paranoid it fails the group instead, before
+            // --post-upload=delete gets a chance to remove the sources.
+            //
+            // Design decision, not an oversight: this runs after the source's
+            // rows were committed into the daily. Verifying inside the
+            // transaction and rolling back would only throw away hours of work
+            // that a retry redoes and fails identically — a row INSERT OR IGNORE
+            // drops is dropped deterministically. Failing here keeps the daily
+            // and the sources on disk for an operator to look at, and the group
+            // stays failed until the cause is fixed.
+            if self.paranoid && missing > 0 {
+                bail!(
+                    "table `{tbl}`: {missing} row(s) from `{schema}` did not reach main, e.g. {:?}",
+                    examples.iter().take(5).collect::<Vec<_>>()
+                );
+            }
         }
 
         Ok(())
@@ -148,23 +188,85 @@ impl SqliteClient {
         Ok(result == "ok")
     }
 
-    /// Applies schema migrations in-place to the given SQLite DB.
-    fn migrate_db_to_latest(path: &Path) -> anyhow::Result<()> {
+    /// A `-wal`/`-wal2`/`-journal` file with content next to `db`, if any. An
+    /// empty one, or a bare `-shm` index, carries no data and is ignored.
+    fn live_sidecar(db: &Path) -> Option<PathBuf> {
+        let name = db.file_name()?.to_owned();
+        ["-wal", "-wal2", "-journal"].into_iter().find_map(|suffix| {
+            let mut sidecar = name.clone();
+            sidecar.push(suffix);
+            let sidecar = db.with_file_name(sidecar);
+            match fs::metadata(&sidecar) {
+                Ok(meta) if meta.len() > 0 => Some(sidecar),
+                _ => None,
+            }
+        })
+    }
+
+    fn read_db_version(path: &Path) -> anyhow::Result<u32> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("failed to open db for version check: {}", path.display()))?;
+        // Never default to 0 here: opening read-only is lazy, so a locked,
+        // truncated or non-SQLite file would otherwise report version 0 and slip
+        // past every version gate below straight into the merge.
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .with_context(|| format!("failed to read user_version from {}", path.display()))?;
+        Ok(version)
+    }
+
+    fn migrate_db_to_version(path: &Path, version: u32) -> anyhow::Result<()> {
         let db_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let db_filename = path.file_name().ok_or_else(|| {
-            anyhow!("invalid source db path (missing filename): {}", path.display())
-        })?;
+        let db_filename = path
+            .file_name()
+            .ok_or_else(|| anyhow!("invalid db path (missing filename): {}", path.display()))?;
 
         let db_info = Box::leak(Box::new(DbInfo::new(db_filename)));
         let db_maintenance = migration_tool::DbMaintenance::new(db_info, db_dir);
         db_maintenance
-            .migrate(MigrateTo::Latest, DbMaintenanceOptions { silent: true })
-            .with_context(|| format!("failed to migrate source db: {}", path.display()))
+            .migrate(
+                MigrateTo::Version(version),
+                DbMaintenanceOptions { silent: true, ..Default::default() },
+            )
+            .with_context(|| {
+                format!("failed to migrate db to version {version}: {}", path.display())
+            })
     }
 }
 
 impl DbClient for SqliteClient {
     fn merge_daily_into_full(&self, src_db: &Path, target_db: &Path) -> anyhow::Result<()> {
+        if !target_db.exists() {
+            bail!("full DB does not exist: {}", target_db.display());
+        }
+
+        let src_version = SqliteClient::read_db_version(src_db)?;
+        let target_version = SqliteClient::read_db_version(target_db)?;
+        info!(
+            "merge versions: daily={src_version}, target={target_version} ({} -> {})",
+            src_db.display(),
+            target_db.display()
+        );
+
+        if src_version > target_version {
+            bail!("daily version {src_version} is newer than target version {target_version}");
+        }
+
+        if target_version == FAST_MERGE_TARGET_VERSION {
+            if src_version < FAST_MERGE_MIN_SOURCE_VERSION {
+                bail!(
+                    "source version {src_version} is too old for fast merge into v{FAST_MERGE_TARGET_VERSION} (minimum: v{FAST_MERGE_MIN_SOURCE_VERSION})"
+                );
+            }
+            info!("fast merge: daily v{src_version} -> full v{target_version}");
+        } else if src_version < target_version {
+            info!("migrating daily v{src_version} -> v{target_version} before merge");
+            SqliteClient::migrate_db_to_version(src_db, target_version)?;
+        }
+
         info!("running merge db {} into {} ...", src_db.display(), target_db.display());
 
         let mut conn = Connection::open(target_db)
@@ -281,9 +383,35 @@ impl DbClient for SqliteClient {
             bail!("input can't be empty!");
         }
 
-        // precondition: all source DBs must be at the latest schema before merging
-        for src_path in src_paths {
-            SqliteClient::migrate_db_to_latest(src_path)?;
+        let versions: Vec<u32> = src_paths
+            .iter()
+            .map(|p| SqliteClient::read_db_version(p))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let first_version = versions[0];
+        if !versions.iter().all(|v| *v == first_version) {
+            let details: Vec<_> = src_paths
+                .iter()
+                .zip(&versions)
+                .map(|(p, v)| format!("{}=v{}", p.display(), v))
+                .collect();
+            bail!("source DB version mismatch: {}", details.join(", "));
+        }
+        info!("all {} source DBs at version {first_version}", src_paths.len());
+
+        // Each source is expected to be self-contained: the pull copies `.db`
+        // files only, and block-manager check-points an archive
+        // (wal_checkpoint TRUNCATE) when it rotates it. Should a sidecar with
+        // content ever turn up next to one, its tail is exactly what the byte
+        // copy below would silently drop — and nothing downstream could tell,
+        // since the copy is a perfectly valid database.
+        for path in src_paths {
+            if let Some(sidecar) = Self::live_sidecar(path) {
+                bail!(
+                    "source {} has a non-empty journal sidecar {}: refusing to copy an archive that was not check-pointed",
+                    path.display(),
+                    sidecar.display()
+                );
+            }
         }
 
         let base_db = &src_paths[0];
@@ -362,8 +490,37 @@ impl DbClient for SqliteClient {
             out.execute_batch(&detach_sql).with_context(|| format!("failed to detach {schema}"))?;
         }
 
-        let _ = SqliteClient::quick_check(&out)
-            .with_context(|| format!("file={}: integrity check failed", dst_path.display()))?;
+        if self.paranoid {
+            // `quick_check` reports corruption as Ok(false); discarding it would
+            // make the whole (slow) check a no-op.
+            anyhow::ensure!(
+                SqliteClient::quick_check(&out).with_context(|| {
+                    format!("file={}: failed to run integrity check", dst_path.display())
+                })?,
+                "file={}: integrity check reported corruption",
+                dst_path.display()
+            );
+        }
+
+        // The daily begins life as a byte copy of a BM archive, and block-manager
+        // writes those in WAL2 — a non-standard extension that stamps format 3 in
+        // the file header. Anything linked against stock SQLite (the trim hook, or
+        // whoever restores this file from S3) then sees only "file is not a
+        // database". Normalise it here, while we still hold a connection that
+        // understands the format; there is nothing to check-point, since the
+        // sidecars were never copied (and the guard above refuses a source that
+        // has one with content).
+        //
+        // The pragma answers with the mode now in effect rather than failing,
+        // so a refused switch has to be caught by looking at the answer.
+        let mode: String = out
+            .pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))
+            .with_context(|| format!("failed to normalise journal mode: {}", dst_path.display()))?;
+        anyhow::ensure!(
+            mode.eq_ignore_ascii_case("delete"),
+            "file={}: journal_mode=DELETE refused, database still reports {mode:?}",
+            dst_path.display()
+        );
 
         // todo: revise pragmas for read-only
         out.pragma_update(None, "foreign_keys", "ON")?;
@@ -380,10 +537,236 @@ pub fn escape_sqlite_path(p: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use rusqlite::Connection;
 
     use super::SqliteClient;
     use super::VerificationKey;
+    use super::FAST_MERGE_MIN_SOURCE_VERSION;
+    use super::FAST_MERGE_TARGET_VERSION;
+    use crate::domain::traits::DbClient;
+
+    fn create_test_db(dir: &std::path::Path, name: &str, version: u32) -> PathBuf {
+        let path = dir.join(name);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE accounts (id TEXT PRIMARY KEY, data BLOB);
+             CREATE TABLE blocks (id TEXT PRIMARY KEY, seq_no INTEGER);
+             CREATE TABLE messages (id TEXT PRIMARY KEY, body BLOB);
+             CREATE TABLE transactions (id TEXT PRIMARY KEY, data BLOB);
+             CREATE TABLE bk_set_updates (block_id TEXT PRIMARY KEY, chain_order TEXT);
+             CREATE TABLE attestations (block_id TEXT, target_type INTEGER, UNIQUE(block_id, target_type));",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", version).unwrap();
+        drop(conn);
+        path
+    }
+
+    #[test]
+    fn read_db_version_returns_correct_value() -> anyhow::Result<()> {
+        let dir = testdir::testdir!();
+        let path = create_test_db(&dir, "test.db", 5);
+        assert_eq!(SqliteClient::read_db_version(&path)?, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn create_daily_db_fails_on_version_mismatch() {
+        let dir = testdir::testdir!();
+        let db1 = create_test_db(&dir, "a.db", 5);
+        let db2 = create_test_db(&dir, "b.db", 7);
+        let dst = dir.join("daily.db");
+
+        let client = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            false,
+        );
+        let result = client.create_daily_db(&[db1, db2], &dst);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("version mismatch"));
+    }
+
+    #[test]
+    fn create_daily_db_succeeds_with_same_versions() -> anyhow::Result<()> {
+        let dir = testdir::testdir!();
+        let db1 = create_test_db(&dir, "a.db", 5);
+        let db2 = create_test_db(&dir, "b.db", 5);
+        let dst = dir.join("daily.db");
+
+        let client = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            false,
+        );
+        client.create_daily_db(&[db1, db2], &dst)?;
+        assert_eq!(SqliteClient::read_db_version(&dst)?, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn merge_daily_into_full_fails_when_target_missing() {
+        let dir = testdir::testdir!();
+        let daily = create_test_db(&dir, "daily.db", 5);
+        let full = dir.join("nonexistent.db");
+
+        let client = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            false,
+        );
+        let result = client.merge_daily_into_full(&daily, &full);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn merge_daily_into_full_fast_merge_rejects_old_source() {
+        let dir = testdir::testdir!();
+        let daily = create_test_db(&dir, "daily.db", 2);
+        let full = create_test_db(&dir, "full.db", FAST_MERGE_TARGET_VERSION);
+
+        let client = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            false,
+        );
+        let result = client.merge_daily_into_full(&daily, &full);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too old for fast merge"));
+    }
+
+    #[test]
+    fn merge_daily_into_full_fast_merge_succeeds() -> anyhow::Result<()> {
+        let dir = testdir::testdir!();
+        let daily = create_test_db(&dir, "daily.db", FAST_MERGE_MIN_SOURCE_VERSION);
+        let full = create_test_db(&dir, "full.db", FAST_MERGE_TARGET_VERSION);
+
+        let conn = Connection::open(&daily)?;
+        conn.execute("INSERT INTO accounts (id, data) VALUES ('acc1', X'DEAD')", [])?;
+        drop(conn);
+
+        let client = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            false,
+        );
+        client.merge_daily_into_full(&daily, &full)?;
+
+        let conn = Connection::open(&full)?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))?;
+        assert_eq!(count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn merge_daily_into_full_rejects_newer_source() {
+        let dir = testdir::testdir!();
+        let daily = create_test_db(&dir, "daily.db", 8);
+        let full = create_test_db(&dir, "full.db", 5);
+
+        let client = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            false,
+        );
+        let result = client.merge_daily_into_full(&daily, &full);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("newer than target"));
+    }
+
+    #[test]
+    fn fast_merge_v5_into_v7_ignores_boc_column() -> anyhow::Result<()> {
+        let dir = testdir::testdir!();
+
+        // v5 blocks schema: has boc column
+        let daily_path = dir.join("daily.db");
+        let daily_conn = Connection::open(&daily_path)?;
+        daily_conn.execute_batch(
+            "CREATE TABLE accounts (id TEXT PRIMARY KEY, data BLOB);
+             CREATE TABLE messages (id TEXT PRIMARY KEY, body BLOB);
+             CREATE TABLE transactions (id TEXT PRIMARY KEY, block_id TEXT NOT NULL, chain_order TEXT NOT NULL);
+             CREATE TABLE bk_set_updates (block_id TEXT PRIMARY KEY, chain_order TEXT NOT NULL);
+             CREATE TABLE attestations (block_id TEXT NOT NULL, target_type INTEGER NOT NULL, source_block_id TEXT, source_chain_order TEXT, UNIQUE(block_id, target_type));
+             CREATE TABLE blocks (
+                 id TEXT NOT NULL UNIQUE,
+                 status INTEGER NOT NULL,
+                 seq_no INTEGER NOT NULL,
+                 parent TEXT NOT NULL,
+                 thread_id TEXT,
+                 gen_utime INTEGER,
+                 chain_order TEXT,
+                 boc BLOB,
+                 height BLOB,
+                 envelope_hash BLOB
+             );",
+        )?;
+        daily_conn.execute(
+            "INSERT INTO blocks (id, status, seq_no, parent, thread_id, gen_utime, chain_order, boc, height, envelope_hash)
+             VALUES ('blk1', 1, 100, 'p0', 't1', 1000, 'co1', X'DEADBEEF', X'0000000000000001', X'AABB')",
+            [],
+        )?;
+        daily_conn.execute("INSERT INTO accounts (id, data) VALUES ('acc1', X'1234')", [])?;
+        daily_conn.pragma_update(None, "user_version", 5)?;
+        drop(daily_conn);
+
+        // v7 blocks schema: no boc column
+        let full_path = dir.join("full.db");
+        let full_conn = Connection::open(&full_path)?;
+        full_conn.execute_batch(
+            "CREATE TABLE accounts (id TEXT PRIMARY KEY, data BLOB);
+             CREATE TABLE messages (id TEXT PRIMARY KEY, body BLOB);
+             CREATE TABLE transactions (id TEXT PRIMARY KEY, block_id TEXT NOT NULL, chain_order TEXT NOT NULL);
+             CREATE TABLE bk_set_updates (block_id TEXT PRIMARY KEY, chain_order TEXT NOT NULL);
+             CREATE TABLE attestations (block_id TEXT NOT NULL, target_type INTEGER NOT NULL, source_block_id TEXT, source_chain_order TEXT, UNIQUE(block_id, target_type));
+             CREATE TABLE blocks (
+                 id TEXT NOT NULL UNIQUE,
+                 status INTEGER NOT NULL,
+                 seq_no INTEGER NOT NULL,
+                 parent TEXT NOT NULL,
+                 thread_id TEXT,
+                 gen_utime INTEGER,
+                 chain_order TEXT,
+                 height BLOB,
+                 envelope_hash BLOB
+             );",
+        )?;
+        full_conn.pragma_update(None, "user_version", 7)?;
+        drop(full_conn);
+
+        let client = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            false,
+        );
+        client.merge_daily_into_full(&daily_path, &full_path)?;
+
+        let conn = Connection::open(&full_path)?;
+        let (id, seq_no, chain_order): (String, i64, String) = conn.query_row(
+            "SELECT id, seq_no, chain_order FROM blocks WHERE id = 'blk1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        assert_eq!(id, "blk1");
+        assert_eq!(seq_no, 100);
+        assert_eq!(chain_order, "co1");
+
+        // boc column must not exist in target
+        let has_boc: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('blocks') WHERE name = 'boc'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert!(!has_boc);
+
+        // accounts also merged
+        let acc_count: i64 = conn.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))?;
+        assert_eq!(acc_count, 1);
+
+        Ok(())
+    }
 
     #[test]
     fn detect_verification_key_uses_id_when_present() -> anyhow::Result<()> {
@@ -426,6 +809,132 @@ mod tests {
 
         let key = SqliteClient::detect_verification_key(&conn, "bk_set_updates")?;
         assert_eq!(key, VerificationKey::Single("block_id".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn read_db_version_propagates_errors_instead_of_reporting_zero() {
+        let dir = testdir::testdir!();
+        let bogus = dir.join("not-a-db.db");
+        std::fs::write(&bogus, b"this is definitely not a SQLite database").unwrap();
+
+        // Reporting v0 here would sail past every version gate in the merge.
+        let err = SqliteClient::read_db_version(&bogus).unwrap_err();
+        assert!(
+            err.to_string().contains("user_version"),
+            "expected a version-read error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn paranoid_merge_fails_when_rows_do_not_reach_the_target() -> anyhow::Result<()> {
+        let dir = testdir::testdir!();
+        // INSERT OR IGNORE drops CHECK violations as quietly as duplicates, so a
+        // stricter target loses rows without any error from the merge itself.
+        let target = dir.join("full.db");
+        let conn = Connection::open(&target)?;
+        conn.execute_batch(
+            "CREATE TABLE accounts (id TEXT PRIMARY KEY);
+             CREATE TABLE blocks (id TEXT PRIMARY KEY, seq_no INTEGER CHECK (seq_no > 0));
+             CREATE TABLE messages (id TEXT PRIMARY KEY);
+             CREATE TABLE transactions (id TEXT PRIMARY KEY);
+             CREATE TABLE bk_set_updates (block_id TEXT PRIMARY KEY);
+             CREATE TABLE attestations (block_id TEXT, target_type INTEGER, UNIQUE(block_id, target_type));",
+        )?;
+        conn.pragma_update(None, "user_version", 8)?;
+        drop(conn);
+
+        let daily = dir.join("daily.db");
+        let conn = Connection::open(&daily)?;
+        conn.execute_batch(
+            "CREATE TABLE accounts (id TEXT PRIMARY KEY);
+             CREATE TABLE blocks (id TEXT PRIMARY KEY, seq_no INTEGER);
+             CREATE TABLE messages (id TEXT PRIMARY KEY);
+             CREATE TABLE transactions (id TEXT PRIMARY KEY);
+             CREATE TABLE bk_set_updates (block_id TEXT PRIMARY KEY);
+             CREATE TABLE attestations (block_id TEXT, target_type INTEGER, UNIQUE(block_id, target_type));",
+        )?;
+        conn.pragma_update(None, "user_version", 8)?;
+        conn.execute("INSERT INTO blocks (id, seq_no) VALUES ('ok', 1)", [])?;
+        conn.execute("INSERT INTO blocks (id, seq_no) VALUES ('rejected', -1)", [])?;
+        drop(conn);
+
+        let quiet = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            false,
+        );
+        quiet.merge_daily_into_full(&daily, &target)?;
+
+        let out = Connection::open(&target)?;
+        let landed: i64 = out.query_row("SELECT count(*) FROM blocks", [], |r| r.get(0))?;
+        assert_eq!(landed, 1, "the CHECK violation should have been dropped silently");
+        out.execute("DELETE FROM blocks", [])?;
+        drop(out);
+
+        let strict = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            true,
+        );
+        let err = strict.merge_daily_into_full(&daily, &target).unwrap_err();
+        assert!(
+            err.to_string().contains("did not reach main"),
+            "paranoid merge should report the loss, got: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn create_daily_db_normalises_the_journal_mode() -> anyhow::Result<()> {
+        let dir = testdir::testdir!();
+        let src = create_test_db(&dir, "src.db", 8);
+        // The vendored SQLite build understands WAL2, so stand in with the real
+        // thing: header bytes 18-19 read 3/3, which stock SQLite rejects.
+        let conn = Connection::open(&src)?;
+        conn.execute_batch("PRAGMA journal_mode=WAL2")?;
+        drop(conn);
+        let header = std::fs::read(&src)?;
+        assert_eq!(&header[18..20], &[3, 3], "fixture must really be WAL2");
+
+        let dst = dir.join("daily.db");
+        let client = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            false,
+        );
+        client.create_daily_db(&[src], &dst)?;
+
+        let out = Connection::open(&dst)?;
+        let mode: String = out.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        assert_eq!(mode, "delete", "daily must not inherit the archive's journal mode");
+        let header = std::fs::read(&dst)?;
+        assert_eq!(&header[18..20], &[1, 1], "stock SQLite must see a rollback-journal header");
+        Ok(())
+    }
+
+    #[test]
+    fn create_daily_db_refuses_a_source_with_a_live_wal_sidecar() -> anyhow::Result<()> {
+        let dir = testdir::testdir!();
+        let src = create_test_db(&dir, "src.db", 8);
+        // A rotated archive block-manager failed to check-point: the byte copy
+        // would be a valid database missing the WAL tail, and no later check
+        // could tell.
+        std::fs::write(dir.join("src.db-wal"), b"frames")?;
+
+        let client = SqliteClient::new(
+            &["accounts", "blocks", "messages", "transactions", "bk_set_updates", "attestations"],
+            None,
+            false,
+        );
+        let err =
+            client.create_daily_db(std::slice::from_ref(&src), &dir.join("daily.db")).unwrap_err();
+        assert!(err.to_string().contains("sidecar"), "unexpected error: {err}");
+        assert!(!dir.join("daily.db").exists(), "nothing may be copied");
+
+        // An empty sidecar carries nothing and must not block the run.
+        std::fs::write(dir.join("src.db-wal"), b"")?;
+        client.create_daily_db(&[src], &dir.join("daily.db"))?;
         Ok(())
     }
 }

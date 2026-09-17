@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::Context;
 use clap::Parser;
 use include_dir::include_dir;
 use include_dir::Dir;
@@ -30,6 +31,14 @@ struct Args {
     /// Migrate the bm-schema.db to the specified DB schema version (default: latest)
     #[arg(long = "block-manager", value_name = "SCHEMA_VERSION", num_args = 0..=1, default_missing_value = "latest")]
     bm: Option<String>,
+
+    /// Force journal_mode=DELETE before migrating (use for cold/archive databases)
+    #[arg(long)]
+    no_journal: bool,
+
+    /// Use up-nocheck.sql (without CHECK constraints) where available — avoids full table scan on large databases
+    #[arg(long)]
+    no_check_constraints: bool,
 }
 
 fn parse_version(v: Option<String>, target: MTarget) -> anyhow::Result<u32> {
@@ -85,8 +94,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut conn = Connection::open(db_file.clone())?;
-    let current_version =
-        conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap_or(0);
+    // See DbMaintenance::migrate — a failed read must not masquerade as v0.
+    let current_version: u32 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .with_context(|| format!("failed to read user_version from {}", db_file.display()))?;
 
     let migrations_block_manager =
         Migrations::from_directory(&M_BLOCK_MANAGER).expect("bm-archive");
@@ -111,20 +122,43 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(0);
     }
 
+    // See DbMaintenance::migrate: the sorter's run size follows the cache.
+    conn.pragma_update(None, "cache_size", "-1048576")?; // ~1 GiB
+
     let migrate_to =
         parse_version(args.bm.clone(), MTarget::BlockManager(migrations_block_manager.clone()))?;
     if current_version == migrate_to {
         println!("`{}` is up to date", db_file.display());
     } else if args.bm.is_some() {
         if current_version < migrate_to {
-            println!("Upgrading `{}` to the schema version {migrate_to:?}... ", db_file.display());
+            print!("Upgrading `{}` to the schema version {migrate_to:?}... ", db_file.display());
         } else {
-            println!(
-                "Downgrading `{}` to the schema version {migrate_to:?}... ",
-                db_file.display()
-            );
+            print!("Downgrading `{}` to the schema version {migrate_to:?}... ", db_file.display());
         }
-        migrations_block_manager.to_version(&mut conn, migrate_to as usize)?;
+        if args.no_check_constraints && current_version < migrate_to {
+            print!("(no-check-constraints) ");
+            let db_filename = db_file.file_name().expect("db_file must have a filename");
+            let db_info = Box::leak(Box::new(migration_tool::DbInfo::new(db_filename)));
+            let maintenance = migration_tool::DbMaintenance::new(db_info, &db_dir);
+            drop(conn);
+            maintenance.migrate(
+                migration_tool::MigrateTo::Version(migrate_to),
+                migration_tool::DbMaintenanceOptions {
+                    silent: true,
+                    no_journal: args.no_journal,
+                    no_check_constraints: true,
+                },
+            )?;
+            println!("done.");
+        } else {
+            // Only once a migration is actually going to run — see
+            // DbMaintenance::migrate for the nocheck path, which does the same.
+            if args.no_journal {
+                migration_tool::force_delete_journal(&conn, &db_file)?;
+            }
+            migrations_block_manager.to_version(&mut conn, migrate_to as usize)?;
+            println!("done.");
+        }
         // conn.execute_batch(
         //     "
         //     PRAGMA page_size=16384;

@@ -623,10 +623,6 @@ has_cross_thread_ref_data_prepared={:?}\
         &mut self,
         block_identifier: BlockIdentifier,
     ) -> anyhow::Result<()> {
-        tracing::trace!(
-            "{:?} Call setter: set_parent_block_identifier, args: {block_identifier:?}",
-            &self
-        );
         self.parent_block_identifier = Some(block_identifier);
         Ok(())
     }
@@ -650,7 +646,6 @@ has_cross_thread_ref_data_prepared={:?}\
     }
 
     pub fn set_stored(&mut self, block: &Envelope<AckiNackiBlock>) -> anyhow::Result<()> {
-        tracing::trace!("{:?} Call setter: set_stored", &self);
         if self.stored == Some(true) {
             return Ok(());
         }
@@ -662,7 +657,6 @@ has_cross_thread_ref_data_prepared={:?}\
             block.data().common_section().tracked_ext_out_messages_root(),
         ));
         self.envelope_hash = Some(envelope_hash);
-        tracing::trace!("{:?} Call setter: set_envelope_hash={:?}", &self, self.envelope_hash);
         self.notify_changed()
     }
 
@@ -680,8 +674,17 @@ has_cross_thread_ref_data_prepared={:?}\
         self.notify_changed()
     }
 
+    pub fn reset_applied_for_shutdown_replay(&mut self) -> anyhow::Result<()> {
+        if self.applied.is_none() && self.applied_start_timestamp.is_none() {
+            return Ok(());
+        }
+        tracing::trace!(target: "monit", "{:?} Call setter: reset_applied_for_shutdown_replay", &self);
+        self.applied = None;
+        self.applied_start_timestamp = None;
+        self.notify_changed()
+    }
+
     pub fn set_stored_zero_state(&mut self) -> anyhow::Result<()> {
-        tracing::trace!("{:?} Call setter: set_stored_zero_state", &self);
         if self.stored == Some(true) {
             return Ok(());
         }
@@ -693,7 +696,6 @@ has_cross_thread_ref_data_prepared={:?}\
     }
 
     pub fn set_history_cursor(&mut self, cursor: HistoryLayerData) -> anyhow::Result<()> {
-        tracing::trace!("{:?} Call setter: set_history_cursor", &self);
         if let Some(existing) = &self.history_cursor {
             anyhow::ensure!(existing == &cursor, "history cursor mismatch");
             return Ok(());
@@ -702,7 +704,6 @@ has_cross_thread_ref_data_prepared={:?}\
     }
 
     pub fn set_history_cursor_unchecked(&mut self, cursor: HistoryLayerData) -> anyhow::Result<()> {
-        tracing::trace!("{:?} Call setter: set_history_cursor_unchecked", &self);
         self.history_cursor = Some(cursor);
         self.notify_changed()
     }
@@ -980,16 +981,10 @@ has_cross_thread_ref_data_prepared={:?}\
             );
             return;
         }
-        tracing::trace!("{:?} Call setter: add_subscriber len={}", &self, self.notifications.len());
         self.notifications.push(notifications);
     }
 
     pub fn remove_subscriber(&mut self, notifications: &Notification) {
-        tracing::trace!(
-            "{:?} Call setter: remove_subscriber len={}",
-            &self,
-            self.notifications.len()
-        );
         self.notifications.retain(|e| e.id() != notifications.id());
     }
 }
@@ -1045,5 +1040,18 @@ mod tests {
 
         state.report_created();
         assert!(state.live_block_state_reported);
+    }
+
+    #[test]
+    fn reset_applied_for_shutdown_replay_clears_applied_marker() {
+        let mut state = AckiNackiBlockState::default();
+
+        state.set_applied(std::time::Instant::now(), std::time::Instant::now()).unwrap();
+        assert!(state.is_block_already_applied());
+
+        state.reset_applied_for_shutdown_replay().unwrap();
+
+        assert!(!state.is_block_already_applied());
+        assert!(state.applied_start_timestamp().is_none());
     }
 }

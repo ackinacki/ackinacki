@@ -62,6 +62,7 @@ use node::external_messages::QueuedExtMessage;
 use node::helper::account_boc_loader::get_account_from_shard_state;
 use node::helper::calc_file_hash;
 use node::helper::metrics::Metrics;
+use node::helper::metrics::BK_SET_BLOCK_SAVE_CHANNEL;
 use node::helper::metrics::BLOCK_STATE_SAVE_CHANNEL;
 use node::helper::metrics::OPTIMISTIC_STATE_SAVE_CHANNEL;
 use node::helper::shutdown_tracing;
@@ -80,6 +81,8 @@ use node::node::block_state::state::AttestationTarget;
 use node::node::block_state::state::AttestationTargets;
 use node::node::services::attestations_target::service::AttestationTargetsService;
 use node::node::services::authority_switch::AuthoritySwitchService;
+use node::node::services::bk_set_block_storage::start_bk_set_block_storage_service;
+use node::node::services::bk_set_block_storage::BkSetBlockSaveCommand;
 use node::node::services::block_processor::service::BlockProcessorService;
 use node::node::services::block_processor::service::SecurityGuarantee;
 use node::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
@@ -209,6 +212,7 @@ fn ext_messages_limits(config: &Config) -> ExtMessagesLimits {
         total: config.local.ext_messages_total_limit,
         per_dapp: config.local.ext_messages_dapp_limit,
         per_account: config.local.ext_messages_account_limit,
+        low_priority_percentage: config.local.ext_messages_low_priority_limit_percentage,
     }
 }
 
@@ -646,6 +650,20 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             node::helper::metrics::RAW_BLOCK_CHANNEL,
         );
     let raw_block_sender_clone = raw_block_sender.clone();
+    let (bk_set_block_sender, _bk_set_block_storage_service) =
+        if let Some(path) = config.local.bk_set_changes_blocks_path.clone() {
+            let (tx, rx) = instrumented_channel::<BkSetBlockSaveCommand>(
+                node_metrics.clone(),
+                BK_SET_BLOCK_SAVE_CHANNEL,
+            );
+            let handle = std::thread::Builder::new()
+                .name("BK set block storage service".to_string())
+                .spawn_critical(move || start_bk_set_block_storage_service(path, rx))?;
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
+    let bk_set_block_sender_for_threads = bk_set_block_sender.clone();
 
     let block_manager_listen_addr = config.network.block_manager_listen_addr;
     let net_topology_rx_clone = net_topology_rx.clone();
@@ -1434,6 +1452,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 broadcast_tx.clone(),
                 direct_tx.clone(),
                 raw_block_sender.clone(),
+                bk_set_block_sender_for_threads.clone(),
                 bls_keys_map.clone(),
                 config.clone(),
                 global_config.clone(),
@@ -1600,6 +1619,9 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                     let _ = state_save_tx.send(StateSaveCommand::Shutdown);
                     let _ = optimistic_save_tx_clone.send(OptimisticStateSaveCommand::Shutdown);
                     let _ = raw_block_sender_clone.send(RawBlockSaveCommand::Shutdown);
+                    if let Some(sender) = &bk_set_block_sender {
+                        let _ = sender.send(BkSetBlockSaveCommand::Shutdown);
+                    }
                     let _ = heartbeat_channel_tx_clone.send(HeartbeatCommand::Shutdown);
                     shutdown_tx.send_replace(true);
                     for service in state_sync_services.lock().iter() {
@@ -2795,6 +2817,7 @@ async fn test_execute() -> anyhow::Result<()> {
         broadcast_tx.clone(),
         direct_tx.clone(),
         raw_block_sender.clone(),
+        None,
         bls_keys_map.clone(),
         config.clone(),
         global_config.clone(),

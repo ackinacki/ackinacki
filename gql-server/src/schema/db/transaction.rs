@@ -666,7 +666,7 @@ mod tests {
         std::fs::create_dir_all(&db_dir).expect("create db dir");
         let db_maintenance = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &db_dir);
         db_maintenance
-            .migrate(MigrateTo::Latest, DbMaintenanceOptions { silent: true })
+            .migrate(MigrateTo::Latest, DbMaintenanceOptions { silent: true, ..Default::default() })
             .expect("migrate");
         let main_db = db_maintenance.path;
 

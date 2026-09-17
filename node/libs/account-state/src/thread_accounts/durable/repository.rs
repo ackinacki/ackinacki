@@ -30,6 +30,7 @@ use node_types::DAppIdentifierPath;
 use node_types::ThreadAccountsHash;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
+use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 use tvm_block::Serializable;
@@ -55,6 +56,7 @@ const SNAPSHOT_WRITTEN_HASH_MAX_WORKERS: usize = 8;
 const SNAPSHOT_EXPORT_VALIDATION_BATCH_SIZE: usize = 1_000;
 const SNAPSHOT_EXPORT_VALIDATION_QUEUE_BATCHES: usize = 4;
 const SNAPSHOT_EXPORT_VALIDATION_DEFAULT_WORKERS: usize = 1;
+const PARALLEL_PREPARE_UPDATES_THRESHOLD: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccountHashMismatchError {
@@ -1289,36 +1291,94 @@ impl DurableThreadAccountsRepository {
         HashMap<AccountRouting, ArchiveOperation>,
         Vec<(AccountRouting, Option<AccountInfo>)>,
     )> {
-        let mut account_updates = HashMap::new();
-        let mut map_updates = Vec::new();
         let protected_routings: HashSet<AccountRouting> = accounts
             .iter()
             .filter_map(|(routing, operation)| {
                 (!matches!(operation, BlockAccountOperation::Remove)).then_some(*routing)
             })
             .collect();
+
+        let prepared_updates = if accounts.len() < PARALLEL_PREPARE_UPDATES_THRESHOLD {
+            self.prepare_account_updates_sequential(old_tvm_accounts, state, accounts)?
+        } else {
+            self.prepare_account_updates_parallel(old_tvm_accounts, state, accounts)?
+        };
+
+        self.collect_prepared_updates(prepared_updates, &protected_routings, state)
+    }
+
+    fn prepare_account_updates_sequential(
+        &self,
+        old_tvm_accounts: &tvm_block::ShardAccounts,
+        state: &DurableThreadAccountsState,
+        accounts: &HashMap<AccountRouting, BlockAccountOperation>,
+    ) -> anyhow::Result<Vec<PreparedAccountUpdate>> {
+        let mut prepared_updates = Vec::with_capacity(accounts.len());
         for (routing, state_account) in accounts {
             tracing::trace!(target: "builder", "Update account in durable state: {}", routing);
-            match self.get_account_update(routing, state_account, state, old_tvm_accounts)? {
+            prepared_updates.push(PreparedAccountUpdate {
+                routing: *routing,
+                update: self.get_account_update(routing, state_account, state, old_tvm_accounts)?,
+            });
+        }
+        Ok(prepared_updates)
+    }
+
+    fn prepare_account_updates_parallel(
+        &self,
+        old_tvm_accounts: &tvm_block::ShardAccounts,
+        state: &DurableThreadAccountsState,
+        accounts: &HashMap<AccountRouting, BlockAccountOperation>,
+    ) -> anyhow::Result<Vec<PreparedAccountUpdate>> {
+        accounts
+            .par_iter()
+            .map(|(routing, state_account)| {
+                tracing::trace!(target: "builder", "Update account in durable state: {}", routing);
+                Ok(PreparedAccountUpdate {
+                    routing: *routing,
+                    update: self.get_account_update(
+                        routing,
+                        state_account,
+                        state,
+                        old_tvm_accounts,
+                    )?,
+                })
+            })
+            .collect()
+    }
+
+    fn collect_prepared_updates(
+        &self,
+        prepared_updates: Vec<PreparedAccountUpdate>,
+        protected_routings: &HashSet<AccountRouting>,
+        state: &DurableThreadAccountsState,
+    ) -> anyhow::Result<(
+        HashMap<AccountRouting, ArchiveOperation>,
+        Vec<(AccountRouting, Option<AccountInfo>)>,
+    )> {
+        let mut account_updates = HashMap::new();
+        let mut map_updates = Vec::new();
+        for PreparedAccountUpdate { routing, update } in prepared_updates {
+            match update {
                 AccountUpdate::Redirect(info) => {
                     let AccountInfo::Redirect(dapp_id) = info else {
                         anyhow::bail!("Redirect account update has non-redirect info: {info}");
                     };
                     account_updates.insert(
-                        *routing,
+                        routing,
                         ArchiveOperation::UpdateOrInsert(ThreadAccount::redirect(dapp_id)),
                     );
-                    map_updates.push((*routing, Some(info)));
+                    map_updates.push((routing, Some(info)));
                 }
                 AccountUpdate::Update(info, account) => {
-                    account_updates.insert(*routing, ArchiveOperation::UpdateOrInsert(account));
-                    map_updates.push((*routing, Some(info)));
+                    account_updates.insert(routing, ArchiveOperation::UpdateOrInsert(account));
+                    map_updates.push((routing, Some(info)));
                 }
                 AccountUpdate::Remove => {
-                    account_updates.insert(*routing, ArchiveOperation::Remove);
-                    map_updates.push((*routing, None));
+                    account_updates.insert(routing, ArchiveOperation::Remove);
+                    map_updates.push((routing, None));
                     if let Some(redirect_routing) =
-                        self.derived_redirect_remove_routing(routing, state)?
+                        self.derived_redirect_remove_routing(&routing, state)?
                     {
                         if !protected_routings.contains(&redirect_routing) {
                             account_updates
@@ -1962,6 +2022,11 @@ enum AccountUpdate {
     Update(AccountInfo, ThreadAccount),
 }
 
+struct PreparedAccountUpdate {
+    routing: AccountRouting,
+    update: AccountUpdate,
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -2391,6 +2456,33 @@ mod tests {
         repo.state_update(&thread_id, 0, &old_tvm_accounts, &state, &accounts).unwrap();
 
         assert!(repo.account_read_cache.get(&hash).is_none());
+    }
+
+    #[test]
+    fn state_update_parallel_path_applies_large_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = ArchiveStateStore::in_memory();
+        let repo =
+            DurableThreadAccountsRepository::new(PathBuf::from(dir.path()), archive, None).unwrap();
+
+        let thread_id = ThreadIdentifier::default();
+        let state = DurableThreadAccountsRepository::new_state();
+        let old_tvm_accounts = tvm_block::ShardAccounts::default();
+        let mut accounts = HashMap::new();
+        let mut expected = Vec::new();
+        for seed in 0..super::PARALLEL_PREPARE_UPDATES_THRESHOLD {
+            let (routing, account) = new_acc(1_000 + seed);
+            accounts.insert(routing, super::BlockAccountOperation::UpdateOrInsert(account.clone()));
+            expected.push((routing, account));
+        }
+
+        let (new_state, account_updates) =
+            repo.state_update(&thread_id, 0, &old_tvm_accounts, &state, &accounts).unwrap();
+
+        assert_eq!(account_updates.len(), expected.len());
+        for (routing, account) in expected {
+            assert_eq!(repo.state_account(&new_state, &routing).unwrap(), Some(account));
+        }
     }
 
     #[test]

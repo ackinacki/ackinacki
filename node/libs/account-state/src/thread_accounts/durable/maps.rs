@@ -141,11 +141,17 @@ impl ThreadAccountMapRepository {
             for (id, info) in accounts {
                 l2_map = self.l2.map_update_single(&l2_map, &MapKey(*id.as_array()), info);
             }
-            l1_map = self.l1.map_update_single(
-                &l1_map,
-                &MapKey(*dapp_id.as_array()),
-                Some(L1MapValue::new(l2_map)),
-            );
+            let dapp_key = MapKey(*dapp_id.as_array());
+            let had_dapp = self.l1.map_get(&l1_map, &dapp_key).is_some();
+            let dapp_update = (!l2_map.root.is_empty()).then_some(L1MapValue::new(l2_map));
+            if had_dapp && dapp_update.is_none() {
+                tracing::debug!(
+                    target: "account_state_dapp_cleanup",
+                    dapp_id = %dapp_id.to_hex_string(),
+                    "removed empty dapp from durable account state"
+                );
+            }
+            l1_map = self.l1.map_update_single(&l1_map, &dapp_key, dapp_update);
         }
         l1_map
     }
@@ -255,5 +261,64 @@ impl<'a> Iterator for DurableThreadAccountsIter<'a> {
             self.current_dapp_id = DAppIdentifier::new(dapp_key.0);
             self.current_l2_iter = Some(self.account_maps.iter(&l2_map.0));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use node_types::AccountHash;
+
+    use super::*;
+
+    fn dapp(seed: u8) -> DAppIdentifier {
+        DAppIdentifier::new([seed; 32])
+    }
+
+    fn account(seed: u8) -> AccountIdentifier {
+        AccountIdentifier::new([seed; 32])
+    }
+
+    fn routing(dapp_seed: u8, account_seed: u8) -> AccountRouting {
+        AccountRouting::new(dapp(dapp_seed), account(account_seed))
+    }
+
+    fn account_info(seed: u8) -> AccountInfo {
+        AccountInfo::VmAccountHash(AccountHash::new([seed; 32]))
+    }
+
+    #[test]
+    fn map_update_removes_dapp_key_after_last_account_is_removed() {
+        let repo = ThreadAccountMapRepository::new();
+        let empty = ThreadAccountMapRepository::new_map();
+        let routing = routing(1, 2);
+
+        let with_account = repo.map_update(&empty, &[(routing, Some(account_info(3)))]);
+        assert!(repo.l1.map_get(&with_account, &MapKey(*routing.dapp_id().as_array())).is_some());
+
+        let without_account = repo.map_update(&with_account, &[(routing, None)]);
+
+        assert_eq!(repo.map_get(&without_account, &routing), None);
+        assert!(repo
+            .l1
+            .map_get(&without_account, &MapKey(*routing.dapp_id().as_array()))
+            .is_none());
+    }
+
+    #[test]
+    fn map_update_keeps_dapp_key_when_other_accounts_remain() {
+        let repo = ThreadAccountMapRepository::new();
+        let empty = ThreadAccountMapRepository::new_map();
+        let removed = routing(1, 2);
+        let retained = routing(1, 3);
+
+        let with_accounts = repo.map_update(
+            &empty,
+            &[(removed, Some(account_info(4))), (retained, Some(account_info(5)))],
+        );
+        let updated = repo.map_update(&with_accounts, &[(removed, None)]);
+
+        assert_eq!(repo.map_get(&updated, &removed), None);
+        assert_eq!(repo.map_get(&updated, &retained), Some(account_info(5)));
+        assert!(repo.l1.map_get(&updated, &MapKey(*retained.dapp_id().as_array())).is_some());
     }
 }

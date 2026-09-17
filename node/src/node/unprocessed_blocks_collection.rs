@@ -123,6 +123,7 @@ impl UnfinalizedCandidateBlockCollection {
 
         for (state, block) in states {
             let index = BlockIndex::from(block.as_ref());
+            state.guarded_mut(|e| e.add_subscriber(notifications.clone()));
             data.insert(index, (state, block));
         }
 
@@ -466,5 +467,17 @@ mod tests {
         let (snapshot, _) = collection.clone_queue();
 
         assert_eq!(snapshot.blocks().len(), 1);
+    }
+
+    #[test]
+    fn new_subscribes_to_loaded_block_state_changes() {
+        let (state, block) = make_block_state(10, 10);
+        let collection =
+            UnfinalizedCandidateBlockCollection::new([(state.clone(), block)].into_iter());
+
+        let before = collection.notifications().stamp();
+        state.guarded_mut(|e| e.set_finalized()).unwrap();
+
+        assert_ne!(collection.notifications().stamp(), before);
     }
 }

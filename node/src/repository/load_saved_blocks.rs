@@ -6,9 +6,11 @@ use std::sync::Arc;
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
 
+use crate::bls::envelope::BLSSignedEnvelope;
 use crate::bls::envelope::Envelope;
 use crate::node::block_state::repository::BlockState;
 use crate::node::block_state::repository::BlockStateRepository;
+use crate::node::block_state::tools::link_parent_child;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::Repository;
 use crate::types::AckiNackiBlock;
@@ -44,6 +46,7 @@ impl SavedBlocksLoader for RepositoryImpl {
             tracing::trace!("Last finalized seq no for {thread_id:?} is {seq_no:?}");
             last_finalized_seq_nos.insert(*thread_id, seq_no);
         }
+        let mut restored_parent_links = 0usize;
         for path in paths.flatten() {
             if let Ok(block_id) =
                 BlockIdentifier::from_str(path.file_name().to_str().unwrap_or_default())
@@ -76,6 +79,14 @@ impl SavedBlocksLoader for RepositoryImpl {
                         continue;
                     }
                     if let Some(thread_id) = state.guarded(|e| *e.thread_identifier()) {
+                        let parent_id = block.data().parent();
+                        let parent_state = block_state_repository.get(&parent_id)?;
+                        link_parent_child::do_link(
+                            link_parent_child::Link { parent: parent_state, child: state.clone() },
+                            block_state_repository,
+                        );
+                        restored_parent_links += 1;
+                        state.guarded_mut(|e| e.reset_applied_for_shutdown_replay())?;
                         tracing::trace!("add unfinalized block {:?}", block_id);
                         result
                             .entry(thread_id)
@@ -85,6 +96,11 @@ impl SavedBlocksLoader for RepositoryImpl {
                 }
             }
         }
+        tracing::info!(
+            target: "node",
+            "loaded saved unfinalized blocks from shutdown: blocks={}, restored_parent_links={restored_parent_links}",
+            result.values().map(Vec::len).sum::<usize>(),
+        );
         Ok(result)
     }
 }

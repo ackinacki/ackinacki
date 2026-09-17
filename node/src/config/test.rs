@@ -65,9 +65,10 @@ mod tests {
         "state_cache_size": 10,
         "message_storage_path": "message_strage",
         "rate_limit_on_incoming_block_req": 1000,
-        "ext_messages_total_limit": 10,
-        "ext_messages_dapp_limit": 10,
-        "ext_messages_account_limit": 10,
+        "ext_messages_total_limit": 1200,
+        "ext_messages_dapp_limit": 600,
+        "ext_messages_account_limit": 5,
+        "ext_messages_low_priority_limit_percentage": 80,
         "node_wallet_pubkey": "hex_string"
     }
 }"#;
@@ -84,7 +85,12 @@ mod tests {
         assert_eq!(config.local.blockchain_config_path, PathBuf::from("../bc_config.json"));
         assert_eq!(config.local.key_path, "key1.json");
         assert_eq!(config.local.zerostate_path, Some(PathBuf::from("./zerostate")));
+        assert_eq!(config.local.bk_set_changes_blocks_path, None);
         assert_eq!(config.local.external_state_share_local_base_dir, PathBuf::from("/tmp"));
+        assert_eq!(config.local.ext_messages_total_limit, 1200);
+        assert_eq!(config.local.ext_messages_dapp_limit, 600);
+        assert_eq!(config.local.ext_messages_account_limit, 5);
+        assert_eq!(config.local.ext_messages_low_priority_limit_percentage, 80);
 
         let config = GlobalConfig::default();
         assert_eq!(config.time_to_produce_block_millis, 330);

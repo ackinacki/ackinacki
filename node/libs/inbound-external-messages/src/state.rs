@@ -20,6 +20,9 @@ pub trait InboundMessage: Clone + Send {
     fn destination(&self) -> Self::Destination;
     fn dapp_id(destination: &Self::Destination) -> Self::DApp;
     fn account_id(destination: &Self::Destination) -> Self::Account;
+    fn is_low_priority(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -27,6 +30,7 @@ pub struct MessagesLimits {
     pub total: usize,
     pub per_dapp: usize,
     pub per_account: usize,
+    pub low_priority_percentage: usize,
 }
 
 #[derive(Clone)]
@@ -44,74 +48,107 @@ impl<M: InboundMessage> Default for MessagesSelectionCursor<M> {
 #[derive(Clone, Getters)]
 pub struct AccountMessages<M: InboundMessage> {
     messages: VecDeque<(Stamp, M)>,
+    low_priority_messages: VecDeque<(Stamp, M)>,
 }
 
 impl<M: InboundMessage> Default for AccountMessages<M> {
     fn default() -> Self {
-        Self { messages: VecDeque::new() }
+        Self { messages: VecDeque::new(), low_priority_messages: VecDeque::new() }
     }
 }
 
 impl<M: InboundMessage> AccountMessages<M> {
     pub fn len(&self) -> usize {
-        self.messages.len()
+        self.messages.len() + self.low_priority_messages.len()
+    }
+
+    pub fn low_priority_len(&self) -> usize {
+        self.low_priority_messages.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
+        self.messages.is_empty() && self.low_priority_messages.is_empty()
     }
 
     fn push_back(&mut self, stamp: Stamp, message: M) {
-        self.messages.push_back((stamp, message));
+        if message.is_low_priority() {
+            self.low_priority_messages.push_back((stamp, message));
+        } else {
+            self.messages.push_back((stamp, message));
+        }
     }
 
     fn insert_ordered(&mut self, stamp: Stamp, message: M) {
-        let index = self
-            .messages
+        let queue = if message.is_low_priority() {
+            &mut self.low_priority_messages
+        } else {
+            &mut self.messages
+        };
+        let index = queue
             .iter()
             .position(|(existing_stamp, _)| existing_stamp > &stamp)
-            .unwrap_or(self.messages.len());
-        self.messages.insert(index, (stamp, message));
+            .unwrap_or(queue.len());
+        queue.insert(index, (stamp, message));
     }
 
     fn remove_stamps(&mut self, stamps: &StdBTreeSet<Stamp>) -> Vec<(Stamp, M)> {
         let mut removed = Vec::new();
-        let mut retained = VecDeque::new();
 
-        while let Some((stamp, message)) = self.messages.pop_front() {
-            if stamps.contains(&stamp) {
-                removed.push((stamp, message));
-            } else {
-                retained.push_back((stamp, message));
-            }
-        }
-
-        self.messages = retained;
+        remove_from_queue(&mut self.messages, stamps, &mut removed);
+        remove_from_queue(&mut self.low_priority_messages, stamps, &mut removed);
         removed
     }
 
     fn contains_stamp(&self, stamp: &Stamp) -> bool {
         self.messages.iter().any(|(existing, _)| existing == stamp)
+            || self.low_priority_messages.iter().any(|(existing, _)| existing == stamp)
     }
+}
+
+fn remove_from_queue<M: InboundMessage>(
+    queue: &mut VecDeque<(Stamp, M)>,
+    stamps: &StdBTreeSet<Stamp>,
+    removed: &mut Vec<(Stamp, M)>,
+) {
+    let mut retained = VecDeque::new();
+    while let Some((stamp, message)) = queue.pop_front() {
+        if stamps.contains(&stamp) {
+            removed.push((stamp, message));
+        } else {
+            retained.push_back((stamp, message));
+        }
+    }
+    *queue = retained;
 }
 
 #[derive(Clone, Getters)]
 pub struct DappMessages<M: InboundMessage> {
     messages: HashMap<M::Account, AccountMessages<M>>,
     count: usize,
+    low_priority_count: usize,
     order_set: BTreeSet<M::Account>,
     cursor: usize,
 }
 
 impl<M: InboundMessage> Default for DappMessages<M> {
     fn default() -> Self {
-        Self { messages: HashMap::new(), count: 0, order_set: BTreeSet::new(), cursor: 0 }
+        Self {
+            messages: HashMap::new(),
+            count: 0,
+            low_priority_count: 0,
+            order_set: BTreeSet::new(),
+            cursor: 0,
+        }
     }
 }
 
 impl<M: InboundMessage> DappMessages<M> {
     pub fn len(&self) -> usize {
         self.count
+    }
+
+    pub fn low_priority_len(&self) -> usize {
+        self.low_priority_count
     }
 
     pub fn is_empty(&self) -> bool {
@@ -122,6 +159,9 @@ impl<M: InboundMessage> DappMessages<M> {
         if !self.order_set.contains(&account_id) {
             self.order_set.insert(account_id);
         }
+        if message.is_low_priority() {
+            self.low_priority_count += 1;
+        }
         self.messages.entry(account_id).or_default().push_back(stamp, message);
         self.count += 1;
         self.normalize_cursor();
@@ -130,6 +170,9 @@ impl<M: InboundMessage> DappMessages<M> {
     fn insert_ordered(&mut self, account_id: M::Account, stamp: Stamp, message: M) {
         if !self.order_set.contains(&account_id) {
             self.order_set.insert(account_id);
+        }
+        if message.is_low_priority() {
+            self.low_priority_count += 1;
         }
         self.messages.entry(account_id).or_default().insert_ordered(stamp, message);
         self.count += 1;
@@ -151,6 +194,8 @@ impl<M: InboundMessage> DappMessages<M> {
             if !account_removed.is_empty() {
                 consumed_accounts.insert(*account_id);
             }
+            self.low_priority_count -=
+                account_removed.iter().filter(|(_, message)| message.is_low_priority()).count();
             self.count -= account_removed.len();
             removed.append(&mut account_removed);
             if account_queue.is_empty() {
@@ -185,6 +230,7 @@ impl<M: InboundMessage> DappMessages<M> {
 pub struct Messages<M: InboundMessage> {
     messages: HashMap<M::DApp, DappMessages<M>>,
     total_count: usize,
+    low_priority_count: usize,
     limits: MessagesLimits,
     order_set: BTreeSet<M::DApp>,
     cursor: usize,
@@ -196,6 +242,7 @@ impl<M: InboundMessage> Messages<M> {
         Self {
             messages: HashMap::new(),
             total_count: 0,
+            low_priority_count: 0,
             limits,
             order_set: BTreeSet::new(),
             cursor: 0,
@@ -205,6 +252,10 @@ impl<M: InboundMessage> Messages<M> {
 
     pub fn len(&self) -> usize {
         self.total_count
+    }
+
+    pub fn low_priority_len(&self) -> usize {
+        self.low_priority_count
     }
 
     pub fn is_empty(&self) -> bool {
@@ -231,16 +282,38 @@ impl<M: InboundMessage> Messages<M> {
             let account_id = M::account_id(&dst);
 
             let dapp_count = self.messages.get(&dapp_id).map(DappMessages::len).unwrap_or_default();
+            let dapp_low_priority_count =
+                self.messages.get(&dapp_id).map(DappMessages::low_priority_len).unwrap_or_default();
             let account_count = self
                 .messages
                 .get(&dapp_id)
                 .and_then(|dapp| dapp.messages.get(&account_id))
                 .map(AccountMessages::len)
                 .unwrap_or_default();
+            let account_low_priority_count = self
+                .messages
+                .get(&dapp_id)
+                .and_then(|dapp| dapp.messages.get(&account_id))
+                .map(AccountMessages::low_priority_len)
+                .unwrap_or_default();
 
             if self.total_count >= self.limits.total
                 || dapp_count >= self.limits.per_dapp
                 || account_count >= self.limits.per_account
+                || (ext_message.is_low_priority()
+                    && (low_priority_over_limit(
+                        self.low_priority_count,
+                        self.limits.total,
+                        self.limits.low_priority_percentage,
+                    ) || low_priority_over_limit(
+                        dapp_low_priority_count,
+                        self.limits.per_dapp,
+                        self.limits.low_priority_percentage,
+                    ) || low_priority_over_limit(
+                        account_low_priority_count,
+                        self.limits.per_account,
+                        self.limits.low_priority_percentage,
+                    )))
             {
                 unused.push(ext_message.clone());
                 continue;
@@ -268,6 +341,8 @@ impl<M: InboundMessage> Messages<M> {
             if !dapp_removed.is_empty() {
                 consumed_dapps.insert(*dapp_id);
             }
+            self.low_priority_count -=
+                dapp_removed.iter().filter(|(_, message)| message.is_low_priority()).count();
             self.total_count -= dapp_removed.len();
             removed.append(&mut dapp_removed);
 
@@ -291,6 +366,33 @@ impl<M: InboundMessage> Messages<M> {
         ignore_list: &HashSet<M::Destination>,
         requested_stamps: &StdBTreeSet<Stamp>,
         selection_cursor: &mut MessagesSelectionCursor<M>,
+    ) -> Option<(Stamp, M)> {
+        self.next_message_with_priority(ignore_list, requested_stamps, selection_cursor, false)
+            .or_else(|| {
+                self.next_message_with_priority(
+                    ignore_list,
+                    requested_stamps,
+                    selection_cursor,
+                    true,
+                )
+            })
+    }
+
+    pub fn next_low_priority_message(
+        &self,
+        ignore_list: &HashSet<M::Destination>,
+        requested_stamps: &StdBTreeSet<Stamp>,
+        selection_cursor: &mut MessagesSelectionCursor<M>,
+    ) -> Option<(Stamp, M)> {
+        self.next_message_with_priority(ignore_list, requested_stamps, selection_cursor, true)
+    }
+
+    fn next_message_with_priority(
+        &self,
+        ignore_list: &HashSet<M::Destination>,
+        requested_stamps: &StdBTreeSet<Stamp>,
+        selection_cursor: &mut MessagesSelectionCursor<M>,
+        low_priority: bool,
     ) -> Option<(Stamp, M)> {
         if self.order_set.is_empty() {
             selection_cursor.dapp_offset = 0;
@@ -325,8 +427,13 @@ impl<M: InboundMessage> Messages<M> {
                 let Some(account_queue) = dapp_queue.messages.get(account_id) else {
                     continue;
                 };
+                let messages = if low_priority {
+                    &account_queue.low_priority_messages
+                } else {
+                    &account_queue.messages
+                };
 
-                for (stamp, message) in &account_queue.messages {
+                for (stamp, message) in messages {
                     if requested_stamps.contains(stamp) {
                         continue;
                     }
@@ -367,12 +474,14 @@ impl<M: InboundMessage> Messages<M> {
         for dapp_queue in self.messages.values_mut() {
             for account_queue in dapp_queue.messages.values_mut() {
                 drained.extend(account_queue.messages.drain(..));
+                drained.extend(account_queue.low_priority_messages.drain(..));
             }
         }
 
         self.messages.clear();
         self.order_set.clear();
         self.total_count = 0;
+        self.low_priority_count = 0;
         self.cursor = 0;
         drained
     }
@@ -386,6 +495,9 @@ impl<M: InboundMessage> Messages<M> {
     ) {
         if !self.order_set.contains(&dapp_id) {
             self.order_set.insert(dapp_id);
+        }
+        if message.is_low_priority() {
+            self.low_priority_count += 1;
         }
         self.messages.entry(dapp_id).or_default().push_back(account_id, stamp, message);
         self.total_count += 1;
@@ -402,6 +514,9 @@ impl<M: InboundMessage> Messages<M> {
         if !self.order_set.contains(&dapp_id) {
             self.order_set.insert(dapp_id);
         }
+        if message.is_low_priority() {
+            self.low_priority_count += 1;
+        }
         self.messages.entry(dapp_id).or_default().insert_ordered(account_id, stamp, message);
         self.total_count += 1;
         self.normalize_cursor();
@@ -415,6 +530,17 @@ impl<M: InboundMessage> Messages<M> {
         self.cursor =
             if !self.order_set.is_empty() { self.cursor % self.order_set.len() } else { 0 };
     }
+}
+
+fn low_priority_over_limit(
+    current_low_priority_count: usize,
+    queue_limit: usize,
+    percentage: usize,
+) -> bool {
+    let next_count = current_low_priority_count.saturating_add(1) as u128;
+    let queue_limit = queue_limit as u128;
+    let percentage = percentage.min(100) as u128;
+    next_count * 100 > queue_limit * percentage
 }
 
 fn cursor_after_consumed_groups<T>(
@@ -465,6 +591,7 @@ mod tests {
     #[derive(Clone, Debug)]
     struct TestMessage {
         dst: Destination,
+        low_priority: bool,
     }
 
     impl InboundMessage for TestMessage {
@@ -483,14 +610,31 @@ mod tests {
         fn account_id(destination: &Self::Destination) -> Self::Account {
             destination.account_id
         }
+
+        fn is_low_priority(&self) -> bool {
+            self.low_priority
+        }
     }
 
     fn message(dapp_id: u8, account_id: u8) -> TestMessage {
-        TestMessage { dst: Destination { dapp_id, account_id } }
+        TestMessage { dst: Destination { dapp_id, account_id }, low_priority: false }
+    }
+
+    fn low_priority_message(dapp_id: u8, account_id: u8) -> TestMessage {
+        TestMessage { dst: Destination { dapp_id, account_id }, low_priority: true }
+    }
+
+    fn low_priority_messages(count: usize, dapp_id: u8, account_id: u8) -> Vec<TestMessage> {
+        std::iter::repeat_with(|| low_priority_message(dapp_id, account_id)).take(count).collect()
     }
 
     fn limits(value: usize) -> MessagesLimits {
-        MessagesLimits { total: value, per_dapp: value, per_account: value }
+        MessagesLimits {
+            total: value,
+            per_dapp: value,
+            per_account: value,
+            low_priority_percentage: 80,
+        }
     }
 
     fn stamp(index: u64) -> Stamp {
@@ -510,7 +654,12 @@ mod tests {
 
     #[test]
     fn limits_reject_messages_at_each_level() {
-        let mut state = Messages::empty(MessagesLimits { total: 3, per_dapp: 2, per_account: 1 });
+        let mut state = Messages::empty(MessagesLimits {
+            total: 3,
+            per_dapp: 2,
+            per_account: 1,
+            low_priority_percentage: 80,
+        });
 
         let rejected = state.push_external_messages(
             &[
@@ -527,6 +676,88 @@ mod tests {
         assert_eq!(state.len(), 3);
         assert_eq!(rejected.len(), 3);
         assert_eq!(state.messages.get(&1).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn limits_count_low_priority_messages() {
+        let mut state = Messages::empty(MessagesLimits {
+            total: 10,
+            per_dapp: 10,
+            per_account: 1,
+            low_priority_percentage: 80,
+        });
+
+        let rejected =
+            state.push_external_messages(&[low_priority_message(1, 1), message(1, 1)], Utc::now());
+
+        assert_eq!(state.len(), 1);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(state.messages.get(&1).unwrap().messages.get(&1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn limits_reject_low_priority_messages_above_configured_total_percentage() {
+        let mut state = Messages::empty(MessagesLimits {
+            total: 10,
+            per_dapp: 100,
+            per_account: 100,
+            low_priority_percentage: 80,
+        });
+
+        let messages = low_priority_messages(10, 1, 1);
+        let rejected = state.push_external_messages(&messages, Utc::now());
+
+        assert_eq!(state.len(), 8);
+        assert_eq!(rejected.len(), 2);
+    }
+
+    #[test]
+    fn limits_allow_normal_priority_messages_after_low_priority_percentage_is_reached() {
+        let mut state = Messages::empty(MessagesLimits {
+            total: 10,
+            per_dapp: 10,
+            per_account: 10,
+            low_priority_percentage: 80,
+        });
+
+        let mut messages = low_priority_messages(8, 1, 1);
+        messages.push(message(1, 1));
+        let rejected = state.push_external_messages(&messages, Utc::now());
+
+        assert_eq!(state.len(), 9);
+        assert!(rejected.is_empty());
+    }
+
+    #[test]
+    fn limits_reject_low_priority_messages_above_configured_dapp_percentage() {
+        let mut state = Messages::empty(MessagesLimits {
+            total: 100,
+            per_dapp: 10,
+            per_account: 100,
+            low_priority_percentage: 80,
+        });
+
+        let messages = low_priority_messages(10, 1, 1);
+        let rejected = state.push_external_messages(&messages, Utc::now());
+
+        assert_eq!(state.len(), 8);
+        assert_eq!(rejected.len(), 2);
+    }
+
+    #[test]
+    fn limits_reject_low_priority_messages_above_configured_account_percentage() {
+        let mut state = Messages::empty(MessagesLimits {
+            total: 100,
+            per_dapp: 100,
+            per_account: 10,
+            low_priority_percentage: 80,
+        });
+
+        let messages = low_priority_messages(10, 1, 1);
+        let rejected = state.push_external_messages(&messages, Utc::now());
+
+        assert_eq!(state.len(), 8);
+        assert_eq!(rejected.len(), 2);
     }
 
     #[test]
@@ -736,6 +967,65 @@ mod tests {
         }
 
         assert_eq!(selected_dapps, vec![1, 2, 1]);
+    }
+
+    #[test]
+    fn next_message_selects_normal_priority_before_low_priority() {
+        let mut state = Messages::empty(limits(10));
+        state.push_external_messages(&[low_priority_message(1, 1), message(2, 1)], Utc::now());
+
+        let mut selection_cursor = MessagesSelectionCursor::default();
+        let (_stamp, selected) = state
+            .next_message(&HashSet::new(), &StdBTreeSet::new(), &mut selection_cursor)
+            .unwrap();
+
+        assert_eq!(selected.destination().dapp_id, 2);
+        assert!(!selected.is_low_priority());
+    }
+
+    #[test]
+    fn next_message_skips_low_priority_account_when_normal_exists_in_same_dapp() {
+        let mut state = Messages::empty(limits(10));
+        state.push_external_messages(&[low_priority_message(1, 1), message(1, 2)], Utc::now());
+
+        let mut selection_cursor = MessagesSelectionCursor::default();
+        let (_stamp, selected) = state
+            .next_message(&HashSet::new(), &StdBTreeSet::new(), &mut selection_cursor)
+            .unwrap();
+
+        assert_eq!(selected.destination().account_id, 2);
+        assert!(!selected.is_low_priority());
+    }
+
+    #[test]
+    fn next_message_selects_low_priority_after_normal_priority_is_requested() {
+        let mut state = Messages::empty(limits(10));
+        state.push_external_messages(&[low_priority_message(1, 1), message(2, 1)], Utc::now());
+
+        let mut selection_cursor = MessagesSelectionCursor::default();
+        let (normal_stamp, normal) = state
+            .next_message(&HashSet::new(), &StdBTreeSet::new(), &mut selection_cursor)
+            .unwrap();
+        let requested = StdBTreeSet::from([normal_stamp]);
+        let (_low_stamp, low) =
+            state.next_message(&HashSet::new(), &requested, &mut selection_cursor).unwrap();
+
+        assert!(!normal.is_low_priority());
+        assert!(low.is_low_priority());
+    }
+
+    #[test]
+    fn next_low_priority_message_selects_low_priority_before_normal_priority() {
+        let mut state = Messages::empty(limits(10));
+        state.push_external_messages(&[message(1, 1), low_priority_message(2, 1)], Utc::now());
+
+        let mut selection_cursor = MessagesSelectionCursor::default();
+        let (_stamp, selected) = state
+            .next_low_priority_message(&HashSet::new(), &StdBTreeSet::new(), &mut selection_cursor)
+            .unwrap();
+
+        assert_eq!(selected.destination().dapp_id, 2);
+        assert!(selected.is_low_priority());
     }
 
     #[test]

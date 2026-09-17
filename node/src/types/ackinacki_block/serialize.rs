@@ -1,6 +1,8 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::time::Instant;
+
 use account_state::DurableThreadAccountsStateDiff;
 use serde::de::Error as DeserError;
 use serde::ser::Error as SerError;
@@ -65,7 +67,17 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
     where
         D: Deserializer<'de>,
     {
+        let total_started_at = Instant::now();
+        let mut step_started_at = Instant::now();
         let raw_data = Vec::<u8>::deserialize(deserializer)?;
+        tracing::trace!(
+            target: "node_execution_detailed",
+            "ackinacki_block_deserialize timing: step=raw_vec elapsed_ms={} raw_bytes={}",
+            step_started_at.elapsed().as_millis(),
+            raw_data.len(),
+        );
+
+        step_started_at = Instant::now();
         let (common_section_len_data, rest) = raw_data.split_at(8);
         let common_section_len = usize::from_be_bytes(
             common_section_len_data
@@ -77,6 +89,15 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
             versioned_struct::Transitioning::deserialize_data_compat(common_section_data)
                 .map_err(|_| D::Error::custom("Failed to deserialize common section"))?
                 .0;
+        tracing::trace!(
+            target: "node_execution_detailed",
+            "ackinacki_block_deserialize timing: step=common_section elapsed_ms={} common_section_bytes={} raw_bytes={}",
+            step_started_at.elapsed().as_millis(),
+            common_section_len,
+            raw_data.len(),
+        );
+
+        step_started_at = Instant::now();
         let (block_len_data, rest) = rest.split_at(8);
         let block_len = usize::from_be_bytes(
             block_len_data
@@ -86,8 +107,26 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
         let (block_data, rest) = rest.split_at(block_len);
         let block_cell = read_single_root_boc(block_data)
             .map_err(|_| D::Error::custom("Failed to deserialize tvm block cell"))?;
+        tracing::trace!(
+            target: "node_execution_detailed",
+            "ackinacki_block_deserialize timing: step=read_single_root_boc elapsed_ms={} block_bytes={} raw_bytes={}",
+            step_started_at.elapsed().as_millis(),
+            block_len,
+            raw_data.len(),
+        );
+
+        step_started_at = Instant::now();
         let block = tvm_block::Block::construct_from_cell(block_cell.clone())
             .map_err(|_| D::Error::custom("Failed to deserialize tvm block"))?;
+        tracing::trace!(
+            target: "node_execution_detailed",
+            "ackinacki_block_deserialize timing: step=construct_tvm_block elapsed_ms={} block_bytes={} raw_bytes={}",
+            step_started_at.elapsed().as_millis(),
+            block_len,
+            raw_data.len(),
+        );
+
+        step_started_at = Instant::now();
         let (tx_cnt_data, rest) = rest.split_at(8);
         let tx_cnt = usize::from_be_bytes(
             tx_cnt_data
@@ -110,10 +149,19 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
         } else {
             (DurableThreadAccountsStateDiff::default(), rest)
         };
+        tracing::trace!(
+            target: "node_execution_detailed",
+            "ackinacki_block_deserialize timing: step=durable_diff elapsed_ms={} durable_accounts={} raw_bytes={}",
+            step_started_at.elapsed().as_millis(),
+            durable_diff.accounts.len(),
+            raw_data.len(),
+        );
 
+        step_started_at = Instant::now();
         assert_eq!(rest.len(), 32);
         let hash =
             rest.try_into().map_err(|_| D::Error::custom("Failed to deserialize block hash"))?;
+        let raw_data_len = raw_data.len();
         let mut block = Self {
             common_section,
             block,
@@ -126,6 +174,26 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
             _live_counter: LiveAckiNackiBlockCounter::new(),
         };
         block.cached_block_id = Some(node_types::BlockIdentifier::new(block.merkle_block_id()));
+        tracing::trace!(
+            target: "node_execution_detailed",
+            "ackinacki_block_deserialize timing: step=merkle_block_id elapsed_ms={} seq_no={:?} block_id={:?} tx_cnt={} durable_accounts={} raw_bytes={}",
+            step_started_at.elapsed().as_millis(),
+            block.seq_no(),
+            block.cached_block_id,
+            tx_cnt,
+            block.durable_state_update.accounts.len(),
+            raw_data_len,
+        );
+        tracing::trace!(
+            target: "node_execution_detailed",
+            "ackinacki_block_deserialize timing: step=total elapsed_ms={} seq_no={:?} block_id={:?} tx_cnt={} durable_accounts={} raw_bytes={}",
+            total_started_at.elapsed().as_millis(),
+            block.seq_no(),
+            block.cached_block_id,
+            tx_cnt,
+            block.durable_state_update.accounts.len(),
+            raw_data_len,
+        );
 
         Ok(block)
     }
