@@ -191,11 +191,16 @@ pub struct BlockBuilder {
     pub(crate) tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
 
     is_verifier: bool,
+    filter_unsigned_miner_messages: bool,
     #[builder(default)]
     pub(crate) check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
 }
 
 impl BlockBuilder {
+    pub(crate) fn should_filter_unsigned_miner_messages(engine_version: &semver::Version) -> bool {
+        engine_version >= &semver::Version::new(1, 0, 7)
+    }
+
     fn should_stop_production(&mut self) -> bool {
         if self.is_stop_requested {
             return true;

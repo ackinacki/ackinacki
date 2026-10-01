@@ -35,7 +35,7 @@ use typed_builder::TypedBuilder;
 use crate::node::NodeIdentifier;
 use crate::types::BlockSeqNo;
 
-const DEFAULT_ENGINE_VERSION: &str = "1.0.6";
+const DEFAULT_ENGINE_VERSION: &str = "1.0.7";
 const DEFAULT_GOSSIP_VERSION: &str = "0";
 /// RootPN (DEX)
 const DEFAULT_TRACKED_ROOT_PN_ROUTING: &str =

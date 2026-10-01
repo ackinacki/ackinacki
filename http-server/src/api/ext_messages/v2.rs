@@ -75,9 +75,9 @@ where
             depot.get::<bool>(crate::AUTHORIZED_BY_BK_KEY).copied().unwrap_or(false);
 
         if is_auth_required() && !authorized_by_bearer_token {
-            tracing::debug!("Ext message authorization required");
+            tracing::debug!(target: "http_server", "Ext message authorization required");
             let Some(ref token) = message.ext_message_token else {
-                tracing::debug!("Ext message authorization failed: token not found");
+                tracing::debug!(target: "http_server", "Ext message authorization failed: token not found");
                 return render_error_response(
                     res,
                     "BAD_TOKEN",
@@ -90,7 +90,7 @@ where
             let account_request_tx = web_server.account_request_sender.clone();
             match token.authorize(account_request_tx).await {
                 TokenVerificationResult::Ok => {
-                    tracing::debug!("Token verification passed");
+                    tracing::debug!(target: "http_server", "Token verification passed");
                 }
                 TokenVerificationResult::TokenMalformed => {
                     tracing::debug!("Token verification failed: malformed");

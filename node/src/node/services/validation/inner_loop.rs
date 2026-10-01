@@ -35,10 +35,51 @@ use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
 use crate::storage::MessageDurableStorage;
 use crate::types::AckiNackiBlock;
+use crate::types::BlockHeight;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
+
+fn is_older_than_last_finalized(
+    block_height: &BlockHeight,
+    last_finalized_height: &BlockHeight,
+) -> bool {
+    block_height
+        .signed_distance_to(last_finalized_height)
+        .map(|distance| distance > 0)
+        .unwrap_or(false)
+}
+
+fn is_outdated(
+    block: &AckiNackiBlock,
+    repository: &RepositoryImpl,
+    block_state_repo: &BlockStateRepository,
+) -> bool {
+    let thread_id = block.common_section().thread_id();
+    let Ok(Some((last_finalized_block_id, _))) =
+        repository.select_thread_last_finalized_block(thread_id)
+    else {
+        return false;
+    };
+    let last_finalized_block_state = block_state_repo
+        .get(&last_finalized_block_id)
+        .expect("Last finalized block state must exist");
+    let last_finalized_height = last_finalized_block_state
+        .guarded(|state| *state.block_height())
+        .expect("Last finalized block height must be set");
+    let is_outdated =
+        is_older_than_last_finalized(block.common_section().block_height(), &last_finalized_height);
+    if is_outdated {
+        tracing::trace!(
+            "Outdated block in validation queue: block_id={:?}, block_height={:?}, last_finalized_height={:?}",
+            block.identifier(),
+            block.common_section().block_height(),
+            last_finalized_height,
+        );
+    }
+    is_outdated
+}
 
 fn read_into_buffer(
     rx: &mut InstrumentedReceiver<(BlockState, Envelope<AckiNackiBlock>)>,
@@ -95,14 +136,19 @@ pub(super) fn inner_loop(
         // - were not invalidated
         // - are not finalized
         // - haven't failed producer signature check
-        buffer.retain(|e| {
-            e.0.guarded(|x| {
+        // - are not older than the last finalized block in their thread
+        buffer.retain(|(state, envelope)| {
+            let should_retain = state.guarded(|x| {
                 !x.is_finalized()
                     && !x.is_invalidated()
                     && x.validated().is_none()
                     && *x.envelope_block_producer_signature_verified() != Some(false)
                     && !blocks_with_unsupported_version.contains(x.block_identifier())
-            })
+            });
+            if !should_retain {
+                return false;
+            }
+            !is_outdated(envelope.data(), &repository, &block_state_repo)
         });
 
         blocks_with_unsupported_version.clear();
@@ -194,6 +240,11 @@ pub(super) fn inner_loop(
 
             let node_global_config = Arc::unwrap_or_clone(node_global_config);
 
+            if is_outdated(&next_block, &repository, &block_state_repo) {
+                // Finalization can advance while earlier buffered blocks are being verified.
+                // The next retain pass will remove this block from the queue.
+                continue;
+            }
             let block_nack = next_block.common_section().nacks().clone();
             let verify_res = verify_block(
                 &next_block,
@@ -283,5 +334,29 @@ pub(super) fn inner_loop(
         }
         // Sleep to prevent busy loop
         std::thread::sleep(LOOP_PAUSE_DURATION);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use node_types::ThreadIdentifier;
+
+    use super::*;
+
+    fn height(thread_identifier: ThreadIdentifier, height: u64) -> BlockHeight {
+        BlockHeight::builder().thread_identifier(thread_identifier).height(height).build()
+    }
+
+    #[test]
+    fn detects_only_blocks_older_than_last_finalized_in_the_same_thread() {
+        let thread_id = ThreadIdentifier::default();
+        let last_finalized = height(thread_id, 10);
+
+        assert!(is_older_than_last_finalized(&height(thread_id, 9), &last_finalized));
+        assert!(!is_older_than_last_finalized(&height(thread_id, 10), &last_finalized));
+        assert!(!is_older_than_last_finalized(&height(thread_id, 11), &last_finalized));
+
+        let other_thread = ThreadIdentifier::new(&BlockIdentifier::new([1; 32]), 1);
+        assert!(!is_older_than_last_finalized(&height(other_thread, 9), &last_finalized));
     }
 }

@@ -283,6 +283,9 @@ impl BlockProducer for TVMBlockProducer {
             self.metrics.clone(),
             self.wasm_cache,
             false,
+            BlockBuilder::should_filter_unsigned_miner_messages(
+                &block_global_config.engine_version,
+            ),
             self.check_history_proof_hash.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;

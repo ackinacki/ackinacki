@@ -151,14 +151,21 @@ impl ExternalMessagesThreadState {
     }
 
     fn report_queue_state(&self, queue_len: usize, dapp_queue_sizes: &[(DAppIdentifier, usize)]) {
+        if !tracing::enabled!(
+            target: crate::helper::EXT_MESSAGES_QUEUE_DETAILED_TARGET,
+            tracing::Level::TRACE
+        ) {
+            return;
+        }
+
         let by_dapp = dapp_queue_sizes
             .iter()
             .map(|(dapp_id, len)| format!("{}={}", dapp_id.to_hex_string(), len))
             .collect::<Vec<_>>()
             .join(",");
 
-        tracing::info!(
-            target: "ext_messages",
+        tracing::trace!(
+            target: crate::helper::EXT_MESSAGES_QUEUE_DETAILED_TARGET,
             "ext_messages_queue_by_dapp: total={}, by_dapp={}",
             queue_len,
             by_dapp
@@ -239,6 +246,12 @@ impl ExternalMessagesThreadState {
                 .collect::<Result<_, _>>()?;
 
             if !feedbacks.is_empty() {
+                self.report_metrics.as_ref().inspect(|metrics| {
+                    metrics.report_ext_msg_rejected_not_block_producer(
+                        feedbacks.len() as u64,
+                        &self.thread_id,
+                    )
+                });
                 let _ = self.feedback_sender.send(ExtMsgFeedbackList(feedbacks));
             }
 
@@ -255,9 +268,10 @@ impl ExternalMessagesThreadState {
 
         self.report_queue_state(report_len, &dapp_queue_sizes);
 
-        let low_priority_filtered = unused.iter().filter(|msg| msg.is_low_priority()).count();
-        if low_priority_filtered > 0 {
+        if !unused.is_empty() {
+            let low_priority_filtered = unused.iter().filter(|msg| msg.is_low_priority()).count();
             self.report_metrics.as_ref().inspect(|metrics| {
+                metrics.report_ext_msg_filtered(unused.len() as u64, &self.thread_id);
                 metrics.report_ext_msg_low_priority_filtered(
                     low_priority_filtered as u64,
                     &self.thread_id,
@@ -295,7 +309,7 @@ impl ExternalMessagesThreadState {
             return Ok(());
         }
 
-        tracing::info!(
+        tracing::debug!(
             target: "ext_messages",
             "Clearing {} ext messages from queue for non-producer thread {:?}",
             drained.len(),
@@ -309,6 +323,12 @@ impl ExternalMessagesThreadState {
             .collect::<Result<_, _>>()?;
 
         if !feedbacks.is_empty() {
+            self.report_metrics.as_ref().inspect(|metrics| {
+                metrics.report_ext_msg_rejected_not_block_producer(
+                    feedbacks.len() as u64,
+                    &self.thread_id,
+                )
+            });
             let _ = self.feedback_sender.send(ExtMsgFeedbackList(feedbacks));
         }
 
@@ -351,7 +371,7 @@ impl ExternalMessagesThreadState {
                 (q.len(), q.low_priority_len(), q.limits().total, q.dapp_queue_sizes())
             });
 
-        tracing::trace!(
+        tracing::info!(
             target: "ext_messages",
             "restored {} ext messages after production restart, queue_size={}",
             processed.len(),

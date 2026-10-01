@@ -463,7 +463,7 @@ impl RoutingService {
                     anyhow::bail!("NetworkMessageRouter closed");
                 }
                 Ok((message, sender)) => {
-                    tracing::debug!("NetworkMessageRouter: received external message");
+                    tracing::debug!(target: "ext_messages", "NetworkMessageRouter: received external message");
 
                     let message_hash = message.hash().to_hex_string();
 
@@ -510,12 +510,18 @@ impl RoutingService {
         loop {
             match feedback_receiver.recv() {
                 Err(e) => {
+                    if SHUTDOWN_FLAG.get() == Some(&true) {
+                        return Ok(());
+                    }
                     tracing::error!(
                         "NetworkMessageRouter: feedback receiver was disconnected: {e}"
                     );
+                    return Err(anyhow::format_err!(
+                        "NetworkMessageRouter: feedback receiver was disconnected: {e}"
+                    ));
                 }
                 Ok(feedbacks) => {
-                    tracing::debug!("NetworkMessageRouter: received feedback: {}", feedbacks);
+                    tracing::debug!(target: "ext_messages", "NetworkMessageRouter: received feedback: {}", feedbacks);
                     for feedback in feedbacks.0 {
                         if let Some((_created_at, sender)) =
                             feedback_registry.lock().remove(&feedback.message_hash)

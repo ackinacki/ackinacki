@@ -50,22 +50,19 @@ impl UnfinalizedBlocksData {
         self.main_map.block_id_set.insert(block_id);
     }
 
-    fn retain<F>(&mut self, mut f: F)
-    where
-        F: FnMut(&BlockIndex, &mut (BlockState, Arc<Envelope<AckiNackiBlock>>)) -> bool,
-    {
-        let mut to_remove = vec![];
-        for (index, value) in self.main_map.blocks.iter_mut() {
-            if !f(index, value) {
-                to_remove.push(index.clone());
+    fn remove_indices(&mut self, indices: impl IntoIterator<Item = BlockIndex>) -> Vec<BlockState> {
+        let mut removed = Vec::new();
+        for index in indices {
+            let block_id = *index.block_identifier();
+            if let Some((block_state, _)) = self.main_map.blocks.remove(&index) {
+                if self.identifier_to_seqno.get(&block_id) == Some(index.block_seq_no()) {
+                    self.identifier_to_seqno.remove(&block_id);
+                }
+                self.main_map.block_id_set.remove(&block_id);
+                removed.push(block_state);
             }
         }
-        for index in to_remove {
-            self.identifier_to_seqno.remove(index.block_identifier());
-            let block_id = *index.block_identifier();
-            self.main_map.blocks.remove(&index);
-            self.main_map.block_id_set.remove(&block_id);
-        }
+        removed
     }
 }
 
@@ -83,22 +80,20 @@ pub struct FilterPrehistoric {
 }
 
 impl FilterPrehistoric {
-    pub fn rejects(&self, block_state: &BlockState) -> bool {
-        if let Some(seq_no) = block_state.guarded(|e| *e.block_seq_no()) {
+    fn rejects(&self, block_seq_no: Option<BlockSeqNo>, block_height: Option<BlockHeight>) -> bool {
+        if let Some(seq_no) = block_seq_no {
             if self.block_seq_no != BlockSeqNo::default() && seq_no <= self.block_seq_no {
                 return true;
             }
         }
         match self.cutoff {
-            Some(UnfinalizedCutoff::Height(cutoff)) => block_state
-                .guarded(|e| *e.block_height())
+            Some(UnfinalizedCutoff::Height(cutoff)) => block_height
                 .and_then(|height| height.signed_distance_to(&cutoff))
                 .map(|distance| distance > 0)
                 .unwrap_or(false),
-            Some(UnfinalizedCutoff::SeqNo(cutoff)) => block_state
-                .guarded(|e| *e.block_seq_no())
-                .map(|seq_no| seq_no < cutoff)
-                .unwrap_or(false),
+            Some(UnfinalizedCutoff::SeqNo(cutoff)) => {
+                block_seq_no.map(|seq_no| seq_no < cutoff).unwrap_or(false)
+            }
             None => false,
         }
     }
@@ -159,18 +154,26 @@ impl UnfinalizedCandidateBlockCollection {
     pub fn insert_arc(&self, block_state: BlockState, block: Arc<Envelope<AckiNackiBlock>>) {
         let index = BlockIndex::from(block.as_ref());
         tracing::trace!(target: "node", "UnfinalizedCandidateBlockCollection insert {:?}", index);
-        let mut data_lock = self.candidates.lock();
-        if data_lock.filter.rejects(&block_state) {
+        let (block_seq_no, block_height) =
+            block_state.guarded(|e| (*e.block_seq_no(), *e.block_height()));
+        block_state.guarded_mut(|e| e.add_subscriber(self.notifications().clone()));
+        let rejected = self.candidates.guarded_mut(|data| {
+            if data.filter.rejects(block_seq_no, block_height) {
+                true
+            } else {
+                data.insert(index.clone(), (block_state.clone(), block));
+                false
+            }
+        });
+        if rejected {
             tracing::debug!(
                 target: "node",
                 "UnfinalizedCandidateBlockCollection rejected prehistoric block insert: {:?}",
                 index,
             );
+            block_state.guarded_mut(|e| e.remove_subscriber(self.notifications()));
             return;
         }
-        block_state.guarded_mut(|e| e.add_subscriber(self.notifications().clone()));
-        data_lock.insert(index, (block_state, block));
-        drop(data_lock);
         self.touch();
     }
 
@@ -183,72 +186,84 @@ impl UnfinalizedCandidateBlockCollection {
     }
 
     pub fn remove_old_blocks(&self, last_finalized_block_seq_no: &BlockSeqNo) {
-        self.retain(|candidate| {
-            candidate.guarded(|e| {
-                e.block_seq_no().map(|seq_no| seq_no > *last_finalized_block_seq_no).unwrap_or(true)
-            })
+        let removed = self.candidates.guarded_mut(|data| {
+            let indices = data
+                .main_map
+                .blocks
+                .keys()
+                .take_while(|index| index.block_seq_no() <= last_finalized_block_seq_no)
+                .cloned()
+                .collect::<Vec<_>>();
+            data.remove_indices(indices)
         });
+        self.finish_removal(removed);
     }
 
     pub fn retain<F>(&self, mut action: F)
     where
         F: FnMut(&BlockState) -> bool,
     {
-        let mut has_removed = false;
-        let mut removed = vec![];
-        self.candidates.guarded_mut(|e| {
-            e.retain(|_, (block_state, _)| {
-                let retain = action(block_state);
-                if !retain {
+        self.retain_inner(&mut action);
+    }
+
+    fn retain_inner<F>(&self, action: &mut F) -> usize
+    where
+        F: FnMut(&BlockState) -> bool,
+    {
+        // Never acquire a BlockState lock while holding the collection lock. During catch-up a
+        // BlockState can be busy for a long time, and holding the collection lock here also blocks
+        // finalization's clone_queue().
+        let candidates = self.candidates.guarded(|data| {
+            data.main_map
+                .blocks
+                .iter()
+                .map(|(index, (block_state, _))| (index.clone(), block_state.clone()))
+                .collect::<Vec<_>>()
+        });
+        let indices = candidates
+            .into_iter()
+            .filter_map(|(index, block_state)| {
+                if action(&block_state) {
+                    None
+                } else {
                     tracing::trace!(
                         "remove block from UnfinalizedCandidateBlockCollection: {:?}",
                         block_state.block_identifier()
                     );
-                    has_removed = true;
-                    removed.push(block_state.clone());
+                    Some(index)
                 }
-                retain
-            });
-        });
-        if has_removed {
+            })
+            .collect::<Vec<_>>();
+        let removed = self.candidates.guarded_mut(|data| data.remove_indices(indices));
+        let removed_count = removed.len();
+        self.finish_removal(removed);
+        removed_count
+    }
+
+    fn finish_removal(&self, removed: Vec<BlockState>) {
+        if !removed.is_empty() {
             self.touch();
         }
-        for block_state in removed.into_iter() {
+        for block_state in removed {
             block_state.guarded_mut(|e| e.remove_subscriber(self.notifications()));
         }
     }
 
     pub fn prune_before_snapshot(&self, cutoff: UnfinalizedCutoff) -> usize {
-        let mut removed = vec![];
-        let mut pruned = 0usize;
-        self.candidates.guarded_mut(|e| {
-            e.filter.cutoff = merge_cutoff(e.filter.cutoff, cutoff);
-            e.retain(|_, (block_state, _)| {
-                let keep = match cutoff {
-                    UnfinalizedCutoff::Height(cutoff_height) => block_state
-                        .guarded(|state| *state.block_height())
-                        .and_then(|height| height.signed_distance_to(&cutoff_height))
-                        .map(|distance| distance <= 0)
-                        .unwrap_or(true),
-                    UnfinalizedCutoff::SeqNo(cutoff_seq_no) => block_state
-                        .guarded(|state| *state.block_seq_no())
-                        .map(|seq_no| seq_no >= cutoff_seq_no)
-                        .unwrap_or(true),
-                };
-                if !keep {
-                    pruned += 1;
-                    removed.push(block_state.clone());
-                }
-                keep
-            });
+        self.candidates.guarded_mut(|data| {
+            data.filter.cutoff = merge_cutoff(data.filter.cutoff, cutoff);
         });
-        if pruned > 0 {
-            self.touch();
-        }
-        for block_state in removed.into_iter() {
-            block_state.guarded_mut(|e| e.remove_subscriber(self.notifications()));
-        }
-        pruned
+        self.retain_inner(&mut |block_state| match cutoff {
+            UnfinalizedCutoff::Height(cutoff_height) => block_state
+                .guarded(|state| *state.block_height())
+                .and_then(|height| height.signed_distance_to(&cutoff_height))
+                .map(|distance| distance <= 0)
+                .unwrap_or(true),
+            UnfinalizedCutoff::SeqNo(cutoff_seq_no) => block_state
+                .guarded(|state| *state.block_seq_no())
+                .map(|seq_no| seq_no >= cutoff_seq_no)
+                .unwrap_or(true),
+        })
     }
 
     pub fn notifications(&self) -> &Notification {
@@ -328,6 +343,7 @@ impl Drop for UnfinalizedCandidateBlockCollection {
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use account_state::DurableThreadAccountsStateDiff;
     use node_types::BlockIdentifier;
@@ -463,10 +479,67 @@ mod tests {
         collection.prune_before_snapshot(UnfinalizedCutoff::Height(make_height(10)));
 
         let (old_state, old_block) = make_block_state(9, 9);
-        collection.insert_arc(old_state, old_block);
+        collection.insert_arc(old_state.clone(), old_block);
         let (snapshot, _) = collection.clone_queue();
 
         assert_eq!(snapshot.blocks().len(), 1);
+
+        let after_rejection = collection.notifications().stamp();
+        old_state.guarded_mut(|e| e.set_finalized()).unwrap();
+        assert_eq!(collection.notifications().stamp(), after_rejection);
+    }
+
+    #[test]
+    fn remove_old_blocks_uses_block_index() {
+        let collection = collection_with_blocks([(8, 18), (9, 17), (10, 16), (11, 15)]);
+
+        collection.remove_old_blocks(&BlockSeqNo::from(10));
+        let (snapshot, _) = collection.clone_queue();
+
+        assert_eq!(snapshot.blocks().len(), 1);
+        assert_eq!(
+            snapshot.blocks().first_key_value().unwrap().0.block_seq_no(),
+            &BlockSeqNo::from(11)
+        );
+    }
+
+    #[test]
+    fn retain_does_not_hold_collection_lock_while_inspecting_state() {
+        let collection = collection_with_blocks([(10, 10)]);
+        let retained_collection = collection.clone();
+        let (predicate_entered_tx, predicate_entered_rx) = std::sync::mpsc::channel();
+        let (release_predicate_tx, release_predicate_rx) = std::sync::mpsc::channel();
+        let retain_thread = std::thread::Builder::new()
+            .name("test".to_string())
+            .spawn(move || {
+                let mut predicate_entered_tx = Some(predicate_entered_tx);
+                let mut release_predicate_rx = Some(release_predicate_rx);
+                retained_collection.retain(move |_| {
+                    if let Some(tx) = predicate_entered_tx.take() {
+                        tx.send(()).unwrap();
+                        release_predicate_rx.take().unwrap().recv().unwrap();
+                    }
+                    true
+                });
+            })
+            .unwrap();
+        predicate_entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let cloned_collection = collection.clone();
+        let (clone_finished_tx, clone_finished_rx) = std::sync::mpsc::channel();
+        let clone_thread = std::thread::Builder::new()
+            .name("test".to_string())
+            .spawn(move || {
+                let (snapshot, _) = cloned_collection.clone_queue();
+                clone_finished_tx.send(snapshot.blocks().len()).unwrap();
+            })
+            .unwrap();
+        let clone_result = clone_finished_rx.recv_timeout(Duration::from_secs(5));
+
+        release_predicate_tx.send(()).unwrap();
+        retain_thread.join().unwrap();
+        clone_thread.join().unwrap();
+        assert_eq!(clone_result.unwrap(), 1);
     }
 
     #[test]

@@ -1014,7 +1014,9 @@ fn process_candidate_block(
                 m.report_ext_msg_processed_per_block(0, &thread_id);
                 m.report_ext_msg_received(0, &thread_id);
                 m.report_ext_msg_low_priority_received(0, &thread_id);
+                m.report_ext_msg_filtered(0, &thread_id);
                 m.report_ext_msg_low_priority_filtered(0, &thread_id);
+                m.report_ext_msg_rejected_not_block_producer(0, &thread_id);
             });
 
             let _ = chain_pulse_monitor

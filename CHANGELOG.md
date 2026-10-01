@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.3] – 2026-09-28
+
+### Breaking Changes
+- Moved the bridge contracts `eccUSDCBridge`, `DepositVoucher` and `EthBeaconLightClient` to https://github.com/gosh-sh/bridge (`contracts/an/`). `contracts/scripts/generate_zerostate.py` and the `tests/exchange` scripts now download them on every run from the commit pinned as `BRIDGE_COMMIT` in `contracts/scripts/bridge_contracts.py`, so they need HTTPS access to `raw.githubusercontent.com`. Without network access, set `BRIDGE_REPO` to a local clone of gosh-sh/bridge that contains the pinned commit. The downloaded files are git-ignored and overwritten on every run: to change a contract, commit the change to the bridge repository and move `BRIDGE_COMMIT`. `contracts/exchange/Makefile` is removed; rebuild the contracts in the bridge repository with `make -C contracts/an/exchange`. `config/zerostate` is regenerated with the contracts at version `1.4.0`.
+- Bridge deposits now require an accepted source block: `finalizeDeposit` refuses a proof whose block hash is not in the bridge's accepted set (`ERR_UNKNOWN_BLOCK`, 224). The set is empty after a deployment or a code upgrade, so deposits fail until the owner adds hashes with `setAcceptedBlockHash` or deploys a light client with `deployLightClient`.
+- The bridge now refuses a deposit or a withdrawal whose recipient is all zero bytes (`ERR_ZERO_RECIPIENT`, 230); previously the funds were lost.
+
+### New / Improvements
+- Added the `node_ext_msg_filtered` counter for external messages rejected by queue limits (`node_ext_msg_low_priority_filtered` still reports the low-priority subset) and the `node_ext_msg_rejected_not_block_producer` counter for messages rejected because the node is not the current block producer. All three carry the `thread` label.
+- Reduced the node's default log volume: `http_server` now defaults to `WARN` and `ext_messages` to `INFO`, and detailed records moved to dedicated log targets. Update `RUST_LOG` filters that select the old targets or levels.
+- Made the per-DApp external-message queue log opt-in: set `TEST_EXT_MESSAGES_QUEUE_LOG=true` (`1`, `yes` and `on` also work; disabled by default) to get the `ext_messages_queue_by_dapp` records back.
+- Brought the bridge contracts `eccUSDCBridge`, `DepositVoucher` and `EthBeaconLightClient` to version `1.4.0`; they now require `pragma gosh-solidity >=0.80`.
+- Added the `EthBeaconLightClient` contract: it verifies Ethereum sync-committee proofs and passes the block hash of each finalized checkpoint to the bridge. Only checkpoint blocks are accepted this way, because `submitAncestry` does not fit the per-transaction gas limit; deposits made in other blocks still need `setAcceptedBlockHash`.
+- Added accepted-block management to `eccUSDCBridge`: `setLightClientCode`, `deployLightClient` (the light client can be deployed only by the bridge), `setAcceptedBlockHash`, `acceptBlockHashFromLightClient`, `forgetBlockHashFromLightClient`, the irreversible `disableOwnerAnchors` (leaves the light client as the only writer), and the getters `isAcceptedBlockHash`, `getLightClient` and `getAnchorConfig`.
+- `contracts/scripts/generate_zerostate.py` now sets up the bridge account, including the light-client code, from the pinned bridge commit. `BRIDGE_ZS_L1_CHAIN_ID` and `BRIDGE_ZS_L1_BRIDGE` override the trusted L1 bridge of a generated zerostate (defaults: `11155111` and `0xCdFd6Cef70F68d0849310cD970F8ef8F8E4b4fdb`, Sepolia). `GiverV3.getUSDCBridgeData` is removed, so the giver's code hash changes in newly generated zerostates.
+
+### Fixes
+- Fixed load-test zerostate generation with `MV_MINERS_COUNT` placing `Miner` contracts over the `Mirror` accounts; generation now stops if a Miner address is duplicated or overlaps the Mirror range. Regenerate the load-test zerostate or snapshot before rerunning Mobile Verifiers load tests.
+- Fixed `502` responses and high CPU load in the Block Keeper TLS proxy while its Block Keeper is the block producer.
+- Starting with engine version `1.0.7`, unsigned external messages to Miner accounts with code hash `7ef9b5bcb1c0e33b339c8b42d53a33dbba8489c74826aec734cfb4fe845b3ae9` are rejected with the `UNSIGNED_MINER_MESSAGE` feedback error; retired `1.0.6` blocks retain the previous execution rules.
+- Fixed token issuer wallet lookup failures being hidden by the default log filters: they are now logged at `WARN` on the `ext_messages_auth` target. A missing issuer account still returns `UNKNOWN_ISSUER` without a warning.
+- Fixed graceful node shutdown occasionally exiting with status `101`.
+- Fixed block validation keeping and verifying blocks whose height is below the latest finalized block of their thread.
+- Fixed block production aborting when external messages address the same account both through its current dApp and through its redirect alias.
+- Fixed finalization stalling while a node catches up after snapshot sync.
+
 ## [0.19.2] – 2026-09-15
 
 ### New / Improvements

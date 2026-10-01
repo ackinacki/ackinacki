@@ -212,6 +212,19 @@ where
         &mut self,
     ) -> anyhow::Result<SynchronizationResult<(NetworkMessage, SocketAddr)>> {
         tracing::trace!(target: "monit", "Start synchronization");
+        // Synchronization and catch-up must be one continuous mode. A snapshot import mutates the
+        // repository before the load worker reports `SyncSnapshotLoaded` back to this loop. If a
+        // newer snapshot target arrives while the import is in progress, the imported snapshot can
+        // be considered outdated here even though the block processor has already started applying
+        // its saved blocks. Enter catch-up before starting any snapshot work so those blocks are
+        // never processed using the normal validation and state-sharing path.
+        self.shared_services.set_thread_catch_up_status(
+            &self.thread_id,
+            true,
+            "synchronization_started",
+            None,
+            None,
+        );
         let (synchronization_tx, synchronization_rx) =
             instrumented_channel::<anyhow::Result<SyncSnapshotLoaded>>(
                 self.metrics.clone(),

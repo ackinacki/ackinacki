@@ -122,7 +122,7 @@ pub(crate) fn apply_update_impl(
     let kv = store.store();
     let meta = store.set_meta();
 
-    tracing::trace!(target: "monit", "Applying update: {:?}", update);
+    tracing::trace!(target: "account_state", "Applying update: {:?}", update);
 
     let all_thread_ids = collect_all_thread_ids(update);
     if all_thread_ids.is_empty() {
@@ -449,7 +449,7 @@ fn prepare_data_records(
                     }
                 }
                 tracing::trace!(
-                    target: "monit",
+                    target: "account_state",
                     "prepare_data_records: routing={routing}, serialized_size={}, key_len={}",
                     data.len(),
                     key.len(),

@@ -252,6 +252,9 @@ impl BlockVerifier for TVMBlockVerifier {
             self.metrics,
             self.wasm_cache,
             true,
+            BlockBuilder::should_filter_unsigned_miner_messages(
+                &self.node_global_config.engine_version,
+            ),
             self.check_history_proof_hash.clone(),
         )
         .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;

@@ -239,9 +239,11 @@ pub async fn log_traceparent(
 ) {
     if let Some(traceparent) = req.headers().get("traceparent") {
         match traceparent.to_str() {
-            Ok(value) => tracing::debug!(id = value, "Incoming request traceparent"),
+            Ok(value) => {
+                tracing::debug!(target: "http_server", id = value, "Incoming request traceparent")
+            }
             Err(_) => {
-                tracing::debug!(id = ?traceparent, "Incoming request traceparent (non-UTF8)")
+                tracing::debug!(target: "http_server", id = ?traceparent, "Incoming request traceparent (non-UTF8)")
             }
         }
     }

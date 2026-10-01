@@ -216,29 +216,6 @@ contract GiverV3 is Upgradable {
         return abi.encode(pubkey, usdcWallet, totalMinted, mintNonce, mintAccumulatorNonce);
     }
 
-    function getUSDCBridgeData(
-        uint256 pubkey, address usdcWallet,
-        uint128 totalMinted, uint64 mintNonce, uint64 mintAccumulatorNonce,
-        uint32[] mintedKeys, uint128[] mintedValues,
-        uint32[] burnedKeys, uint128[] burnedValues,
-        TvmCell depositVoucherCode
-    ) public pure returns (TvmCell) {
-        mapping(uint32 => uint128) totalMintedBridgeByToken;
-        mapping(uint32 => uint128) totalBurnedBridgeByToken;
-        for (uint i = 0; i < mintedKeys.length; i++) {
-            totalMintedBridgeByToken[mintedKeys[i]] = mintedValues[i];
-        }
-        for (uint i = 0; i < burnedKeys.length; i++) {
-            totalBurnedBridgeByToken[burnedKeys[i]] = burnedValues[i];
-        }
-        // 9th field mirrors eccUSDCBridge.updateCode's `userCell` passthrough so
-        // onCodeUpgrade decodes one shape on both paths. Empty here: the
-        // zerostate carries the voucher code in `depositVoucherCode`.
-        TvmCell userCell;
-        return abi.encode(pubkey, usdcWallet, totalMinted, mintNonce, mintAccumulatorNonce,
-                          totalMintedBridgeByToken, totalBurnedBridgeByToken, depositVoucherCode, userCell);
-    }
-
     function getDataForAuthService(TvmCell profileCode, uint256 pubkey) public view returns (TvmCell) {
         return abi.encode(profileCode, pubkey);
     }

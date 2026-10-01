@@ -55,7 +55,9 @@ struct BlockProductionMetricsInner {
     ext_msg_low_priority_processed_per_block: Histogram<u64>,
     ext_msg_received: Counter<u64>,
     ext_msg_low_priority_received: Counter<u64>,
+    ext_msg_filtered: Counter<u64>,
     ext_msg_low_priority_filtered: Counter<u64>,
+    ext_msg_rejected_not_block_producer: Counter<u64>,
     int_msg_queue_size: Gauge<u64>,
     block_finalized: Counter<u64>,
     block_invalidated: Counter<u64>,
@@ -300,8 +302,12 @@ impl BlockProductionMetrics {
             ext_msg_low_priority_received: meter
                 .u64_counter("node_ext_msg_low_priority_received")
                 .build(),
+            ext_msg_filtered: meter.u64_counter("node_ext_msg_filtered").build(),
             ext_msg_low_priority_filtered: meter
                 .u64_counter("node_ext_msg_low_priority_filtered")
+                .build(),
+            ext_msg_rejected_not_block_producer: meter
+                .u64_counter("node_ext_msg_rejected_not_block_producer")
                 .build(),
             int_msg_queue_size: meter.u64_gauge("node_int_msg_queue_size").build(),
             block_finalized: meter.u64_counter("node_block_finalized").build(),
@@ -709,8 +715,20 @@ impl BlockProductionMetrics {
         self.0.ext_msg_low_priority_received.add(value, &[thread_id_attr(thread_id)]);
     }
 
+    pub fn report_ext_msg_filtered(&self, value: u64, thread_id: &ThreadIdentifier) {
+        self.0.ext_msg_filtered.add(value, &[thread_id_attr(thread_id)]);
+    }
+
     pub fn report_ext_msg_low_priority_filtered(&self, value: u64, thread_id: &ThreadIdentifier) {
         self.0.ext_msg_low_priority_filtered.add(value, &[thread_id_attr(thread_id)]);
+    }
+
+    pub fn report_ext_msg_rejected_not_block_producer(
+        &self,
+        value: u64,
+        thread_id: &ThreadIdentifier,
+    ) {
+        self.0.ext_msg_rejected_not_block_producer.add(value, &[thread_id_attr(thread_id)]);
     }
 
     pub fn report_int_msg_queue_size(&self, value: usize, thread_id: &ThreadIdentifier) {

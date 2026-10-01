@@ -121,24 +121,6 @@
 			]
 		},
 		{
-			"name": "getUSDCBridgeData",
-			"inputs": [
-				{"name":"pubkey","type":"uint256"},
-				{"name":"usdcWallet","type":"address"},
-				{"name":"totalMinted","type":"uint128"},
-				{"name":"mintNonce","type":"uint64"},
-				{"name":"mintAccumulatorNonce","type":"uint64"},
-				{"name":"mintedKeys","type":"uint32[]"},
-				{"name":"mintedValues","type":"uint128[]"},
-				{"name":"burnedKeys","type":"uint32[]"},
-				{"name":"burnedValues","type":"uint128[]"},
-				{"name":"depositVoucherCode","type":"cell"}
-			],
-			"outputs": [
-				{"name":"value0","type":"cell"}
-			]
-		},
-		{
 			"name": "getDataForAuthService",
 			"inputs": [
 				{"name":"profileCode","type":"cell"},

@@ -307,4 +307,49 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn catch_up_status_changes_are_idempotent() {
+        let shared_services = SharedServices::test_start(RoutingService::stub().0, u32::MAX);
+        let thread_id = ThreadIdentifier::default();
+
+        assert!(!shared_services.is_node_catching_up());
+        assert!(!shared_services.is_thread_catching_up(&thread_id));
+
+        shared_services.set_thread_catch_up_status(
+            &thread_id,
+            true,
+            "test_synchronization_started",
+            None,
+            None,
+        );
+        shared_services.set_thread_catch_up_status(
+            &thread_id,
+            true,
+            "test_synchronization_started_again",
+            None,
+            None,
+        );
+
+        assert!(shared_services.is_node_catching_up());
+        assert!(shared_services.is_thread_catching_up(&thread_id));
+
+        shared_services.set_thread_catch_up_status(
+            &thread_id,
+            false,
+            "test_catch_up_finished",
+            Some(0),
+            Some(0),
+        );
+        shared_services.set_thread_catch_up_status(
+            &thread_id,
+            false,
+            "test_catch_up_finished_again",
+            Some(0),
+            Some(0),
+        );
+
+        assert!(!shared_services.is_node_catching_up());
+        assert!(!shared_services.is_thread_catching_up(&thread_id));
+    }
 }

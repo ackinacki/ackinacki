@@ -228,7 +228,7 @@ where
         &mut self,
         mut next_message: Option<(NetworkMessage, SocketAddr)>,
     ) -> anyhow::Result<ExecutionResult> {
-        tracing::trace!(target: NODE_EXECUTION_DETAILED_TARGET, "Start execute_normal_forwarded: {next_message:?}");
+        tracing::info!(target: NODE_EXECUTION_DETAILED_TARGET, "Start execute_normal_forwarded: {next_message:?}");
         let mut is_stop_signal_received = false;
         let mut message_log_stats = ExecutionMessageLogStats::default();
         // let mut in_flight_productions = self.start_block_production()?;
@@ -248,7 +248,7 @@ where
         let sync_delay: Option<std::time::Instant> = None;
         // let mut memento = None;
         while !is_stop_signal_received {
-            tracing::trace!(
+            tracing::debug!(
                 target: NODE_EXECUTION_DETAILED_TARGET,
                 "Elapsed from last producer cut off: {:?}ms",
                 iteration_start.elapsed().as_millis()
@@ -389,7 +389,7 @@ where
                         panic!("This module should not receive ext messages");
                     }
                     NetworkMessage::BlockAttestation((attestation, _)) => {
-                        tracing::trace!(
+                        tracing::debug!(
                             target: NODE_EXECUTION_DETAILED_TARGET,
                             "Received block attestation for thread {:?} {attestation:?}",
                             self.thread_id
@@ -409,7 +409,7 @@ where
                                 Ok((NetworkMessage::BlockAttestation((attestation, _)), _)) => {
                                     message_log_stats.attestations += 1;
                                     message_log_stats.total += 1;
-                                    tracing::trace!(
+                                    tracing::debug!(
                                         target: NODE_EXECUTION_DETAILED_TARGET,
                                         "Received block attestation for thread {:?} {attestation:?}",
                                         self.thread_id

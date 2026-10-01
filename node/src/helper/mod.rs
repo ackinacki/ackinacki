@@ -39,7 +39,9 @@ use crate::node::NodeIdentifier;
 pub const TIMING_TARGET: &str = "timing";
 pub const ATTESTATION_SEND_DETAILED_TARGET: &str = "attestation_send_detailed";
 pub const NODE_EXECUTION_DETAILED_TARGET: &str = "node_execution_detailed";
+pub const EXT_MESSAGES_QUEUE_DETAILED_TARGET: &str = "ext_messages_queue_detailed";
 const EXECUTION_VERBOSE_ENV: &str = "EXECUTION_VERBOSE";
+const EXT_MESSAGES_QUEUE_LOG_ENV: &str = "TEST_EXT_MESSAGES_QUEUE_LOG";
 
 pub static SHUTDOWN_FINALIZATION_FLAG: OnceLock<bool> = OnceLock::new();
 pub static FINALIZATION_LOOPS_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -51,7 +53,7 @@ fn verbose_filter_directives() -> String {
     format!(
         "gossip=trace,\
             network_slow_delivery=debug,\
-            http_server=trace,\
+            http_server=warn,\
             block_manager=trace,\
             node=trace,\
             block_state_save=trace,\
@@ -66,7 +68,10 @@ fn verbose_filter_directives() -> String {
             message_router=trace,\
             transport_layer=info,\
             monit=trace,\
-            ext_messages=trace,\
+            ext_messages=info,\
+            ext_messages_auth=info,\
+            bk_set_update=debug,\
+            account_state=debug,\
             mem=off"
     )
 }
@@ -76,21 +81,29 @@ fn verbose_filter() -> tracing_subscriber::EnvFilter {
 }
 
 fn add_execution_verbose_directives(directives: &mut String) {
-    add_trace_directive(directives, ATTESTATION_SEND_DETAILED_TARGET);
-    add_trace_directive(directives, NODE_EXECUTION_DETAILED_TARGET);
-    add_trace_directive(directives, network::NETWORK_DELIVERY_DETAILED_TARGET);
+    add_trace_directive_with_level(directives, ATTESTATION_SEND_DETAILED_TARGET, "trace");
+    add_trace_directive_with_level(directives, NODE_EXECUTION_DETAILED_TARGET, "debug");
+    add_trace_directive_with_level(directives, network::NETWORK_DELIVERY_DETAILED_TARGET, "trace");
 }
 
-fn add_trace_directive(directives: &mut String, target: &str) {
+fn add_trace_directive_with_level(directives: &mut String, target: &str, level: &str) {
     if !directives.trim().is_empty() && !directives.ends_with(',') {
         directives.push(',');
     }
     directives.push_str(target);
-    directives.push_str("=trace");
+    directives.push_str(&format!("={level}"));
 }
 
 fn execution_verbose_enabled() -> bool {
-    std::env::var(EXECUTION_VERBOSE_ENV)
+    env_flag_enabled(EXECUTION_VERBOSE_ENV)
+}
+
+fn ext_messages_queue_log_enabled() -> bool {
+    env_flag_enabled(EXT_MESSAGES_QUEUE_LOG_ENV)
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
         .map(|value| {
             matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
         })
@@ -102,10 +115,24 @@ fn node_log_filter() -> tracing_subscriber::EnvFilter {
     if execution_verbose_enabled() {
         add_execution_verbose_directives(&mut directives);
     }
+    if ext_messages_queue_log_enabled() {
+        add_trace_directive_with_level(
+            &mut directives,
+            EXT_MESSAGES_QUEUE_DETAILED_TARGET,
+            "trace",
+        );
+    }
     tracing_subscriber::EnvFilter::try_new(directives).unwrap_or_else(|_| {
         let mut directives = verbose_filter_directives();
         if execution_verbose_enabled() {
             add_execution_verbose_directives(&mut directives);
+        }
+        if ext_messages_queue_log_enabled() {
+            add_trace_directive_with_level(
+                &mut directives,
+                EXT_MESSAGES_QUEUE_DETAILED_TARGET,
+                "trace",
+            );
         }
         tracing_subscriber::EnvFilter::new(directives)
     })

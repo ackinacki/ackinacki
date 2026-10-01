@@ -1532,7 +1532,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             let mut bk_set = bk_set;
             while let Ok(update) = bk_set_update_rx.recv() {
                 if bk_set.update(&ApiBkSet::from(update)) {
-                    tracing::trace!("new bk set update: {:?}", bk_set);
+                    tracing::trace!(target: "bk_set_update", "new bk set update: {:?}", bk_set);
                     bk_set_update_async_tx.send_replace(bk_set.clone());
                 }
             }
@@ -1879,6 +1879,7 @@ async fn dispatch_hot_reload(
             bk_set_changed = bk_set_rx.changed() => if bk_set_changed.is_ok() {
                 if bk_set.update(&bk_set_rx.borrow()) {
                     tracing::trace!(
+                        target: "bk_set_update",
                         "Hot reload changed bk_set: {}",
                         serde_json::to_string(&bk_set).unwrap_or_default()
                     );

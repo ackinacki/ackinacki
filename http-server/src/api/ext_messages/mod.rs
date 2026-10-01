@@ -198,6 +198,7 @@ pub enum FeedbackErrorCode {
     ComputeSkipped,
     QueueOverflow,
     NotBlockProducer,
+    UnsignedMinerMessage,
 }
 
 impl FeedbackErrorCode {
@@ -216,6 +217,7 @@ impl FeedbackErrorCode {
             FeedbackErrorCode::ComputeSkipped => Cow::Borrowed("COMPUTE_SKIPPED"),
             FeedbackErrorCode::QueueOverflow => Cow::Borrowed("QUEUE_OVERFLOW"),
             FeedbackErrorCode::NotBlockProducer => Cow::Borrowed("NOT_BLOCK_PRODUCER"),
+            FeedbackErrorCode::UnsignedMinerMessage => Cow::Borrowed("UNSIGNED_MINER_MESSAGE"),
         }
     }
 }

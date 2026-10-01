@@ -13,6 +13,10 @@ services:
     environment:
       - CADDY_EMAIL=${CADDY_EMAIL}
     restart: unless-stopped
+    # Safety margin for upstream connection churn (all upstream conns share one src IP/dst port)
+    sysctls:
+      net.ipv4.tcp_tw_reuse: 1
+      net.ipv4.ip_local_port_range: "10000 65535"
 {% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
     expose:
       - "2019"

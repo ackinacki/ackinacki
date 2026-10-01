@@ -105,7 +105,7 @@ impl Token {
     }
 
     pub fn verify(&self, signing_pubkey: Option<String>) -> TokenVerificationResult {
-        tracing::trace!("verify token against signing pubkey: {signing_pubkey:?}");
+        tracing::trace!(target: "ext_messages_auth", "verify token against signing pubkey: {signing_pubkey:?}");
 
         let signature_bytes = match <[u8; 64]>::from_hex(&self.signature) {
             Ok(bytes) => bytes,
@@ -151,16 +151,14 @@ impl Token {
             return TokenVerificationResult::Ok;
         }
 
-        tracing::trace!("authorize token {self:?}");
+        tracing::trace!(target: "ext_messages_auth", "authorize token {self:?}");
         let result = get_wallet_data(&self.issuer, account_request_tx).await;
 
         let (signing_pubkey, license_count) = match result {
             Ok(wallet_data) => (wallet_data.pubkey, wallet_data.license_count),
-            Err(e) if e.to_string() == "Unknown account" => {
-                return TokenVerificationResult::UnknownIssuer
-            }
+            Err(e) if is_account_not_found(&e) => return TokenVerificationResult::UnknownIssuer,
             Err(e) => {
-                tracing::trace!("Failed to process issuer wallet: {e}");
+                tracing::warn!(target: "ext_messages_auth", issuer = ?self.issuer, "Failed to process issuer wallet: {e:#}");
                 return TokenVerificationResult::IssuerResolutionFailed;
             }
         };
@@ -176,22 +174,31 @@ impl Token {
 async fn request_account(
     address: &str,
     account_request_tx: mpsc::Sender<AccountRequest>,
-) -> anyhow::Result<Option<VmAccount>> {
+) -> anyhow::Result<VmAccount> {
     let (response_tx, response_rx) = oneshot::channel();
     let request = AccountRequest { address: address.to_string(), response: response_tx };
 
     account_request_tx.send(request).await?;
-    response_rx.await?.map(|(acc, ..)| Some(acc))
+    response_rx.await?.map(|(account, ..)| account)
+}
+
+fn is_account_not_found(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.to_string().as_str(),
+            "Can't find account in shard state" | "Unknown account"
+        )
+    })
 }
 
 async fn get_wallet_data(
     issuer: &TokenIssuer,
     account_request_tx: mpsc::Sender<AccountRequest>,
 ) -> anyhow::Result<OwnerWalletData> {
-    tracing::trace!("request signing pubkey");
+    tracing::trace!(target: "ext_messages_auth", "request signing pubkey");
     if let Some((pubkey, license_count, expires_at)) = SIGN_KEY_CACHE.read().get(issuer) {
         if Instant::now() < *expires_at {
-            tracing::trace!("SIGN_KEY_CACHE: cache hit for {issuer:?}");
+            tracing::trace!(target: "ext_messages_auth", "SIGN_KEY_CACHE: cache hit for {issuer:?}");
             return Ok(OwnerWalletData {
                 pubkey: Some(pubkey.to_string()),
                 license_count: *license_count,
@@ -214,41 +221,30 @@ async fn get_wallet_data(
         ),
     };
 
-    let raw_account =
-        request_account(contract_addr, account_request_tx.clone()).await?.ok_or_else(|| {
-            tracing::trace!("Failed to get BOC of the root contract at {contract_addr}");
-            anyhow::anyhow!("Account (owner wallet root) request failed")
-        })?;
+    let raw_account = request_account(contract_addr, account_request_tx.clone()).await?;
     let tvm_account = tvm_block::Account::try_from(&raw_account)?;
 
     let result = run_local(&tvm_account, abi_json, contract_addr, function_name, &pubkey_str)?;
 
     let owner_wallet_address = serde_json::from_value::<WalletAddress>(result)?.wallet;
-    let wallet_addr = match normalize_address(&owner_wallet_address) {
-        Some(addr) => addr,
-        None => {
-            tracing::trace!("Failed to normalize wallet address");
-            return Err(anyhow::anyhow!("Incorrect address"));
-        }
-    };
+    let wallet_addr = normalize_address(&owner_wallet_address).ok_or_else(|| {
+        anyhow::anyhow!("Failed to normalize wallet address: {owner_wallet_address}")
+    })?;
 
-    tracing::trace!(wallet_address = %wallet_addr, "derived");
+    tracing::trace!(target: "ext_messages_auth", wallet_address = %wallet_addr, "derived");
 
-    let Some(wallet_account) = request_account(&wallet_addr, account_request_tx).await? else {
-        tracing::trace!("Failed to get BOC of the wallet at {wallet_addr}");
-        return Err(anyhow::anyhow!("Account (owner wallet) request failed"));
-    };
+    let wallet_account = request_account(&wallet_addr, account_request_tx).await?;
 
-    tracing::trace!("got account: {wallet_account:?}");
+    tracing::trace!(target: "ext_messages_auth", "got account: {wallet_account:?}");
     let issuer_wallet_data = decode_owner_wallet(&wallet_account, issuer);
-    tracing::trace!("got signing key: {issuer_wallet_data:?}");
+    tracing::trace!(target: "ext_messages_auth", "got signing key: {issuer_wallet_data:?}");
 
     if let Ok(OwnerWalletData { pubkey: Some(ref pubkey), license_count }) = issuer_wallet_data {
         SIGN_KEY_CACHE.write().insert(
             issuer.clone(),
             (pubkey.to_string(), license_count, Instant::now() + SIGN_KEY_CACHE_TTL),
         );
-        tracing::trace!("SIGN_KEY_CACHE: cache update for {issuer:?}");
+        tracing::trace!(target: "ext_messages_auth", "SIGN_KEY_CACHE: cache update for {issuer:?}");
     }
 
     issuer_wallet_data
@@ -320,10 +316,10 @@ pub fn update_ext_message_auth_flag_from_files() {
 
     if enabled {
         force_auth();
-        tracing::debug!("EXT_MESSAGE_AUTH_REQUIRED updated to true");
+        tracing::debug!(target: "ext_messages_auth", "EXT_MESSAGE_AUTH_REQUIRED updated to true");
     } else if disabled {
         disable_auth();
-        tracing::debug!("EXT_MESSAGE_AUTH_REQUIRED updated to false");
+        tracing::debug!(target: "ext_messages_auth", "EXT_MESSAGE_AUTH_REQUIRED updated to false");
     }
 }
 
@@ -474,7 +470,7 @@ mod tests {
                 FAKE_BM_ISSUER_ADDR => construct_response_acc("fake_bm_issuer_40f11d13cf70edb0b4ac883a915c03ba333eceb49263e47ef0ba0415e9b023c5.boc.b64"),
                 REAL_BM_ISSUER_ADDR => construct_response_acc("real_bm_issuer_c3c0474d61fdd004960d1a5a320bc88549f73238cfa0a8fc6a00e15a72bbda19.boc.b64"),
                 REAL_BK_ISSUER_ADDR => construct_response_acc("real_bk_issuer_dc67ae73b647b399bb8293ef1b5c9bc9577baf036ad7ec5c49505efbae74ac67.boc.b64"),
-                _ => Err(anyhow::anyhow!("Unknown account")),
+                _ => Err(anyhow::anyhow!("Can't find account in shard state")),
             };
 
             let account_response = account.map(|account| (account, None, 0));

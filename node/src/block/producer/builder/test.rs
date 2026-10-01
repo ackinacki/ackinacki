@@ -10,7 +10,9 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use account_state::ThreadAccount;
     use account_state::ThreadAccountsRepository;
+    use account_state::VmAccount;
     use chrono::Utc;
     use http_server::NotQueuedExtMessage;
     use indexset::BTreeMap;
@@ -50,6 +52,30 @@ mod tests {
     pub static TEST_CONTRACT_ABI: &str =
         include_str!("../../../../../contracts/test_contracts/contract.abi.json");
     const TEST_DAPP_ID: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    #[test]
+    fn canonical_ext_message_destination_uses_resolved_account_dapp_id() -> anyhow::Result<()> {
+        let account_id = AccountIdentifier::from(UInt256::from([0x22; 32]));
+        let requested_dapp_id = DAppIdentifier::from(UInt256::from([0x22; 32]));
+        let resolved_dapp_id = DAppIdentifier::from(UInt256::from([0x01; 32]));
+        let requested_dst = ExtMessageDst::new(account_id, Some(requested_dapp_id));
+        let account_cell = tvm_block::Account::default()
+            .serialize()
+            .map_err(|e| anyhow::anyhow!("failed to serialize test account: {e}"))?;
+        let resolved_account = ThreadAccount::new(
+            VmAccount::Tvm(account_cell),
+            Default::default(),
+            0,
+            Some(resolved_dapp_id),
+        )?;
+
+        assert!(!resolved_account.is_redirect());
+        assert_eq!(
+            BlockBuilder::canonical_ext_message_dst(&requested_dst, &resolved_account),
+            ExtMessageDst::new(account_id, Some(resolved_dapp_id)),
+        );
+        Ok(())
+    }
 
     fn make_test_ext_message(
         account_suffix: u8,
@@ -180,6 +206,7 @@ mod tests {
             None,
             WasmNodeCache::new()?,
             false,
+            true,
             None,
         )?;
 
@@ -243,6 +270,7 @@ mod tests {
             BTreeSet::new(),
             None,
             WasmNodeCache::new()?,
+            true,
             true,
             None,
         )?;
@@ -312,6 +340,7 @@ mod tests {
             None,
             WasmNodeCache::new()?,
             false,
+            true,
             None,
         )?;
 

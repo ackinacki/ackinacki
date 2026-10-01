@@ -25,6 +25,7 @@ use http_server::ExtMsgFeedbackList;
 use http_server::FeedbackError;
 use http_server::FeedbackErrorCode;
 use indexset::BTreeMap;
+use node_types::AccountCodeHash;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::BlockIdentifier;
@@ -34,6 +35,7 @@ use telemetry_utils::mpsc::instrumented_channel;
 use telemetry_utils::mpsc::InstrumentedReceiver;
 use tracing::instrument;
 use tracing::trace_span;
+use tvm_abi::contract::ABI_VERSION_2_4;
 use tvm_block::AccountStatus;
 use tvm_block::AddSub;
 use tvm_block::Augmentation;
@@ -119,6 +121,7 @@ use crate::types::BlockSeqNo;
 const DEFAULT_MIN_SEQ_NO: u32 = 0;
 
 const BK_SYSTEM_DAPP_ID: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+const MINER_CODE_HASH: &str = "7ef9b5bcb1c0e33b339c8b42d53a33dbba8489c74826aec734cfb4fe845b3ae9";
 // const EPOCH_CONTINUE_STAKE_FUNCTION_NAME: &str = "continueStake";
 
 pub(crate) const MOVE_FROM_TVM_LIMIT: usize = 100;
@@ -131,6 +134,17 @@ struct ExtMessagesPriorityCounters {
     high_priority_since_low_priority: usize,
     executed_high_priority: u64,
     executed_low_priority: u64,
+}
+
+fn external_message_has_signature(message: &Message) -> bool {
+    let (Some(body), Some(destination)) = (message.body(), message.dst()) else {
+        return false;
+    };
+    tvm_abi::Function::get_signature_data(&ABI_VERSION_2_4, body, Some(destination)).is_ok()
+}
+
+fn is_unsigned_miner_message(code_hash: &AccountCodeHash, message: &Message) -> bool {
+    code_hash.to_hex_string() == MINER_CODE_HASH && !external_message_has_signature(message)
 }
 
 #[cfg(test)]
@@ -161,6 +175,7 @@ impl BlockBuilder {
         metrics: Option<BlockProductionMetrics>,
         wasm_cache: WasmNodeCache,
         is_verifier: bool,
+        filter_unsigned_miner_messages: bool,
         check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
     ) -> anyhow::Result<Self> {
         let (initial_accounts, usage_tree) =
@@ -222,6 +237,7 @@ impl BlockBuilder {
             .is_stop_requested(false)
             .wasm_cache(wasm_cache)
             .is_verifier(is_verifier)
+            .filter_unsigned_miner_messages(filter_unsigned_miner_messages)
             .check_history_proof_hash(check_history_proof_hash);
 
         #[cfg(feature = "monitor-accounts-number")]
@@ -816,14 +832,20 @@ impl BlockBuilder {
         let Some(acc) = self.get_account(&dst.account_id.routing_or_redirect(dst.dapp_id))? else {
             return Ok(*dst);
         };
-        if acc.is_redirect() {
-            let redirected_dapp_id = acc
-                .get_dapp_id()
-                .ok_or_else(|| anyhow::format_err!("Account is redirect but has no dapp id"))?;
-            Ok(ExtMessageDst::new(dst.account_id, Some(redirected_dapp_id)))
-        } else {
-            Ok(*dst)
-        }
+        // The account repository follows redirect stubs before returning the account. Use the
+        // returned account's dApp ID instead of checking `is_redirect()`, which is false for the
+        // successfully resolved real account.
+        Ok(Self::canonical_ext_message_dst(dst, &acc))
+    }
+
+    pub(super) fn canonical_ext_message_dst(
+        dst: &ExtMessageDst,
+        resolved_account: &ThreadAccount,
+    ) -> ExtMessageDst {
+        let Some(resolved_dapp_id) = resolved_account.get_dapp_id() else {
+            return *dst;
+        };
+        ExtMessageDst::new(dst.account_id, Some(resolved_dapp_id))
     }
 
     fn reroute_message(
@@ -909,7 +931,7 @@ impl BlockBuilder {
         };
         if shard_acc.is_none() {
             tracing::debug!(
-                target: "monit",
+                target: "builder",
                 "execute_msg: Account not found: id={}, ext_dst {:?}",
                 acc_id.to_hex_string(),
                 ext_dst,
@@ -1300,7 +1322,7 @@ impl BlockBuilder {
         //     ))
         // })?;
 
-        trace_span!("internal messages execution")
+        trace_span!(target: "builder", "internal messages execution")
             .in_scope(|| {
 
                 #[cfg(feature = "timing")]
@@ -1610,7 +1632,7 @@ impl BlockBuilder {
         #[cfg(feature = "timing")]
         let start = std::time::Instant::now();
 
-        trace_span!("execute new messages", messages.count = self.new_messages.len() as i64).in_scope(||{
+        trace_span!(target: "builder", "execute new messages", messages.count = self.new_messages.len() as i64).in_scope(||{
             // Fourth step: execute new messages if block is not full
 
             if !block_full && check_messages_map.as_ref().map(|map| !map.is_empty()).unwrap_or(true) {
@@ -1784,7 +1806,7 @@ impl BlockBuilder {
         //     Ok::<_, anyhow::Error>(())
         // })?;
 
-        tracing::debug!(target: "ext_messages", "unprocessed/processed/feedbacks={}/{}/{}", unprocessed_ext_msgs_cnt, processed_stamps.len(), ext_message_feedbacks.0.len());
+        tracing::info!(target: "ext_messages", "unprocessed/processed/feedbacks={}/{}/{}", unprocessed_ext_msgs_cnt, processed_stamps.len(), ext_message_feedbacks.0.len());
 
         let prepared_block = self.finish_and_prepare_block(active_threads, message_db)?;
 
@@ -2457,7 +2479,8 @@ impl BlockBuilder {
         }
 
         let span = tracing::span!(
-            tracing::Level::INFO,
+            target: "builder",
+            tracing::Level::DEBUG,
             "ext messages filling thread pool",
             ext_queue_size = ext_messages_source.len(),
             ext_active_threads = active_ext_threads.len(),
@@ -2506,6 +2529,31 @@ impl BlockBuilder {
                     "ext message destination is already active after redirect: original={dst:?}, active={active_dst:?}"
                 );
                 break;
+            }
+
+            let reject_unsigned_miner_message = self.filter_unsigned_miner_messages
+                && match self.resolve_account(&active_dst)? {
+                    Some(account) => account
+                        .vm_account()?
+                        .code_hash()?
+                        .as_ref()
+                        .map(|code_hash| {
+                            is_unsigned_miner_message(code_hash, ext_msg.tvm_message())
+                        })
+                        .unwrap_or(false),
+                    None => false,
+                };
+            if reject_unsigned_miner_message {
+                tracing::debug!(
+                    target: "ext_messages",
+                    "Unsigned external message to Miner is rejected: message_hash={}",
+                    ext_msg.hash().to_hex_string(),
+                );
+                requested_stamps.insert(stamp.clone());
+                processed_stamps.push(stamp);
+                ext_message_feedbacks
+                    .push(create_unsigned_miner_message_feedback(ext_msg, &self.thread_id)?);
+                continue;
             }
 
             // used in tests/ext_messages/process_in_parallel.py
@@ -2616,7 +2664,7 @@ impl BlockBuilder {
                     Ok(result) => Some(result),
                     Err(std::sync::mpsc::TryRecvError::Empty) => None,
                     Err(err) => {
-                        tracing::trace!(target: "ext_messages", "Error receiving thread result: {err:?}");
+                        tracing::error!(target: "ext_messages", "Error receiving thread result: {err:?}");
                         return Err(anyhow::anyhow!("Error receiving thread result: {err:?}"));
                     }
                 }
@@ -2738,7 +2786,7 @@ impl BlockBuilder {
                 check_messages_map.is_some(),
             )? {
                 block_full = true;
-                tracing::debug!(target: "ext_messages", "Ext messages stop because termination deadline was reached");
+                tracing::info!(target: "ext_messages", "Ext messages stop because termination deadline was reached");
                 break;
             }
 
@@ -2746,7 +2794,7 @@ impl BlockBuilder {
             let span_guard = span.enter();
             if self.should_stop_production() {
                 block_full = true;
-                tracing::debug!(target: "ext_messages", "Ext messages stop because block is full");
+                tracing::info!(target: "ext_messages", "Ext messages stop because block is full");
                 break;
             }
             drop(span_guard);
@@ -2760,7 +2808,7 @@ impl BlockBuilder {
                     .is_none()
             };
             if no_pending_message && active_ext_threads.is_empty() {
-                tracing::debug!(target: "ext_messages", "Ext messages stop");
+                tracing::info!(target: "ext_messages", "Ext messages stop");
                 break;
             }
         }
@@ -3073,7 +3121,7 @@ pub fn create_queue_overflow_feedback(
     ext_msg: QueuedExtMessage,
     thread_id: &ThreadIdentifier,
 ) -> anyhow::Result<ExtMsgFeedback> {
-    tracing::warn!(
+    tracing::trace!(
         target: "builder",
         "External msg is rejected in case of queue overflow: {:?}",
         ext_msg
@@ -3096,7 +3144,7 @@ pub fn create_not_block_producer_feedback(
     ext_msg: QueuedExtMessage,
     thread_id: &ThreadIdentifier,
 ) -> anyhow::Result<ExtMsgFeedback> {
-    tracing::warn!(
+    tracing::trace!(
         target: "builder",
         "External msg is rejected because node is not the current block producer: {:?}",
         ext_msg
@@ -3115,9 +3163,40 @@ pub fn create_not_block_producer_feedback(
     )
 }
 
+fn create_unsigned_miner_message_feedback(
+    ext_msg: QueuedExtMessage,
+    thread_id: &ThreadIdentifier,
+) -> anyhow::Result<ExtMsgFeedback> {
+    create_feedback(
+        ext_msg.hash().to_hex_string(),
+        None,
+        Some(*thread_id),
+        Some(FeedbackError {
+            code: FeedbackErrorCode::UnsignedMinerMessage,
+            message: Some("External message to Miner must be signed.".to_string()),
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use tvm_types::IBitstring;
+    use tvm_types::ED25519_SIGNATURE_LENGTH;
+
     use super::*;
+
+    fn external_message_with_signature(signature: Option<&[u8]>) -> Message {
+        let mut body = tvm_types::BuilderData::new();
+        if let Some(signature) = signature {
+            body.append_bit_one().unwrap();
+            body.append_raw(signature, signature.len() * 8).unwrap();
+        } else {
+            body.append_bit_zero().unwrap();
+        }
+        let mut message = Message::default();
+        message.set_body(tvm_types::SliceData::load_builder(body).unwrap());
+        message
+    }
 
     fn test_account(seed: u8) -> AccountIdentifier {
         AccountIdentifier::new([seed; 32])
@@ -3328,6 +3407,59 @@ mod tests {
         assert_eq!(
             feedback.error.as_ref().and_then(|error| error.message.as_deref()),
             Some("input error")
+        );
+    }
+
+    #[test]
+    fn miner_external_message_requires_complete_signature() {
+        let miner_code_hash = AccountCodeHash::from_str(MINER_CODE_HASH).unwrap();
+        let other_code_hash = AccountCodeHash::default();
+        let signature = [0u8; ED25519_SIGNATURE_LENGTH];
+
+        assert!(is_unsigned_miner_message(
+            &miner_code_hash,
+            &external_message_with_signature(None)
+        ));
+        assert!(is_unsigned_miner_message(
+            &miner_code_hash,
+            &external_message_with_signature(Some(&signature[..signature.len() - 1]))
+        ));
+        assert!(!is_unsigned_miner_message(
+            &miner_code_hash,
+            &external_message_with_signature(Some(&signature))
+        ));
+        assert!(!is_unsigned_miner_message(
+            &other_code_hash,
+            &external_message_with_signature(None)
+        ));
+    }
+
+    #[test]
+    fn unsigned_miner_message_filter_starts_with_engine_version_1_0_7() {
+        assert!(!BlockBuilder::should_filter_unsigned_miner_messages(&semver::Version::new(
+            1, 0, 6
+        )));
+        assert!(BlockBuilder::should_filter_unsigned_miner_messages(&semver::Version::new(
+            1, 0, 7
+        )));
+        assert!(BlockBuilder::should_filter_unsigned_miner_messages(&semver::Version::new(
+            1, 1, 0
+        )));
+    }
+
+    #[test]
+    fn unsigned_miner_message_feedback_describes_rejection() {
+        let ext_msg = QueuedExtMessage::new_for_test(ExtMessageDst::default());
+        let feedback =
+            create_unsigned_miner_message_feedback(ext_msg, &ThreadIdentifier::default()).unwrap();
+
+        assert!(matches!(
+            feedback.error.as_ref().map(|error| &error.code),
+            Some(FeedbackErrorCode::UnsignedMinerMessage)
+        ));
+        assert_eq!(
+            feedback.error.as_ref().and_then(|error| error.message.as_deref()),
+            Some("External message to Miner must be signed.")
         );
     }
 }

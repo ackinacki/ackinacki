@@ -5,11 +5,38 @@
   vars:
     GS_WAIT: no
 
-- name: Compose down
+# The data dir is deleted below anyway, so the remaining services (aerospike,
+# staking, logrotate) can be killed hard, and the project containers are removed
+# by id instead of trusting `compose down` alone.
+#
+# Why: once the node is stopped, staking (pid: service:node) dies with it and
+# docker briefly tries to restart it, failing to join the gone PID namespace.
+# A `docker stop` that lands in that window fails with "container is not
+# running", which makes `compose down` bail out before it reaches aerospike.
+# With errors ignored, the data dir was then wiped under a running aerospike
+# (NODE-4083). Now the cleanup is retried and must succeed.
+- name: Kill and remove all project containers
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"
-    cmd: docker compose down --remove-orphans
-  ignore_errors: true
+    cmd: |
+      set -e
+      docker compose kill >/dev/null 2>&1 || true
+      docker compose ps -aq | xargs -r docker rm -f
+      docker compose down --remove-orphans
+  register: compose_down
+  retries: 10
+  delay: 3
+  until: compose_down.rc == 0
+
+- name: Refuse to delete data that is still mounted into a running container
+  ansible.builtin.shell:
+    cmd: >-
+      docker ps -q | xargs -r docker inspect
+      --format '{% raw %}{{ .Name }}{{ range .Mounts }} {{ .Source }}{{ end }}{% endraw %}'
+      | grep -E -- " {{ BK_DATA_DIR }}(/| |$)" || true
+  register: data_dir_users
+  changed_when: false
+  failed_when: data_dir_users.stdout | trim | length > 0
 
 - name: Remove data folder
   ansible.builtin.file:
