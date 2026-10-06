@@ -42,6 +42,7 @@ mod tests {
     use crate::external_messages::ExtMessageDst;
     use crate::external_messages::ExtMessages;
     use crate::external_messages::ExtMessagesLimits;
+    use crate::external_messages::ExtMessagesSelectionCursor;
     use crate::external_messages::ExternalMessagesThreadState;
     use crate::external_messages::QueuedExtMessage;
     use crate::external_messages::Stamp;
@@ -385,6 +386,48 @@ mod tests {
         // Simulate the producer getting no terminally processed stamps for an in-flight stop.
         let processed_stamps: Vec<Stamp> = vec![];
         thread_state.erase_processed(&processed_stamps);
+        assert_eq!(thread_state.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn external_queue_deduplicates_hashes_and_releases_them_after_erase() -> anyhow::Result<()> {
+        let (feedback_tx, _feedback_rx) =
+            instrumented_channel(None::<BlockProductionMetrics>, "test-ext-feedback");
+        let thread_state = ExternalMessagesThreadState::builder()
+            .with_report_metrics(None)
+            .with_thread_id(ThreadIdentifier::default())
+            .with_limits(ExtMessagesLimits {
+                total: 10,
+                per_dapp: 10,
+                per_account: 10,
+                low_priority_percentage: 80,
+            })
+            .with_feedback_sender(feedback_tx)
+            .with_is_producing(Arc::new(AtomicBool::new(true)))
+            .build()?;
+
+        let (_dst, (_stamp, message)) = make_test_ext_message(2, 10)?;
+        thread_state.push_external_messages(&[message.clone(), message.clone()])?;
+        assert_eq!(thread_state.len(), 1);
+
+        thread_state
+            .restore_processed(&[(Stamp { index: 999, timestamp: Utc::now() }, message.clone())]);
+        assert_eq!(thread_state.len(), 1);
+
+        let selected_stamp = thread_state
+            .queue_handle()
+            .lock()
+            .next_message(
+                &HashSet::new(),
+                &BTreeSet::new(),
+                &mut ExtMessagesSelectionCursor::default(),
+            )
+            .unwrap()
+            .0;
+        thread_state.erase_processed(&[selected_stamp]);
+
+        thread_state.push_external_messages(&[message])?;
         assert_eq!(thread_state.len(), 1);
         Ok(())
     }

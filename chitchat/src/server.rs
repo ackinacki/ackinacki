@@ -397,15 +397,15 @@ impl Server {
                 info!(error=?error, node_address=%node, "Failed to gossip with live node.");
             }
         }
-        if let Some(random_dead_node) = random_dead_node_opt {
-            if let Err(error) = self.gossip(random_dead_node).await {
-                info!(error=?error, node_address=%random_dead_node, "Failed to gossip with dead node.");
-            }
+        if let Some(random_dead_node) = random_dead_node_opt
+            && let Err(error) = self.gossip(random_dead_node).await
+        {
+            info!(error=?error, node_address=%random_dead_node, "Failed to gossip with dead node.");
         }
-        if let Some(random_seed_node) = random_seed_node_opt {
-            if let Err(error) = self.gossip(random_seed_node).await {
-                info!(error=?error, node_address=%random_seed_node, "Failed to gossip with seed node.");
-            }
+        if let Some(random_seed_node) = random_seed_node_opt
+            && let Err(error) = self.gossip(random_seed_node).await
+        {
+            info!(error=?error, node_address=%random_seed_node, "Failed to gossip with seed node.");
         }
         // Update nodes liveness.
         let mut chitchat_guard = self.chitchat.lock();
@@ -546,12 +546,10 @@ mod tests {
             (self.value - 1) as u64
         }
 
-        fn fill_bytes(&mut self, _dest: &mut [u8]) {
-            unimplemented!();
-        }
+        fn fill_bytes(&mut self, _dest: &mut [u8]) {}
 
         fn try_fill_bytes(&mut self, _dest: &mut [u8]) -> Result<(), rand::Error> {
-            unimplemented!();
+            Ok(())
         }
     }
 

@@ -372,7 +372,7 @@ fn pbepkcs12sha1(pass: &[u8], salt: &[u8], iterations: u64, id: u8, size: u64) -
         let i_b_iter = i.iter_mut().rev().zip(b_iter);
         let mut inc = 1u8;
         for (i3, (ii, bi)) in i_b_iter.enumerate() {
-            if ((i3 as u64) % V) == 0 {
+            if (i3 as u64).is_multiple_of(V) {
                 inc = 1;
             }
             let (ii2, inc2) = ii.overflowing_add(*bi);

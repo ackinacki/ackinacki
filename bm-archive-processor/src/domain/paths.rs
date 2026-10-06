@@ -18,8 +18,7 @@ pub fn daily_db_path(daily_dir: &std::path::Path, timestamp: AnchorTimestamp) ->
 /// Constructs an S3 object key from a file path.
 /// Removes leading "./" if present for consistent key format.
 pub fn s3_key_from_path(path: &std::path::Path) -> String {
-    path
-        .strip_prefix(".") // remove leading "./" if present
+    path.strip_prefix(".") // remove leading "./" if present
         .unwrap_or(path)
         .to_string_lossy()
         .into_owned()

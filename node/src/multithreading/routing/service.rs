@@ -470,7 +470,7 @@ impl RoutingService {
                     let mut registry_guard = feedback_registry.lock();
 
                     message_count += 1;
-                    if message_count % FEEDBACK_CLEANUP_INTERVAL == 0 {
+                    if message_count.is_multiple_of(FEEDBACK_CLEANUP_INTERVAL) {
                         registry_guard
                             .retain(|_, (created_at, _)| created_at.elapsed() < FEEDBACK_TTL);
                     }

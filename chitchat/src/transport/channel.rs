@@ -109,18 +109,18 @@ impl ChannelTransport {
         // We serialize/deserialize message to get closer to the real world.
         let message = serialize_deserialize_chitchat_message(message);
         let num_bytes = message.serialized_len();
-        if let Some(mtu) = self.mtu_opt {
-            if num_bytes > mtu {
-                bail!("Serialized message size exceeds MTU. num_bytes={num_bytes}");
-            }
+        if let Some(mtu) = self.mtu_opt
+            && num_bytes > mtu
+        {
+            bail!("Serialized message size exceeds MTU. num_bytes={num_bytes}");
         }
         debug!(num_bytes, "Serialized message size not exceeds MTU.");
         let mut inner_lock = self.inner.lock();
         inner_lock.statistics.record_message_len(num_bytes);
-        if let Some(to_addrs) = inner_lock.removed_links.get(&from_addr) {
-            if to_addrs.contains(&to_addr) {
-                return Ok(());
-            }
+        if let Some(to_addrs) = inner_lock.removed_links.get(&from_addr)
+            && to_addrs.contains(&to_addr)
+        {
+            return Ok(());
         }
         if let Some(message_tx) = inner_lock.send_channels.get(&to_addr) {
             // if the channel is saturated, we start dropping messages.

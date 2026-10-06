@@ -18,6 +18,7 @@ use parking_lot::Mutex;
 use telemetry_utils::mpsc::InstrumentedSender;
 use typed_builder::TypedBuilder;
 
+use crate::block::producer::builder::build_actions::create_duplicate_message_feedback;
 use crate::block::producer::builder::build_actions::create_not_block_producer_feedback;
 use crate::block::producer::builder::build_actions::create_queue_overflow_feedback;
 use crate::external_messages::queue::ExtMessageDst;
@@ -121,6 +122,7 @@ impl From<ExternalMessagesThreadStateConfig> for anyhow::Result<ExternalMessages
         tracing::trace!(target: "ext_messages", "configured limits: {:?}", config.limits);
         Ok(ExternalMessagesThreadState {
             queue: Arc::new(Mutex::new(ExtMessages::empty(config.limits))),
+            queued_message_hashes: Arc::new(Mutex::new(HashSet::new())),
             report_metrics: config.report_metrics,
             thread_id: config.thread_id,
             feedback_sender: config.feedback_sender,
@@ -133,6 +135,7 @@ impl From<ExternalMessagesThreadStateConfig> for anyhow::Result<ExternalMessages
 #[derive(Clone)]
 pub struct ExternalMessagesThreadState {
     queue: Arc<Mutex<ExtMessages>>,
+    queued_message_hashes: Arc<Mutex<HashSet<tvm_types::UInt256>>>,
     report_metrics: Option<BlockProductionMetrics>,
     // For reporting only.
     thread_id: ThreadIdentifier,
@@ -260,10 +263,31 @@ impl ExternalMessagesThreadState {
 
         let now = Utc::now();
 
-        let (report_len, low_priority_queue_len, total_limit, dapp_queue_sizes, unused) =
+        let (report_len, low_priority_queue_len, total_limit, dapp_queue_sizes, unused, duplicates) =
             self.queue.guarded_mut(|q| {
-                let unused = q.push_external_messages(ext_messages, now);
-                (q.len(), q.low_priority_len(), q.limits().total, q.dapp_queue_sizes(), unused)
+                let mut queued_hashes = self.queued_message_hashes.lock();
+                let mut unused = Vec::new();
+                let mut duplicates = Vec::new();
+                for message in ext_messages {
+                    if queued_hashes.contains(message.hash()) {
+                        duplicates.push(message.clone());
+                        continue;
+                    }
+                    let rejected = q.push_external_messages(std::slice::from_ref(message), now);
+                    if rejected.is_empty() {
+                        queued_hashes.insert(message.hash().clone());
+                    } else {
+                        unused.extend(rejected);
+                    }
+                }
+                (
+                    q.len(),
+                    q.low_priority_len(),
+                    q.limits().total,
+                    q.dapp_queue_sizes(),
+                    unused,
+                    duplicates,
+                )
             });
 
         self.report_queue_state(report_len, &dapp_queue_sizes);
@@ -288,6 +312,14 @@ impl ExternalMessagesThreadState {
             let _ = self.feedback_sender.send(ExtMsgFeedbackList(overflow_feedbacks));
         }
 
+        if !duplicates.is_empty() {
+            let duplicate_feedbacks = duplicates
+                .into_iter()
+                .map(|msg| create_duplicate_message_feedback(msg, &self.thread_id))
+                .collect::<Result<Vec<_>, _>>()?;
+            let _ = self.feedback_sender.send(ExtMsgFeedbackList(duplicate_feedbacks));
+        }
+
         self.report_queue_metrics(
             report_len,
             low_priority_queue_len,
@@ -303,7 +335,11 @@ impl ExternalMessagesThreadState {
             return Ok(());
         }
 
-        let drained = self.queue.guarded_mut(|q| q.drain_all());
+        let drained = self.queue.guarded_mut(|q| {
+            let drained = q.drain_all();
+            self.queued_message_hashes.lock().clear();
+            drained
+        });
 
         if drained.is_empty() {
             return Ok(());
@@ -344,6 +380,10 @@ impl ExternalMessagesThreadState {
         let (report_len, low_priority_queue_len, total_limit, dapp_queue_sizes, removed) =
             self.queue.guarded_mut(|q| {
                 let removed = q.erase_processed(processed);
+                let mut queued_hashes = self.queued_message_hashes.lock();
+                for (_, message) in &removed {
+                    queued_hashes.remove(message.hash());
+                }
                 (q.len(), q.low_priority_len(), q.limits().total, q.dapp_queue_sizes(), removed)
             });
 
@@ -365,16 +405,29 @@ impl ExternalMessagesThreadState {
             return;
         }
 
-        let (report_len, low_priority_queue_len, total_limit, dapp_queue_sizes) =
+        let (report_len, low_priority_queue_len, total_limit, dapp_queue_sizes, restored_count) =
             self.queue.guarded_mut(|q| {
-                q.restore_processed(processed);
-                (q.len(), q.low_priority_len(), q.limits().total, q.dapp_queue_sizes())
+                let mut queued_hashes = self.queued_message_hashes.lock();
+                let mut unique = Vec::new();
+                for (stamp, message) in processed {
+                    if queued_hashes.insert(message.hash().clone()) {
+                        unique.push((stamp.clone(), message.clone()));
+                    }
+                }
+                q.restore_processed(&unique);
+                (
+                    q.len(),
+                    q.low_priority_len(),
+                    q.limits().total,
+                    q.dapp_queue_sizes(),
+                    unique.len(),
+                )
             });
 
         tracing::info!(
             target: "ext_messages",
             "restored {} ext messages after production restart, queue_size={}",
-            processed.len(),
+            restored_count,
             report_len
         );
         self.report_queue_state(report_len, &dapp_queue_sizes);

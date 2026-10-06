@@ -10,7 +10,6 @@ use tvm_executor::ExecutorError;
 use tvm_types::UInt256;
 
 use crate::block::producer::errors::VerifyError;
-use crate::block::producer::errors::BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK;
 use crate::block::producer::wasm::WasmNodeCache;
 use crate::block::producer::BlockVerifier;
 use crate::block::producer::TVMBlockVerifier;
@@ -52,9 +51,12 @@ fn classify_verify_block_generation_error(error: &anyhow::Error) -> Option<Verif
     if let Some(verify_error) = error.downcast_ref::<VerifyError>() {
         // TODO: need to set Nack reason in this case
         tracing::error!("verify block generation returned VerifyError: {verify_error:?}");
-        if verify_error.code == BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK {
-            return Some(VerificationResult::BadBlock);
-        }
+        return match verify_error {
+            VerifyError::DidNotProcessAllMessagesFromPreviousBlock => {
+                Some(VerificationResult::BadBlock)
+            }
+            VerifyError::BlockHasMessagesWithEqualHash => None,
+        };
     }
 
     if error.downcast_ref::<AccountHashMismatchError>().is_some() {
@@ -369,7 +371,7 @@ mod tests {
     use super::classify_verify_block_generation_error;
     use super::VerificationResult;
     use crate::block::producer::errors::verify_error;
-    use crate::block::producer::errors::BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK;
+    use crate::block::producer::errors::VerifyError;
 
     #[test]
     fn classify_verify_block_generation_error_returns_account_hash_mismatch() {
@@ -389,7 +391,7 @@ mod tests {
 
     #[test]
     fn classify_verify_block_generation_error_keeps_verify_error_handling() {
-        let error = verify_error(BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK);
+        let error = verify_error(VerifyError::DidNotProcessAllMessagesFromPreviousBlock);
 
         assert!(matches!(
             classify_verify_block_generation_error(&error),

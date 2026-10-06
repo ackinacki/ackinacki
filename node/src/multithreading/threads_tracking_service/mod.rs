@@ -75,8 +75,7 @@ impl ThreadsTrackingService {
         thread_identifier: ThreadIdentifier,
         threads_table_after_this_block: ThreadsTable,
         subscribers: &mut T,
-    ) -> anyhow::Result<(), CommandError>
-    where
+    ) where
         T: Subscriber,
     {
         tracing::trace!(
@@ -113,8 +112,6 @@ impl ThreadsTrackingService {
         if !this_table.contains(&thread_identifier) {
             subscribers.handle_stop_thread(&block_identifier, &thread_identifier);
         }
-
-        Ok(())
     }
 }
 
@@ -153,7 +150,7 @@ mod tests {
         some_subscriber.expect_handle_stop_thread().times(0).return_const(());
         some_other_subscriber.expect_handle_stop_thread().times(0).return_const(());
         let mut service = ThreadsTrackingService::start();
-        let _ = service.handle_block_finalized(
+        service.handle_block_finalized(
             BlockIdentifier::default(),
             ThreadIdentifier::default(),
             ThreadsTable::default(),

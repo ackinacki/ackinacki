@@ -179,6 +179,18 @@ impl ThreadAccountsRepositoryInner {
         }
     }
 
+    /// Returns the account stored at `routing` without following a durable redirect stub.
+    pub fn state_account_exact(
+        &self,
+        state: &ThreadAccountsState,
+        routing: &AccountRouting,
+    ) -> anyhow::Result<Option<ThreadAccount>> {
+        if let Some(durable) = self.durable.state_account(&state.durable, routing)? {
+            return Ok(Some(durable));
+        }
+        state.tvm.account(routing)
+    }
+
     pub fn finalize_thread_transition(
         &self,
         block_id: &BlockIdentifier,

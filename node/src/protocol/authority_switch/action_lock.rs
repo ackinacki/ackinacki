@@ -975,12 +975,17 @@ impl ThreadAuthority {
                     // for any block were send yet. safe to assume that there's no block
                     // candidate available
                     .locked_block(None)
-                    .locked_bad_block_nacks(self.confirmed_bad_block_nacks.get(
-                        &SiblingsBlockHeightKey::builder()
-                            .parent_block_identifier(*parent_block.block_identifier())
-                            .height(block_height)
-                            .build()
-                    ).cloned().unwrap_or_default())
+                    .locked_bad_block_nacks(
+                        self.confirmed_bad_block_nacks
+                            .get(
+                                &SiblingsBlockHeightKey::builder()
+                                    .parent_block_identifier(*parent_block.block_identifier())
+                                    .height(block_height)
+                                    .build(),
+                            )
+                            .cloned()
+                            .unwrap_or_default(),
+                    )
                     //.current_round(round)
                     .build();
                 self.action_lock.insert(block_height, new_lock.clone());
@@ -1914,20 +1919,20 @@ impl ThreadAuthority {
             }
         } else {
             let new_lock = ActionLock::builder()
-                    .parent_prefinalization_proof(parent_state_prefinalization_proof)
-                    .parent_block_producer_selector_data(parent_producer_selector)
-                    .parent_block(BlockRef::try_from(&parent_state).unwrap())
-                    .locked_round(round)
-                    .locked_block(Some((
-                        block_round,
-                        BlockRef::builder()
-                            .block_identifier(proposed_block.data().identifier())
-                            .block_seq_no(proposed_block.data().seq_no())
-                            .build(),
-                    )))
-                    .locked_bad_block_nacks(envelope_nacks)
-                    //.current_round(round)
-                    .build();
+                .parent_prefinalization_proof(parent_state_prefinalization_proof)
+                .parent_block_producer_selector_data(parent_producer_selector)
+                .parent_block(BlockRef::try_from(&parent_state).unwrap())
+                .locked_round(round)
+                .locked_block(Some((
+                    block_round,
+                    BlockRef::builder()
+                        .block_identifier(proposed_block.data().identifier())
+                        .block_seq_no(proposed_block.data().seq_no())
+                        .build(),
+                )))
+                .locked_bad_block_nacks(envelope_nacks)
+                //.current_round(round)
+                .build();
             self.action_lock.insert(*block_height, new_lock);
         }
         if let Some(abandoned_by_majority_block_ref) = to_invalidate {

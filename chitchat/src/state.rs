@@ -299,13 +299,12 @@ impl NodeState {
     pub fn set(&mut self, key: impl ToString, value: impl ToString) {
         let key = key.to_string();
         let value = value.to_string();
-        if let Some(previous_versioned_value) = self.get_versioned(&key) {
-            if previous_versioned_value.value == value
-                && matches!(previous_versioned_value.status, DeletionStatus::Set)
-            {
-                // No need to change anything, the value is already set!
-                return;
-            }
+        if let Some(previous_versioned_value) = self.get_versioned(&key)
+            && previous_versioned_value.value == value
+            && matches!(previous_versioned_value.status, DeletionStatus::Set)
+        {
+            // No need to change anything, the value is already set!
+            return;
         }
         let new_version = self.max_version + 1;
         self.set_with_version(key, value, new_version);
@@ -316,16 +315,15 @@ impl NodeState {
     pub fn set_with_ttl(&mut self, key: impl ToString, value: impl ToString) {
         let key = key.to_string();
         let value = value.to_string();
-        if let Some(previous_versioned_value) = self.get_versioned(&key) {
-            if previous_versioned_value.value == value
-                && matches!(
-                    previous_versioned_value.status,
-                    DeletionStatus::DeleteAfterTtl(_)
-                )
-            {
-                // No need to change anything, the value is already set!
-                return;
-            }
+        if let Some(previous_versioned_value) = self.get_versioned(&key)
+            && previous_versioned_value.value == value
+            && matches!(
+                previous_versioned_value.status,
+                DeletionStatus::DeleteAfterTtl(_)
+            )
+        {
+            // No need to change anything, the value is already set!
+            return;
         }
         let new_version = self.max_version + 1;
         self.set_versioned_value(

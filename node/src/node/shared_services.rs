@@ -123,7 +123,7 @@ impl SharedServices {
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .expect("Time from unix epoch can not fail")
             .as_millis() as u64;
-        let _ = self.last_finalization_timestamp.fetch_update(
+        let _ = self.last_finalization_timestamp.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |prev| if prev < now { Some(now) } else { None },
@@ -223,18 +223,12 @@ impl SharedServices {
                 .thread_sync
                 .on_block_finalized(&block_identifier, &thread_identifier)
                 .expect("Must work");
-            match services.threads_tracking.handle_block_finalized(
+            services.threads_tracking.handle_block_finalized(
                 block_identifier,
                 thread_identifier,
                 threads_table,
                 &mut (&mut services.router, &mut services.load_balancing),
-            ) {
-                Ok(()) => {}
-                Err(e) => {
-                    tracing::trace!("threads_tracking handle_block_finalized error: {:?}", e);
-                    unimplemented!()
-                }
-            }
+            );
             services.load_balancing.handle_block_finalized(block, state);
         });
     }

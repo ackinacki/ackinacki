@@ -462,6 +462,15 @@ impl ThreadAccountsRepository {
         self.0.state_account(state, routing)
     }
 
+    /// Returns the account stored at `routing` without resolving redirect stubs.
+    pub fn state_account_exact(
+        &self,
+        state: &ThreadAccountsState,
+        routing: &AccountRouting,
+    ) -> anyhow::Result<Option<ThreadAccount>> {
+        self.0.state_account_exact(state, routing)
+    }
+
     pub fn state_iterate_tvm_accounts(
         &self,
         state: &ThreadAccountsState,

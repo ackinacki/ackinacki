@@ -121,11 +121,9 @@ impl Chitchat {
         let has_reset = delta.node_deltas.iter().any(|node_delta| {
             node_delta.from_version_excluded == 0 && node_delta.last_gc_version > 0
         });
-        if has_reset {
-            if let Some(catchup_callback) = &self.config.catchup_callback {
-                tracing::debug!("executing catch-up callback");
-                catchup_callback();
-            }
+        if has_reset && let Some(catchup_callback) = &self.config.catchup_callback {
+            tracing::debug!("executing catch-up callback");
+            catchup_callback();
         }
     }
 
@@ -249,10 +247,10 @@ impl Chitchat {
                 .cloned()
                 .flat_map(|chitchat_id| {
                     let node_state = self.node_state(&chitchat_id)?;
-                    if let Some(liveness_extra_predicate) = &self.config.extra_liveness_predicate {
-                        if !liveness_extra_predicate(node_state) {
-                            return None;
-                        }
+                    if let Some(liveness_extra_predicate) = &self.config.extra_liveness_predicate
+                        && !liveness_extra_predicate(node_state)
+                    {
+                        return None;
                     }
                     Some((chitchat_id, node_state.clone()))
                 })

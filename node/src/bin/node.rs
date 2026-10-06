@@ -1094,32 +1094,32 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let authority = Arc::new(Mutex::new(
         Authority::builder()
-        .round_buckets(RoundTime::linear(
-            // min round time
-            Duration::from_millis(global_config.round_min_time_millis),
-            // step
-            Duration::from_millis(global_config.round_step_millis),
-            // max round time: 30 sec
-            Duration::from_millis(global_config.round_max_time_millis),
-        ))
-        .data_dir(repo_path.join("action-locks"))
-        .block_state_repository(block_state_repo.clone())
-        .block_repository(repository.clone())
-        .node_credentials(node_credentials.clone())
-        .bls_keys_map(bls_keys_map.clone())
-        // TODO: make it restored from disk
-        // .action_lock(HashMap::new())
-        .network_direct_tx(direct_tx.clone())
-        // .block_producers(HashMap::new())
-        .bp_production_count(bp_thread_count.clone())
-        .network_broadcast_tx(broadcast_tx.clone())
-        .node_joining_timeout(global_config.node_joining_timeout)
-        .action_lock_db(action_lock_db)
-        .max_lookback_block_height_distance(finalized_block_storage_size)
-        .self_addr(config.network.node_advertise_addr)
-        .action_lock_collections(action_lock_collections)
-        .time_to_enable_sync_finalized(global_config.time_to_enable_sync_finalized)
-        .build(),
+            .round_buckets(RoundTime::linear(
+                // min round time
+                Duration::from_millis(global_config.round_min_time_millis),
+                // step
+                Duration::from_millis(global_config.round_step_millis),
+                // max round time: 30 sec
+                Duration::from_millis(global_config.round_max_time_millis),
+            ))
+            .data_dir(repo_path.join("action-locks"))
+            .block_state_repository(block_state_repo.clone())
+            .block_repository(repository.clone())
+            .node_credentials(node_credentials.clone())
+            .bls_keys_map(bls_keys_map.clone())
+            // TODO: make it restored from disk
+            // .action_lock(HashMap::new())
+            .network_direct_tx(direct_tx.clone())
+            // .block_producers(HashMap::new())
+            .bp_production_count(bp_thread_count.clone())
+            .network_broadcast_tx(broadcast_tx.clone())
+            .node_joining_timeout(global_config.node_joining_timeout)
+            .action_lock_db(action_lock_db)
+            .max_lookback_block_height_distance(finalized_block_storage_size)
+            .self_addr(config.network.node_advertise_addr)
+            .action_lock_collections(action_lock_collections)
+            .time_to_enable_sync_finalized(global_config.time_to_enable_sync_finalized)
+            .build(),
     ));
 
     let validation_service = ValidationService::new(

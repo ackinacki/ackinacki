@@ -6,34 +6,45 @@ use std::fmt::Formatter;
 
 use anyhow::anyhow;
 
-pub(crate) const BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK: u8 = 1;
-pub(crate) const BLOCK_HAS_MESSAGES_WITH_EQUAL_HASH: u8 = 2;
-
-#[derive(Debug)]
-pub(crate) struct VerifyError {
-    pub code: u8,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VerifyError {
+    #[allow(unused)]
+    DidNotProcessAllMessagesFromPreviousBlock,
+    BlockHasMessagesWithEqualHash,
 }
 
 impl Display for VerifyError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let error_description = match self.code {
-            BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK => {
+        let error_description = match self {
+            Self::DidNotProcessAllMessagesFromPreviousBlock => {
                 "BP started processing new messages before it processed all messages from the previous state"
             }
-            _ => {
-                unreachable!("Unknown verify error code")
+            Self::BlockHasMessagesWithEqualHash => {
+                "Block has messages with equal hashes"
             }
         };
         write!(f, "{error_description}")
     }
 }
 
-impl VerifyError {
-    pub(crate) fn _new(code: u8) -> Self {
-        Self { code }
-    }
+pub(crate) fn verify_error(error: VerifyError) -> anyhow::Error {
+    anyhow!(error)
 }
 
-pub(crate) fn verify_error(code: u8) -> anyhow::Error {
-    anyhow!(VerifyError::_new(code))
+#[cfg(test)]
+mod tests {
+    use super::verify_error;
+    use super::VerifyError;
+
+    #[test]
+    fn verify_errors_have_descriptions() {
+        assert_eq!(
+            VerifyError::DidNotProcessAllMessagesFromPreviousBlock.to_string(),
+            "BP started processing new messages before it processed all messages from the previous state"
+        );
+        assert_eq!(
+            verify_error(VerifyError::BlockHasMessagesWithEqualHash).to_string(),
+            "Block has messages with equal hashes"
+        );
+    }
 }

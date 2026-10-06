@@ -84,7 +84,7 @@ use crate::block::postprocessing::postprocess;
 use crate::block::producer::builder::engine_version::get_engine_version;
 use crate::block::producer::builder::trace::simple_trace_callback;
 use crate::block::producer::errors::verify_error;
-use crate::block::producer::errors::BLOCK_HAS_MESSAGES_WITH_EQUAL_HASH;
+use crate::block::producer::errors::VerifyError;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::block::producer::wasm::WasmNodeCache;
 use crate::block_keeper_system::epoch::decode_epoch_data;
@@ -811,6 +811,13 @@ impl BlockBuilder {
         result
     }
 
+    fn get_account_exact(
+        &mut self,
+        acc_routing: &AccountRouting,
+    ) -> anyhow::Result<Option<ThreadAccount>> {
+        self.accounts_builder.account_exact(acc_routing)
+    }
+
     fn resolve_account(&mut self, dst: &ExtMessageDst) -> anyhow::Result<Option<ThreadAccount>> {
         let Some(acc) = self.get_account(&dst.account_id.routing_or_redirect(dst.dapp_id))? else {
             return Ok(None);
@@ -822,6 +829,19 @@ impl BlockBuilder {
             self.get_account(&dst.account_id.routing(redirected_dapp_id))
         } else {
             Ok(Some(acc))
+        }
+    }
+
+    fn resolve_external_account(
+        &mut self,
+        dst: &ExtMessageDst,
+    ) -> anyhow::Result<Option<ThreadAccount>> {
+        if self.is_verifier {
+            // Block messages do not retain the submitted dApp ID. Resolve redirects to
+            // replay included transactions, including those produced by older BPs.
+            self.resolve_account(dst)
+        } else {
+            self.get_account_exact(&dst.account_id.routing_or_redirect(dst.dapp_id))
         }
     }
 
@@ -926,7 +946,7 @@ impl BlockBuilder {
         let start = std::time::Instant::now();
         let read_account_start = std::time::Instant::now();
         let shard_acc = match &ext_dst {
-            Some(dst) => self.resolve_account(dst)?,
+            Some(dst) => self.resolve_external_account(dst)?,
             None => self.get_account(&acc_id.redirect())?,
         };
         if shard_acc.is_none() {
@@ -1860,7 +1880,7 @@ impl BlockBuilder {
             .map_err(|e| anyhow::format_err!("Failed to add in msg descr: {e}"))?
             .is_some()
         {
-            return Err(verify_error(BLOCK_HAS_MESSAGES_WITH_EQUAL_HASH));
+            return Err(verify_error(VerifyError::BlockHasMessagesWithEqualHash));
         }
         Ok(())
     }
@@ -2390,7 +2410,9 @@ impl BlockBuilder {
             if let Some(msg_set) = &check_messages_map {
                 // TODO: This check seems to be wrong now. Check it and unlock
                 // if verify_block_contains_missing_messages_from_prev_state {
-                //     return Err(verify_error(BP_DID_NOT_PROCESS_ALL_MESSAGES_FROM_PREVIOUS_BLOCK));
+                //     return Err(verify_error(
+                //         VerifyError::DidNotProcessAllMessagesFromPreviousBlock,
+                //     ));
                 // }
                 let Some(messages) = msg_set.get(&acc_id) else {
                     continue;
@@ -2461,6 +2483,7 @@ impl BlockBuilder {
         active_ext_threads: &mut VecDeque<(Stamp, ExtMessageDst, bool, ActiveThread)>,
         active_destinations: &mut HashSet<ExtMessageDst>,
         requested_stamps: &mut StdBTreeSet<Stamp>,
+        requested_hashes: &mut HashSet<UInt256>,
         selection_cursor: &mut ExtMessagesSelectionCursor,
         ext_message_feedbacks: &mut ExtMsgFeedbackList,
         processed_stamps: &mut Vec<Stamp>,
@@ -2503,6 +2526,20 @@ impl BlockBuilder {
             let Some((stamp, ext_msg)) = next_message else {
                 break;
             };
+            let message_hash = ext_msg.hash().clone();
+
+            if requested_hashes.contains(&message_hash) {
+                tracing::warn!(
+                    target: "ext_messages",
+                    "Skipping duplicate external message in block: message_hash={}",
+                    message_hash.to_hex_string(),
+                );
+                requested_stamps.insert(stamp.clone());
+                processed_stamps.push(stamp);
+                ext_message_feedbacks
+                    .push(create_duplicate_message_feedback(ext_msg, &self.thread_id)?);
+                continue;
+            }
 
             let is_low_priority = ext_msg.is_low_priority();
             let dst = *ext_msg.dst();
@@ -2513,6 +2550,7 @@ impl BlockBuilder {
             if !potential_thread.map(|thread| thread == self.thread_id).unwrap_or(false) {
                 tracing::debug!(target: "ext_messages", "thread mismatch for <dst:{}>. skipped, acc_thread={potential_thread:?}", dst.account_id.to_hex_string());
                 requested_stamps.insert(stamp.clone());
+                requested_hashes.insert(message_hash);
                 processed_stamps.push(stamp);
                 ext_message_feedbacks
                     .push(create_thread_mismatch_feedback(ext_msg, potential_thread)?);
@@ -2550,6 +2588,7 @@ impl BlockBuilder {
                     ext_msg.hash().to_hex_string(),
                 );
                 requested_stamps.insert(stamp.clone());
+                requested_hashes.insert(message_hash);
                 processed_stamps.push(stamp);
                 ext_message_feedbacks
                     .push(create_unsigned_miner_message_feedback(ext_msg, &self.thread_id)?);
@@ -2560,6 +2599,7 @@ impl BlockBuilder {
             tracing::debug!(target: "ext_messages", "fill threads: active_ext_threads={}, ext_messages_queue={}", active_ext_threads.len(), ext_messages_source.len());
 
             anyhow::ensure!(ext_msg.tvm_message().int_header().is_none());
+            let ext_message_hash = ext_msg.hash().to_hex_string();
             tracing::trace!(
                 target: "ext_messages",
                 "Parallel ext message: {} to {:?}",
@@ -2582,6 +2622,14 @@ impl BlockBuilder {
             if let Err(error) = &thread {
                 if let Some(error) = error.downcast_ref::<ExecuteError>() {
                     tracing::trace!("ExecuteError: {error}");
+                    if matches!(error, ExecuteError::AccountWasMovedIgnoreExternalMessage) {
+                        requested_stamps.insert(stamp.clone());
+                        processed_stamps.push(stamp);
+                        ext_message_feedbacks.push(create_wrong_dapp_id_feedback(
+                            ext_message_hash,
+                            &self.thread_id,
+                        )?);
+                    }
                     continue;
                 }
             }
@@ -2594,6 +2642,7 @@ impl BlockBuilder {
                 priority_counters.high_priority_since_low_priority += 1;
             }
             requested_stamps.insert(stamp.clone());
+            requested_hashes.insert(message_hash);
             active_ext_threads.push_back((stamp, active_dst, is_low_priority, thread));
             active_destinations.insert(active_dst);
         }
@@ -2748,6 +2797,7 @@ impl BlockBuilder {
         let mut active_destinations = HashSet::new();
         let mut active_ext_threads = VecDeque::new();
         let mut requested_stamps = StdBTreeSet::new();
+        let mut requested_hashes = HashSet::new();
         let mut selection_cursor = ExtMessagesSelectionCursor::default();
         let mut block_full = false;
         let mut processed_stamps = vec![];
@@ -2764,6 +2814,7 @@ impl BlockBuilder {
                 &mut active_ext_threads,
                 &mut active_destinations,
                 &mut requested_stamps,
+                &mut requested_hashes,
                 &mut selection_cursor,
                 &mut ext_message_feedbacks,
                 &mut processed_stamps,
@@ -3140,6 +3191,30 @@ pub fn create_queue_overflow_feedback(
     )
 }
 
+pub fn create_duplicate_message_feedback(
+    ext_msg: QueuedExtMessage,
+    thread_id: &ThreadIdentifier,
+) -> anyhow::Result<ExtMsgFeedback> {
+    tracing::debug!(
+        target: "ext_messages",
+        "External message is rejected as a duplicate: message_hash={}",
+        ext_msg.hash().to_hex_string(),
+    );
+
+    create_feedback(
+        ext_msg.hash().to_hex_string(),
+        None,
+        Some(*thread_id),
+        Some(FeedbackError {
+            code: FeedbackErrorCode::DuplicateMessage,
+            message: Some(
+                "The same external message is already queued or included in this block."
+                    .to_string(),
+            ),
+        }),
+    )
+}
+
 pub fn create_not_block_producer_feedback(
     ext_msg: QueuedExtMessage,
     thread_id: &ThreadIdentifier,
@@ -3178,6 +3253,21 @@ fn create_unsigned_miner_message_feedback(
     )
 }
 
+fn create_wrong_dapp_id_feedback(
+    message_hash: String,
+    thread_id: &ThreadIdentifier,
+) -> anyhow::Result<ExtMsgFeedback> {
+    create_feedback(
+        message_hash,
+        None,
+        Some(*thread_id),
+        Some(FeedbackError {
+            code: FeedbackErrorCode::WrongDappId,
+            message: Some("External message destination is a redirect account.".to_string()),
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use tvm_types::IBitstring;
@@ -3208,6 +3298,83 @@ mod tests {
 
     fn test_stamp(index: u64) -> Stamp {
         Stamp { index, timestamp: chrono::Utc::now() }
+    }
+
+    #[test]
+    fn external_account_redirect_is_resolved_only_during_verification() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let repository = ThreadAccountsRepository::builder(dir.path().join("durable"))
+            .set_apply_to_durable(true)
+            .build()?;
+        repository.ensure_thread(
+            &ThreadIdentifier::default(),
+            &BlockIdentifier::default(),
+            true,
+        )?;
+        repository.start_archive_update_service()?;
+        let account_id = test_account(2);
+        let dapp_id = test_dapp(1);
+        let account = ThreadAccount::new(
+            VmAccount::Tvm(tvm_block::Account::default().serialize().map_err(anyhow::Error::msg)?),
+            Default::default(),
+            42,
+            Some(dapp_id),
+        )?;
+        let state = ThreadAccountsRepository::new_state();
+        let mut accounts = repository.state_builder(&ThreadIdentifier::default(), 0, &state);
+        accounts.insert_account(&account_id.routing(dapp_id), &account);
+        let transition = accounts.build(None)?;
+        repository.finalize_thread_transition(
+            &BlockIdentifier::default(),
+            &ThreadIdentifier::default(),
+            0,
+            &transition.new_state,
+            transition.account_operations,
+        )?;
+        assert!(repository.flush_pending_and_wait_for_drain(std::time::Duration::from_secs(5)));
+        let mut optimistic_state = OptimisticStateImpl::zero();
+        optimistic_state.set_shard_state(transition.new_state);
+        let mut builder = BlockBuilder::with_params(
+            ThreadIdentifier::default(),
+            1,
+            optimistic_state,
+            0,
+            1_000_000,
+            None,
+            None,
+            repository,
+            String::new(),
+            String::new(),
+            1,
+            HashMap::new(),
+            BTreeSet::new(),
+            None,
+            WasmNodeCache::new()?,
+            false,
+            false,
+            None,
+        )?;
+
+        // Production preserves the stub so execution rejects the submitted redirect route.
+        // Verification recovers the real account even though block messages lack a dApp ID.
+        for is_verifier in [false, true] {
+            builder.is_verifier = is_verifier;
+            for requested_dapp_id in [None, Some(account_id.redirect_dapp_id())] {
+                let resolved = builder
+                    .resolve_external_account(&ExtMessageDst::new(account_id, requested_dapp_id))?
+                    .expect("redirect route must exist");
+                assert_eq!(resolved.is_redirect(), !is_verifier);
+                assert_eq!(resolved.get_dapp_id(), Some(dapp_id));
+                if is_verifier {
+                    assert_eq!(resolved, account);
+                }
+            }
+            let resolved = builder
+                .resolve_external_account(&ExtMessageDst::new(account_id, Some(dapp_id)))?
+                .expect("actual dApp route must exist");
+            assert_eq!(resolved, account);
+        }
+        Ok(())
     }
 
     fn make_transaction(description: TransactionDescrOrdinary, now: u32) -> Transaction {
@@ -3323,6 +3490,20 @@ mod tests {
             feedback.error.as_ref().and_then(|error| error.message.as_deref()),
             Some("thread mismatch")
         );
+    }
+
+    #[test]
+    fn redirect_external_message_feedback_uses_wrong_dapp_id_code() {
+        let feedback =
+            create_wrong_dapp_id_feedback("msg-hash".to_string(), &ThreadIdentifier::default())
+                .expect("feedback should be created");
+
+        assert_eq!(feedback.message_hash, "msg-hash");
+        assert_eq!(feedback.thread_id, Some(ThreadIdentifier::default()));
+        assert!(matches!(
+            feedback.error.as_ref().map(|error| &error.code),
+            Some(FeedbackErrorCode::WrongDappId)
+        ));
     }
 
     #[test]

@@ -313,8 +313,8 @@ impl From<TransactionSerializationSet> for ArchTransaction {
                     arch_transaction.destroyed = tr.destroyed;
                     arch_transaction.tr_type = 0b0000;
                 }
-                _ => {
-                    unimplemented!()
+                tr => {
+                    tracing::error!(target: "monit", "Unsupported TransactionDescr: {tr:?}");
                 }
             },
         }

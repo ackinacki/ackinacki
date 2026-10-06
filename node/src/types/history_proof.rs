@@ -168,7 +168,7 @@ pub fn calculate_expected_history_proofs_from_cursor(
     let mut proofs = BTreeMap::new();
     if block_height.thread_identifier() != &history_proof_thread_id()
         || *block_height.height() == 0
-        || *block_height.height() % HISTORY_PROOF_WINDOW_SIZE as u64 != 0
+        || !(*block_height.height()).is_multiple_of(HISTORY_PROOF_WINDOW_SIZE as u64)
     {
         return Ok(proofs);
     }
@@ -203,7 +203,7 @@ pub fn calculate_expected_history_proofs_from_cursor(
     for i in 0..additional_layers {
         let layer = (i + 1) as LayerNumber;
         height_cursor = height_cursor.div(HISTORY_PROOF_WINDOW_SIZE as u64);
-        if height_cursor % HISTORY_PROOF_WINDOW_SIZE as u64 != 0 || height_cursor == 0 {
+        if !height_cursor.is_multiple_of(HISTORY_PROOF_WINDOW_SIZE as u64) || height_cursor == 0 {
             break;
         }
         let Some(mut layer_data) = parent_cursor.get(&layer).cloned() else {

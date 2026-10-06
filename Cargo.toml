@@ -8,6 +8,7 @@ members = [
     "database",
     "gossip",
     "gql-server",
+    "helpers/mainnet-ext-message-dst-stats",
     "helpers/proof_helper",
     "helpers/snapshot-helper",
     "http-server",
@@ -37,9 +38,9 @@ members = [
     "tvm_contracts",
 ]
 
-package.version = "0.19.3"
+package.version = "0.19.4"
 package.edition = "2021"
-package.rust-version = "1.86.0"
+package.rust-version = "1.95.0"
 package.license = "LicenseRef-Acki-Nacki-Node-License"
 package.license-file = "LICENSE.md"
 
@@ -146,8 +147,6 @@ versioned_struct = { path = "node/libs/versioned_struct" }
 libsqlite3-sys = { path = "libsqlite3-sys" }
 
 halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", rev = "026e176de8aff8269ab3bbb7f7192b247adab965" }
-halo2-axiom = { git = "https://github.com/gosh-sh/halo2-axiom", rev = "1f28ded628dbf5be7d0478d46cbda0cb0b158a29" }
-poseidon-primitives = { git = "https://github.com/gosh-sh/poseidon-primitives", rev = "fb1450059deb4ae52b0dfdddcb9fdd6767ae1293" }
 
 [patch."https://github.com/axiom-crypto/halo2-lib.git"]
 halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", rev = "026e176de8aff8269ab3bbb7f7192b247adab965" }

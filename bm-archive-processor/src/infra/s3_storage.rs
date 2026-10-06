@@ -387,7 +387,7 @@ mod tests {
             .glacier_job_parameters(
                 GlacierJobParameters::builder()
                     .tier(Tier::Expedited) // Expedited: 1-5 min, Standard: 3-5 hours
-                    .build()?
+                    .build()?,
             )
             .build();
 

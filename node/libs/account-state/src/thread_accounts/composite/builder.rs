@@ -126,6 +126,14 @@ impl ThreadAccountsStateBuilder {
         self.repository.state_account(&self.original, routing)
     }
 
+    /// Returns the account stored at exactly `routing`, without following redirects.
+    pub fn account_exact(&self, routing: &AccountRouting) -> anyhow::Result<Option<ThreadAccount>> {
+        if let Some(operation) = self.changed_account_operation(routing) {
+            return Ok(operation);
+        }
+        self.repository.state_account_exact(&self.original, routing)
+    }
+
     // Try to resolve dapp id for redirected routings:
     // 1. If the routing is definitely not redirected, use the routing as-is.
     // 2. If we can get actual dapp id from a provided account, use the routing with the dapp id.

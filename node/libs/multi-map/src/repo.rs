@@ -384,7 +384,7 @@ impl<V: MultiMapValue> MultiMapRepository<V> {
                     for (i, &nib) in nibble_path.iter().enumerate() {
                         let pos = start_nibbles + i;
                         let byte_idx = pos / 2;
-                        if pos % 2 == 0 {
+                        if pos.is_multiple_of(2) {
                             key_bytes[byte_idx] = (key_bytes[byte_idx] & 0x0F) | (nib << 4);
                         } else {
                             key_bytes[byte_idx] = (key_bytes[byte_idx] & 0xF0) | (nib & 0x0F);
@@ -443,7 +443,7 @@ impl<'a, V: MultiMapValue> Iterator for MapIter<'a, V> {
                     for (i, &nib) in nibble_path.iter().enumerate() {
                         let pos = self.start_nibbles + i;
                         let byte_idx = pos / 2;
-                        if pos % 2 == 0 {
+                        if pos.is_multiple_of(2) {
                             key_bytes[byte_idx] = (key_bytes[byte_idx] & 0x0F) | (nib << 4);
                         } else {
                             key_bytes[byte_idx] = (key_bytes[byte_idx] & 0xF0) | (nib & 0x0F);

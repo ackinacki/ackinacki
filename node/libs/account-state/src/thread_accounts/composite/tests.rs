@@ -1749,6 +1749,12 @@ fn test_redirect_stub_created_for_dapp_account() -> anyhow::Result<()> {
         "Followed account data should match original"
     );
 
+    // Exact lookup preserves the redirect stub for callers that must not reroute,
+    // such as external-message processing.
+    let exact = repo.state_account_exact(&state1, &default_routing)?.unwrap();
+    assert!(exact.is_redirect(), "Exact lookup should return the redirect stub");
+    assert_eq!(exact.get_dapp_id(), Some(dapp_id));
+
     Ok(())
 }
 

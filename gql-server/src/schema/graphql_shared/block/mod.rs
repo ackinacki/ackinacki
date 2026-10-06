@@ -424,7 +424,14 @@ impl From<db::Block> for Block {
 
 fn decode_block_merkle_tree_leaves(leaves: Option<&[u8]>) -> Option<Vec<String>> {
     let leaves = leaves.filter(|b| b.len() == BLOCK_MERKLE_LEAVES_SIZE)?;
-    Some(leaves.chunks_exact(BLOCK_MERKLE_HASH_SIZE).map(hex_string).collect())
+    Some(
+        leaves
+            .as_chunks::<BLOCK_MERKLE_HASH_SIZE>()
+            .0
+            .iter()
+            .map(|leaf| hex_string(leaf))
+            .collect(),
+    )
 }
 
 fn decode_proof_block_refs(raw: Option<&[u8]>) -> Vec<String> {

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.4] – 2026-10-05
+
+### Fixes
+- Fixed duplicate external messages aborting block production. The node now rejects repeated queued messages with `DUPLICATE_MESSAGE`, skips duplicate hashes encountered by the block builder, and renders the verification error instead of panicking while formatting it.
+- Fixed function ID decoding for Miner external messages with inline bodies, so calls such as `acceptTap` are recognized and receive the configured low priority; the mainnet CSV helper uses the same corrected decoder.
+- Fixed block producers forwarding external messages addressed to a redirect account. Such messages are now discarded with the `WRONG_DAPP_ID` feedback error. Block verification still resolves redirects to replay included external transactions, including blocks produced by older BPs; internal messages still follow the redirect route.
+
 ## [0.19.3] – 2026-09-28
 
 ### Breaking Changes

@@ -5,9 +5,6 @@ use http_server::NotQueuedExtMessage;
 use inbound_external_messages::InboundMessage;
 use node_types::AccountIdentifier;
 use node_types::DAppIdentifier;
-use tvm_abi::contract::ABI_VERSION_2_4;
-use tvm_abi::param::Param;
-use tvm_abi::param_type::ParamType;
 use tvm_abi::Contract;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Message;
@@ -26,12 +23,12 @@ const LOW_PRIORITY_EXTERNAL_MESSAGE_FUNCTION_IDS: &[u32] = &[
 #[cfg(test)]
 const LOW_PRIORITY_EXTERNAL_MESSAGE_FUNCTION_IDS: &[u32] = &[0x1122_3344];
 
-const LOADTEST_MINER_ABI_JSON: &[u8] =
-    include_bytes!("../../../contracts/0.81.0_compiled/mvsystem_loadtest/Miner.abi.json");
+const MINER_ABI_JSON: &[u8] =
+    include_bytes!("../../../contracts/0.79.3_compiled/mvsystem/Miner.abi.json");
 
 lazy_static::lazy_static! {
-    static ref LOADTEST_MINER_CONTRACT_ABI: Contract =
-        Contract::load(LOADTEST_MINER_ABI_JSON).expect("embedded loadtest Miner ABI must load");
+    static ref MINER_CONTRACT_ABI: Contract =
+        Contract::load(MINER_ABI_JSON).expect("embedded Miner ABI must load");
 }
 
 #[derive(Clone, Debug)]
@@ -145,37 +142,34 @@ impl QueuedExtMessage {
 
 fn priority_from_message(message: &Message) -> Priority {
     message_function_id(message)
-        .filter(|function_id| LOW_PRIORITY_EXTERNAL_MESSAGE_FUNCTION_IDS.contains(function_id))
+        .filter(|function_id| is_low_priority_external_message_function_id(*function_id))
         .map(|_| Priority::Low)
         .unwrap_or(Priority::Normal)
 }
 
-fn message_function_id(message: &Message) -> Option<u32> {
-    message_abi_function_id(message).or_else(|| message_raw_function_id(message))
+/// Returns whether a function ID is scheduled with low priority by the external-message queue.
+pub fn is_low_priority_external_message_function_id(function_id: u32) -> bool {
+    LOW_PRIORITY_EXTERNAL_MESSAGE_FUNCTION_IDS.contains(&function_id)
 }
 
-fn message_abi_function_id(message: &Message) -> Option<u32> {
-    let body = message.body()?;
-    if let Ok(id) = tvm_abi::Function::decode_input_id(
-        LOADTEST_MINER_CONTRACT_ABI.version(),
-        body.clone(),
-        LOADTEST_MINER_CONTRACT_ABI.header(),
-        false,
-    ) {
-        return Some(id);
-    }
+fn message_function_id(message: &Message) -> Option<u32> {
+    miner_message_function_id(message).or_else(|| message_raw_function_id(message))
+}
 
-    let header_variants = [
-        vec![
-            Param::new("pubkey", ParamType::PublicKey),
-            Param::new("time", ParamType::Time),
-            Param::new("expire", ParamType::Expire),
-        ],
-        vec![Param::new("time", ParamType::Time), Param::new("expire", ParamType::Expire)],
-    ];
-
-    header_variants.iter().find_map(|header| {
-        tvm_abi::Function::decode_input_id(&ABI_VERSION_2_4, body.clone(), header, false).ok()
+/// Decodes the function ID from an incoming Miner call using its ABI.
+///
+/// Normalize an inline body into its own cell, as `tvm-cli` does, so ABI layout checks do not
+/// count the enclosing message header as bits already consumed from the body.
+pub fn miner_message_function_id(message: &Message) -> Option<u32> {
+    let body = tvm_types::SliceData::load_cell(message.body()?.into_cell()).ok()?;
+    // Match the CLI's external-message mode first; allow internal-layout fallback for messages
+    // that were encoded with an internal ABI header despite being imported externally.
+    [false, true].into_iter().find_map(|is_internal| {
+        let decoded = MINER_CONTRACT_ABI.decode_input(body.clone(), is_internal, true).ok()?;
+        MINER_CONTRACT_ABI
+            .functions()
+            .get(&decoded.function_name)
+            .map(|function| function.get_input_id())
     })
 }
 
@@ -219,22 +213,23 @@ mod tests {
 
     use node_types::AccountIdentifier;
     use node_types::DAppIdentifier;
+    use tvm_abi::param::Param;
+    use tvm_abi::param_type::ParamType;
     use tvm_block::ExternalInboundMessageHeader;
     use tvm_block::MsgAddressExt;
     use tvm_block::MsgAddressInt;
+    use tvm_types::base64_decode;
+    use tvm_types::read_single_root_boc;
     use tvm_types::AccountId;
-    use tvm_types::BuilderData;
-    use tvm_types::IBitstring;
     use tvm_types::SliceData;
 
     use super::message_function_id;
+    use super::miner_message_function_id;
     use super::ExtMessageDst;
-    use super::Param;
-    use super::ParamType;
     use super::QueuedExtMessage;
-    use super::LOADTEST_MINER_CONTRACT_ABI;
     use super::MINER_ACCEPT_TAP_FUNCTION_ID;
     use super::MINER_CANCEL_COMMIT_DATA_FUNCTION_ID;
+    use super::MINER_CONTRACT_ABI;
     use super::MINER_SET_COMMIT_DATA_FUNCTION_ID;
 
     fn hash_of(dst: &ExtMessageDst) -> u64 {
@@ -266,21 +261,22 @@ mod tests {
     }
 
     #[test]
-    fn message_function_id_skips_abi_header() {
-        let mut body = BuilderData::new();
-        body.append_bit_zero().unwrap(); // no signature
-        body.append_bit_zero().unwrap(); // no public key
-        body.append_u64(0x0102_0304_0506_0708).unwrap();
-        body.append_u32(0x0a0b_0c0d).unwrap();
-        body.append_u32(0x1122_3344).unwrap();
-        let message = ext_in_message_with_body(SliceData::load_builder(body).unwrap());
+    fn miner_function_id_matches_tvm_cli_set_commit_data_decode() {
+        // Body emitted by `tvm-cli decode msg --abi Miner.abi.json` for a
+        // `setCommitData` external call. It includes the ABI 2.4 header.
+        let body_boc = base64_decode(
+            "te6ccgEBAwEAqQABIQAAAGhC59BDmrDfY5Qx8SagAQFw//////////////////////////////////////////4AAAAAAAABSgAAAAAAAABGOe3PSKrm6AACALAgAAAAJjtWMa8uiuBClqTJG/FG1uFToRebA1+DER1mwG3PumdKAQAAAAAAACAAAABC9OspFujRt8d5kxM7bA3k0xu4Js87jRimOHUYEr+NSUYAAAAAAAAA",
+        )
+        .unwrap();
+        let body = SliceData::load_cell(read_single_root_boc(&body_boc).unwrap()).unwrap();
+        let message = ext_in_message_with_body(body);
 
-        assert_eq!(message_function_id(&message), Some(0x1122_3344));
+        assert_eq!(miner_message_function_id(&message), Some(MINER_SET_COMMIT_DATA_FUNCTION_ID));
     }
 
     #[test]
-    fn embedded_loadtest_miner_abi_matches_expected_header() {
-        let abi = &*LOADTEST_MINER_CONTRACT_ABI;
+    fn embedded_miner_abi_matches_expected_header() {
+        let abi = &*MINER_CONTRACT_ABI;
         assert_eq!(abi.version().to_string(), "2.4");
         assert_eq!(
             abi.header(),
@@ -293,8 +289,8 @@ mod tests {
     }
 
     #[test]
-    fn low_priority_function_id_matches_loadtest_miner_abi() {
-        let abi = &*LOADTEST_MINER_CONTRACT_ABI;
+    fn low_priority_function_id_matches_miner_abi() {
+        let abi = &*MINER_CONTRACT_ABI;
         let mut matching_functions: Vec<_> = abi
             .functions()
             .iter()

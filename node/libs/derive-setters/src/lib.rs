@@ -92,7 +92,7 @@ struct ContainerAttrs {
 
     /// Other types to generate delegates to this type for. Note that this does not support
     /// generics.
-    #[darling(multiple)]
+    #[darling(multiple, default)]
     generate_delegates: Vec<ExternalDelegate>,
 
     /// Whether to generate a trace.

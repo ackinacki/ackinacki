@@ -199,6 +199,7 @@ pub enum FeedbackErrorCode {
     QueueOverflow,
     NotBlockProducer,
     UnsignedMinerMessage,
+    WrongDappId,
 }
 
 impl FeedbackErrorCode {
@@ -218,6 +219,7 @@ impl FeedbackErrorCode {
             FeedbackErrorCode::QueueOverflow => Cow::Borrowed("QUEUE_OVERFLOW"),
             FeedbackErrorCode::NotBlockProducer => Cow::Borrowed("NOT_BLOCK_PRODUCER"),
             FeedbackErrorCode::UnsignedMinerMessage => Cow::Borrowed("UNSIGNED_MINER_MESSAGE"),
+            FeedbackErrorCode::WrongDappId => Cow::Borrowed("WRONG_DAPP_ID"),
         }
     }
 }
