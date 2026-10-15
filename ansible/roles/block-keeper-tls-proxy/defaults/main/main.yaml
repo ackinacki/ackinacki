@@ -27,3 +27,8 @@ BK_RATE_LIMIT_EXEMPT_RANGES:
   - "::1/128"
   - 94.156.178.0/24
   - 94.156.233.0/24
+
+# Prebuilt caddy image with the caddy-ratelimit plugin (public, built from
+# gosh-sh/docker-images). Set it to "" to build the image locally from
+# templates/Dockerfile.j2 instead (xcaddy, needs proxy.golang.org).
+TLS_PROXY_IMAGE: "teamgosh/caddy-ratelimit:2.8.4"

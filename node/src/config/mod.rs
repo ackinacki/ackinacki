@@ -347,6 +347,8 @@ impl Config {
             advertise_addr: self.network.gossip_advertise_addr,
             seeds: self.network.gossip_seeds.clone().into(),
             cluster_id: self.network.chitchat_cluster_id.clone(),
+            instance_id: self.network.gossip_instance_id.clone(),
+            dead_node_grace_period_seconds: self.network.gossip_dead_node_grace_period_seconds,
             peer_ttl_seconds: self.network.gossip_peer_ttl_seconds,
         }
     }

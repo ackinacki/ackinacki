@@ -4,6 +4,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chitchat::ChitchatStats;
 use opentelemetry::metrics::Counter;
 use opentelemetry::metrics::Gauge;
 use opentelemetry::metrics::Histogram;
@@ -40,6 +41,12 @@ pub struct NetMetrics {
     compressed_message_size: Histogram<u64>,
     gossip_peers: Gauge<u64>,      // Nodes only
     gossip_live_nodes: Gauge<u64>, // Nodes + Proxies
+    gossip_digest_size: Gauge<u64>,
+    gossip_state_nodes: Gauge<u64>,
+    gossip_dead_nodes: Gauge<u64>,
+    gossip_scheduled_for_deletion_nodes: Gauge<u64>,
+    gossip_superseded_generations: Gauge<u64>,
+    gossip_rejected_obsolete_generations: Gauge<u64>,
     sent_to_outgoing_buffer_bytes: Counter<u64>,
     sent_bytes: Counter<u64>,
     received_bytes: Counter<u64>,
@@ -168,6 +175,18 @@ impl NetMetrics {
                 .build(),
             gossip_peers: meter.u64_gauge("node_network_gossip_peers").build(),
             gossip_live_nodes: meter.u64_gauge("node_network_gossip_live_nodes").build(),
+            gossip_digest_size: meter.u64_gauge("node_network_gossip_digest_size_bytes").build(),
+            gossip_state_nodes: meter.u64_gauge("node_network_gossip_state_nodes").build(),
+            gossip_dead_nodes: meter.u64_gauge("node_network_gossip_dead_nodes").build(),
+            gossip_scheduled_for_deletion_nodes: meter
+                .u64_gauge("node_network_gossip_scheduled_for_deletion_nodes")
+                .build(),
+            gossip_superseded_generations: meter
+                .u64_gauge("node_network_gossip_superseded_generations")
+                .build(),
+            gossip_rejected_obsolete_generations: meter
+                .u64_gauge("node_network_gossip_rejected_obsolete_generations")
+                .build(),
             sent_to_outgoing_buffer_bytes: meter
                 .u64_counter("node_network_sent_to_outbuf_bytes")
                 .build(),
@@ -270,6 +289,16 @@ impl NetMetrics {
         self.gossip_peers.record(peers as u64, &[]);
         // Nodes + Proxies
         self.gossip_live_nodes.record(live_nodes_total, &[]);
+    }
+
+    pub fn report_gossip_stats(&self, stats: ChitchatStats) {
+        self.gossip_digest_size.record(stats.digest_size_bytes as u64, &[]);
+        self.gossip_state_nodes.record(stats.node_count as u64, &[]);
+        self.gossip_dead_nodes.record(stats.dead_node_count as u64, &[]);
+        self.gossip_scheduled_for_deletion_nodes
+            .record(stats.scheduled_for_deletion_node_count as u64, &[]);
+        self.gossip_superseded_generations.record(stats.superseded_generations, &[]);
+        self.gossip_rejected_obsolete_generations.record(stats.rejected_obsolete_generations, &[]);
     }
 
     // TBD: This metric could potentially introduce some overhead, after debugging it can be removed

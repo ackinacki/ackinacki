@@ -148,6 +148,8 @@ services:
       API_ADDR: 0.0.0.0:{{ BIND_API_PORT }}
       AEROSPIKE_SOCKET_ADDR: 127.0.0.1:{{ AEROSPIKE_PORT }}
       GOSSIP_SEEDS: {{ GOSSIP_SEEDS | join(',') }}
+      GOSSIP_INSTANCE_ID: {{ BK_HOSTNAME | default(inventory_hostname) }}
+      GOSSIP_DEAD_NODE_GRACE_PERIOD_SECONDS: {{ GOSSIP_DEAD_NODE_GRACE_PERIOD_SECONDS }}
       MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES: {{ MIN_TIME_BETWEEN_STATE_PUBLISH_DIRECTIVES }}
       NODE_JOINING_TIMEOUT: {{ NODE_JOINING_TIMEOUT }}
       NODE_ID: {{ NI_PFX | default("") }}{{ NODE_ID }}
@@ -229,7 +231,6 @@ services:
         --chitchat-cluster-id "{{ UPD_NETWORK_NAME | default(NETWORK_NAME) }}"
         --block-keeper-epoch-code-hash {{ CODE_HASH }}
         --bk-api-host-port {{ BK_HOSTNAME | default(inventory_hostname) }}
-        --engine-version {{ RETIRED_ENGINE_VERSION }}
 {% if HAS_BK_SET_FILE is defined and HAS_BK_SET_FILE %}
         --bk-set-update-path=/bk-configs/bk_set.json
 {% endif %}

@@ -85,10 +85,8 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
                 .map_err(|_| D::Error::custom("Failed to deserialize common section len"))?,
         );
         let (common_section_data, rest) = rest.split_at(common_section_len);
-        let common_section: CommonSection =
-            versioned_struct::Transitioning::deserialize_data_compat(common_section_data)
-                .map_err(|_| D::Error::custom("Failed to deserialize common section"))?
-                .0;
+        let common_section: CommonSection = bincode::deserialize(common_section_data)
+            .map_err(|_| D::Error::custom("Failed to deserialize common section"))?;
         tracing::trace!(
             target: "node_execution_detailed",
             "ackinacki_block_deserialize timing: step=common_section elapsed_ms={} common_section_bytes={} raw_bytes={}",

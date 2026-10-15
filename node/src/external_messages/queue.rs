@@ -6,6 +6,7 @@ use inbound_external_messages::InboundMessage;
 use node_types::AccountIdentifier;
 use node_types::DAppIdentifier;
 use tvm_abi::Contract;
+use tvm_abi::TokenValue;
 use tvm_block::GetRepresentationHash;
 use tvm_block::Message;
 use tvm_types::UInt256;
@@ -13,22 +14,35 @@ use tvm_types::UInt256;
 const MINER_ACCEPT_TAP_FUNCTION_ID: u32 = 0x7de2f437;
 const MINER_CANCEL_COMMIT_DATA_FUNCTION_ID: u32 = 0x1619e4dc;
 const MINER_SET_COMMIT_DATA_FUNCTION_ID: u32 = 0x50c7c49a;
+const MINER_GET_REWARD_FUNCTION_ID: u32 = 0x3072364c;
 
 #[cfg(not(test))]
 const LOW_PRIORITY_EXTERNAL_MESSAGE_FUNCTION_IDS: &[u32] = &[
     MINER_ACCEPT_TAP_FUNCTION_ID,
     MINER_CANCEL_COMMIT_DATA_FUNCTION_ID,
     MINER_SET_COMMIT_DATA_FUNCTION_ID,
+    MINER_GET_REWARD_FUNCTION_ID,
 ];
 #[cfg(test)]
 const LOW_PRIORITY_EXTERNAL_MESSAGE_FUNCTION_IDS: &[u32] = &[0x1122_3344];
 
 const MINER_ABI_JSON: &[u8] =
     include_bytes!("../../../contracts/0.79.3_compiled/mvsystem/Miner.abi.json");
+const WALLET_ABI_JSONS: &[&[u8]] =
+    &[include_bytes!("../../../contracts/0.79.3_compiled/mvsystem/Mvmultifactor.abi.json")];
+const ROOT_PN_ACCOUNT: [u8; 32] =
+    hex_literal::hex!("1010101010101010101010101010101010101010101010101010101010101010");
+const WALLET_DAPP_ID: DAppIdentifier = DAppIdentifier::new(hex_literal::hex!(
+    "0000000000000000000000000000000000000000000000000000000000000001"
+));
 
 lazy_static::lazy_static! {
     static ref MINER_CONTRACT_ABI: Contract =
         Contract::load(MINER_ABI_JSON).expect("embedded Miner ABI must load");
+    static ref WALLET_CONTRACT_ABIS: Vec<Contract> = WALLET_ABI_JSONS
+        .iter()
+        .map(|json| Contract::load(*json).expect("embedded wallet ABI must load"))
+        .collect();
 }
 
 #[derive(Clone, Debug)]
@@ -87,7 +101,10 @@ impl QueuedExtMessage {
             .hash()
             .map_err(|err| anyhow::anyhow!("Failed to calculate message hash: {err}"))?;
         let dst = ExtMessageDst::from_message(&message, dapp_id)?;
-        let priority = priority_from_message(&message);
+        let priority = priority_from_message(&message, dapp_id);
+        if priority == Priority::Low {
+            trace_low_priority(&status, &hash, &dst, &message);
+        }
         Ok(Self { _status: status, priority, tvm_message: message, hash, dst })
     }
 
@@ -140,14 +157,108 @@ impl QueuedExtMessage {
     }
 }
 
-fn priority_from_message(message: &Message) -> Priority {
-    message_function_id(message)
-        .filter(|function_id| is_low_priority_external_message_function_id(*function_id))
-        .map(|_| Priority::Low)
-        .unwrap_or(Priority::Normal)
+fn priority_from_message(message: &Message, dapp_id: Option<DAppIdentifier>) -> Priority {
+    if is_low_priority_external_message(message, dapp_id) {
+        Priority::Low
+    } else {
+        Priority::Normal
+    }
 }
 
-/// Returns whether a function ID is scheduled with low priority by the external-message queue.
+/// Applies the external-message queue's low-priority rules to the full message.
+/// Wallet decoding is skipped for known destination dApps other than 1.
+/// When the dApp is unavailable (for example, in a block BOC), decode as before.
+pub fn is_low_priority_external_message(
+    message: &Message,
+    dapp_id: Option<DAppIdentifier>,
+) -> bool {
+    is_low_priority_wallet_transfer(message, dapp_id)
+        || message_function_id(message).is_some_and(is_low_priority_external_message_function_id)
+}
+
+fn trace_low_priority(status: &Status, hash: &UInt256, dst: &ExtMessageDst, message: &Message) {
+    if !tracing::enabled!(
+        target: crate::helper::EXT_MESSAGES_QUEUE_DETAILED_TARGET,
+        tracing::Level::TRACE
+    ) {
+        return;
+    }
+    let reason = match low_priority_wallet_transfer(message, dst.dapp_id) {
+        Some((function_name, transfer_dest)) => {
+            format!("wallet {function_name} to {transfer_dest}")
+        }
+        None => format!("function_id {:#010x}", message_function_id(message).unwrap_or_default()),
+    };
+    tracing::trace!(
+        target: crate::helper::EXT_MESSAGES_QUEUE_DETAILED_TARGET,
+        "ext_message_low_priority: status={:?}, hash={}, account={}, reason={}",
+        status,
+        hash.to_hex_string(),
+        dst.account_id.to_hex_string(),
+        reason
+    );
+}
+
+fn is_low_priority_wallet_transfer(message: &Message, dapp_id: Option<DAppIdentifier>) -> bool {
+    low_priority_wallet_transfer(message, dapp_id).is_some()
+}
+
+fn low_priority_wallet_transfer(
+    message: &Message,
+    dapp_id: Option<DAppIdentifier>,
+) -> Option<(String, tvm_block::MsgAddress)> {
+    if dapp_id.is_some_and(|id| id != WALLET_DAPP_ID) || !message.is_inbound_external() {
+        return None;
+    }
+    let body =
+        message.body().and_then(|body| tvm_types::SliceData::load_cell(body.into_cell()).ok())?;
+    WALLET_CONTRACT_ABIS.iter().find_map(|abi| {
+        let decoded = abi.decode_input(body.clone(), false, false).ok()?;
+        if !matches!(decoded.function_name.as_str(), "sendTransaction" | "submitTransaction") {
+            return None;
+        }
+        let has_payload = decoded.tokens.iter().any(|token| {
+            token.name == "payload"
+                && matches!(&token.value, TokenValue::Cell(cell)
+                    if cell.bit_length() != 0 || cell.references_count() != 0)
+        });
+        if !has_payload {
+            return None;
+        }
+        decoded.tokens.iter().find_map(|token| match &token.value {
+            TokenValue::Address(address)
+                if token.name == "dest" && !is_root_pn_or_mirror(address) =>
+            {
+                Some((decoded.function_name.clone(), address.clone()))
+            }
+            _ => None,
+        })
+    })
+}
+
+fn is_root_pn_or_mirror(address: &tvm_block::MsgAddress) -> bool {
+    let (workchain, anycast, account) = match address {
+        tvm_block::MsgAddress::AddrStd(address) => {
+            (address.workchain_id as i32, &address.anycast, &address.address)
+        }
+        tvm_block::MsgAddress::AddrVar(address) => {
+            (address.workchain_id, &address.anycast, &address.address)
+        }
+        _ => return false,
+    };
+    if workchain != 0 || anycast.is_some() {
+        return false;
+    }
+    if account.remaining_bits() != 256 {
+        return false;
+    }
+    let bytes = account.get_bytestring(0);
+    bytes == ROOT_PN_ACCOUNT
+        // Mirrors use the 244-bit prefix 0x2000…000; the final 12 bits hold the index.
+        || (bytes[0] == 0x20 && bytes[1..30].iter().all(|byte| *byte == 0) && bytes[30] & 0xf0 == 0)
+}
+
+/// Checks the low-priority function IDs; use `is_low_priority_external_message` for all queue rules.
 pub fn is_low_priority_external_message_function_id(function_id: u32) -> bool {
     LOW_PRIORITY_EXTERNAL_MESSAGE_FUNCTION_IDS.contains(&function_id)
 }
@@ -215,7 +326,9 @@ mod tests {
     use node_types::DAppIdentifier;
     use tvm_abi::param::Param;
     use tvm_abi::param_type::ParamType;
+    use tvm_block::Deserializable;
     use tvm_block::ExternalInboundMessageHeader;
+    use tvm_block::GetRepresentationHash;
     use tvm_block::MsgAddressExt;
     use tvm_block::MsgAddressInt;
     use tvm_types::base64_decode;
@@ -230,6 +343,7 @@ mod tests {
     use super::MINER_ACCEPT_TAP_FUNCTION_ID;
     use super::MINER_CANCEL_COMMIT_DATA_FUNCTION_ID;
     use super::MINER_CONTRACT_ABI;
+    use super::MINER_GET_REWARD_FUNCTION_ID;
     use super::MINER_SET_COMMIT_DATA_FUNCTION_ID;
 
     fn hash_of(dst: &ExtMessageDst) -> u64 {
@@ -258,6 +372,155 @@ mod tests {
             ext_in_message_with_body(SliceData::from_raw(vec![0x11, 0x22, 0x33, 0x44, 0xaa], 40));
 
         assert_eq!(message_function_id(&message), Some(0x1122_3344));
+    }
+
+    fn wallet_transfer_message(
+        abi: &tvm_abi::Contract,
+        method: &str,
+        destination: &str,
+        with_payload: bool,
+        signed: bool,
+    ) -> tvm_block::Message {
+        let function = abi.function(method).unwrap();
+        let mut tokens = tvm_abi::token::Tokenizer::tokenize_all_params(
+            function.input_params(),
+            &serde_json::json!({
+                "epk_expire_at": "1805130122", "dest": destination, "value": "100000000",
+                "cc": {}, "bounce": true, "flags": 1, "allBalance": false,
+                "payload": "te6ccgEBAQEAAgAAAA==",
+            }),
+        )
+        .unwrap();
+        if with_payload {
+            // Priority depends on the destination, not on the payload's function ID.
+            tokens.iter_mut().find(|token| token.name == "payload").unwrap().value =
+                tvm_abi::TokenValue::Cell(SliceData::from_raw(vec![0xaa], 8).into_cell());
+        }
+        let header = HashMap::from([
+            ("pubkey".to_owned(), tvm_abi::TokenValue::PublicKey(Some([0x11; 32]))),
+            ("time".to_owned(), tvm_abi::TokenValue::Time(1791835688810)),
+            ("expire".to_owned(), tvm_abi::TokenValue::Expire(1791835748)),
+        ]);
+        let body = if signed {
+            let address = MsgAddressInt::from_str(&format!("0:{}", "ab".repeat(32))).unwrap();
+            let (body, _) = function
+                .create_unsigned_call(&header, &tokens, false, true, Some(address))
+                .unwrap();
+            // Only the wire layout is relevant here; the queue does not verify signatures.
+            tvm_abi::Function::fill_sign(abi.version(), Some(&[0x55; 64]), None, body).unwrap()
+        } else {
+            function.encode_input(&header, &tokens, false, None, None).unwrap()
+        };
+        ext_in_message_with_body(SliceData::load_builder(body).unwrap())
+    }
+
+    #[test]
+    fn wallet_transfers_with_payload_outside_root_pn_and_mirrors_are_low_priority() {
+        for abi in super::WALLET_CONTRACT_ABIS.iter() {
+            for method in ["sendTransaction", "submitTransaction"] {
+                for destination in [
+                    format!("0:{}", "ab".repeat(32)),
+                    format!("-1:{}", "10".repeat(32)),
+                    format!("-1:2{:063x}", 1),
+                    format!("0:2{:063x}", 4096),
+                ] {
+                    for signed in [false, true] {
+                        let message =
+                            wallet_transfer_message(abi, method, &destination, true, signed);
+                        let (function_name, transfer_dest) =
+                            super::low_priority_wallet_transfer(&message, None).unwrap();
+                        assert_eq!(function_name, method);
+                        assert_eq!(transfer_dest.to_string(), destination);
+                        let queued = QueuedExtMessage::try_from_block(message).unwrap();
+                        assert!(
+                            queued.is_low_priority(),
+                            "{method} to {destination}, signed={signed}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wallet_transfers_without_payload_or_to_root_pn_and_mirrors_are_normal_priority() {
+        let root = format!("0:{}", "10".repeat(32));
+        for abi in super::WALLET_CONTRACT_ABIS.iter() {
+            for method in ["sendTransaction", "submitTransaction"] {
+                for destination in
+                    [root.clone(), format!("0:2{:063x}", 1), format!("0:{}", "ab".repeat(32))]
+                {
+                    let message = wallet_transfer_message(abi, method, &destination, false, true);
+                    assert!(!QueuedExtMessage::try_from_block(message).unwrap().is_low_priority());
+                }
+                for destination in [
+                    root.clone(),
+                    format!("0:2{:063x}", 0),
+                    format!("0:2{:063x}", 1),
+                    format!("0:2{:063x}", 1000),
+                    format!("0:2{:063x}", 4095),
+                ] {
+                    for signed in [false, true] {
+                        let message =
+                            wallet_transfer_message(abi, method, &destination, true, signed);
+                        assert!(!QueuedExtMessage::try_from_block(message)
+                            .unwrap()
+                            .is_low_priority());
+                    }
+                }
+                let mut truncated = wallet_transfer_message(abi, method, &root, true, true);
+                truncated.set_body(SliceData::from_raw(vec![0xff], 8));
+                assert!(!super::is_low_priority_wallet_transfer(&truncated, None));
+            }
+        }
+    }
+
+    #[test]
+    fn wallet_priority_depends_on_known_destination_dapp() {
+        for abi in super::WALLET_CONTRACT_ABIS.iter() {
+            for method in ["sendTransaction", "submitTransaction"] {
+                let destination = format!("0:{}", "ab".repeat(32));
+                let message = wallet_transfer_message(abi, method, &destination, true, true);
+                for (dapp_id, expected_low_priority) in [
+                    (Some(super::WALLET_DAPP_ID), true),
+                    (Some(DAppIdentifier::ZERO), false),
+                    (Some(DAppIdentifier::from_str(&format!("{:064x}", 2)).unwrap()), false),
+                    (None, true),
+                ] {
+                    assert_eq!(
+                        super::is_low_priority_external_message(&message, dapp_id),
+                        expected_low_priority
+                    );
+                    let queued =
+                        QueuedExtMessage::try_new(super::Status::Pending, dapp_id, message.clone())
+                            .unwrap();
+                    assert_eq!(queued.is_low_priority(), expected_low_priority);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mainnet_submit_transaction_with_payload_is_low_priority() {
+        // Mainnet message d6ddbc7700ad63113efd4374d435877aec71c3a68e59d87cd0820ada507e7432.
+        let boc = base64_decode(
+            "te6ccgECBAEAAR0AAUWIAF0UGjF17wE33kR1m5Sb+nHVkM9NlxgSu23aHmxYtf68DAEB4Zk4gpWpmNtGee2khwoGY9N21cPGA76BSuGcQifdAM1H7BxMpqqpohLDDCuztCyGVUrPz8QqnB5TdeQuvTC8loTd3lWIJ/fPUWUgkgRTRuaXAIDMOP1HXdIC2KvA110tCUAAAGhNiuKbWrOYWVZfIn6gAgFzAAAAAGuXqQqAG2KxlBYoVnUcc/PsBAO0bu+IvDPEpbdSP7VhFBmF2TsgAAAAAAAAAAAAAAAAvrwgCgMAiDRWo8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAUHK+MCS+G4ygMLdn3yaYSIqXzAPtzCx7M/bfGGT3duN",
+        )
+        .unwrap();
+        let message =
+            tvm_block::Message::construct_from_cell(read_single_root_boc(&boc).unwrap()).unwrap();
+        assert_eq!(
+            message.hash().unwrap().to_hex_string(),
+            "d6ddbc7700ad63113efd4374d435877aec71c3a68e59d87cd0820ada507e7432"
+        );
+        let (method, destination) = super::low_priority_wallet_transfer(&message, None).unwrap();
+        assert_eq!(method, "submitTransaction");
+        assert_eq!(
+            destination.to_string(),
+            "0:db158ca0b142b3a8e39f9f60201da3777c45e19e252dba91fdab08a0cc2ec9d9"
+        );
+        assert!(super::is_low_priority_external_message(&message, None));
+        assert!(QueuedExtMessage::try_from_block(message).unwrap().is_low_priority());
     }
 
     #[test]
@@ -299,6 +562,7 @@ mod tests {
                     MINER_ACCEPT_TAP_FUNCTION_ID,
                     MINER_CANCEL_COMMIT_DATA_FUNCTION_ID,
                     MINER_SET_COMMIT_DATA_FUNCTION_ID,
+                    MINER_GET_REWARD_FUNCTION_ID,
                 ]
                 .contains(&function.get_input_id())
                 .then_some(name.as_str())
@@ -306,7 +570,10 @@ mod tests {
             .collect();
         matching_functions.sort_unstable();
 
-        assert_eq!(matching_functions, vec!["acceptTap", "cancelCommitData", "setCommitData"]);
+        assert_eq!(
+            matching_functions,
+            vec!["acceptTap", "cancelCommitData", "getReward", "setCommitData"]
+        );
     }
 
     #[test]

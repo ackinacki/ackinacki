@@ -391,54 +391,65 @@ fn resolve_node_protocol_version_state(
     global_config: &GlobalConfig,
     retired_global_config: Option<&GlobalConfig>,
 ) -> NodeProtocolVersionState {
-    let preferred_protocol_version = node::versioning::ProtocolVersion::builder()
+    let protocol_version = node::versioning::ProtocolVersion::builder()
         .canonical_config_hash(global_config)
         .tvm_engine_version(global_config.engine_version.clone())
         .gossip_version(global_config.gossip_version)
-        // .node_software_version(semver::SemVer::new(
-        // u64::from_str(env!("CARGO_PKG_VERSION_MAJOR")).unwrap(),
-        // u64::from_str(env!("CARGO_PKG_VERSION_MINOR")).unwrap(),
-        // u64::from_str(env!("CARGO_PKG_VERSION_PATCH")).unwrap(),
-        // )
         .build();
 
-    if let Some(old_config) = retired_global_config {
-        let retired_version = node::versioning::ProtocolVersion::builder()
-            .canonical_config_hash(old_config)
-            .tvm_engine_version(old_config.engine_version.clone())
-            .gossip_version(old_config.gossip_version)
-            .build();
-        tracing::info!("RETIRED_VERSION={}", retired_version);
+    let mut config_read = ConfigRead::new(protocol_version.clone(), global_config.clone());
+    let mut zero_block_version = BlockProtocolVersionState::Current(protocol_version.clone());
+    let mut node_protocol_version_support =
+        node::versioning::ProtocolVersionSupport::new(protocol_version.clone());
 
-        NodeProtocolVersionState {
-            zero_block_version: BlockProtocolVersionState::Current(retired_version.clone()),
-            node_protocol_version_support: node::versioning::ProtocolVersionSupport::new(
-                retired_version.clone(),
-            )
-            .transitioning_to(preferred_protocol_version.clone()),
-            config_read: ConfigRead::new(
-                preferred_protocol_version,
-                global_config.clone(),
-                Some(retired_version),
-                retired_global_config.cloned(),
-            ),
-        }
-    } else {
-        NodeProtocolVersionState {
-            zero_block_version: BlockProtocolVersionState::Current(
-                preferred_protocol_version.clone(),
-            ),
-            node_protocol_version_support: node::versioning::ProtocolVersionSupport::new(
-                preferred_protocol_version.clone(),
-            ),
-            config_read: ConfigRead::new(
-                preferred_protocol_version,
-                global_config.clone(),
-                None,
-                None,
-            ),
+    if let Some(retired_config) = retired_global_config {
+        let retired_version = node::versioning::ProtocolVersion::builder()
+            .canonical_config_hash(retired_config)
+            .tvm_engine_version(retired_config.engine_version.clone())
+            .gossip_version(retired_config.gossip_version)
+            .build();
+        config_read = config_read.with_retired(retired_version.clone(), retired_config.clone());
+        if retired_version != protocol_version {
+            zero_block_version = BlockProtocolVersionState::Current(retired_version.clone());
+            node_protocol_version_support =
+                node::versioning::ProtocolVersionSupport::new(retired_version)
+                    .transitioning_to(protocol_version);
         }
     }
+
+    NodeProtocolVersionState { zero_block_version, node_protocol_version_support, config_read }
+}
+
+#[test]
+fn identical_retired_config_does_not_advertise_transition() {
+    let config = GlobalConfig::default();
+    let current = resolve_node_protocol_version_state(&config, None);
+    let with_retired = resolve_node_protocol_version_state(&config, Some(&config));
+
+    assert_eq!(with_retired.node_protocol_version_support, current.node_protocol_version_support);
+    assert!(!with_retired.node_protocol_version_support.is_transitioning());
+    assert!(with_retired.config_read.get(with_retired.zero_block_version.to_use()).is_some());
+}
+
+#[test]
+fn different_retired_config_preserves_protocol_transition() {
+    let config = GlobalConfig::default();
+    let mut retired_config = config.clone();
+    retired_config.engine_version = semver::Version::new(1, 0, 6);
+    let current = resolve_node_protocol_version_state(&config, None);
+    let state = resolve_node_protocol_version_state(&config, Some(&retired_config));
+
+    assert!(state
+        .node_protocol_version_support
+        .is_transitioning_to(current.zero_block_version.to_use(),));
+    assert_eq!(
+        state.config_read.get(state.zero_block_version.to_use()).unwrap().engine_version,
+        retired_config.engine_version,
+    );
+    assert_eq!(
+        state.config_read.get(current.zero_block_version.to_use()).unwrap().engine_version,
+        config.engine_version,
+    );
 }
 
 #[allow(clippy::await_holding_lock)]
@@ -470,7 +481,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     )?;
     let global_config =
         load_config_from_file::<GlobalConfig>(&args.global_config_path)?.ensure_min_sync_gap();
-
     let retired_global_config = args
         .retired_global_config_path
         .as_ref()
@@ -490,12 +500,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let NodeProtocolVersionState { zero_block_version, node_protocol_version_support, config_read } =
         resolve_node_protocol_version_state(&global_config, retired_global_config.as_ref());
-
-    // Note: For first version in rolling update force node to use None version
-    // let (zero_block_version, node_protocol_version_support) = (
-    //     BlockProtocolVersionState::Current(ProtocolVersion::parse("None")?),
-    //     node::versioning::ProtocolVersionSupport::from_str("None")?,
-    // );
 
     let node_metrics = metrics.as_ref().map(|m| m.node.clone());
     if let Some(m) = node_metrics.as_ref() {
@@ -2023,11 +2027,6 @@ fn print_node_protocol_version_support(args: Args) -> anyhow::Result<()> {
     let NodeProtocolVersionState { node_protocol_version_support, .. } =
         resolve_node_protocol_version_state(&global_config, retired_global_config.as_ref());
 
-    // // Note: For first version in rolling update force node to use None version
-    // let (_zero_block_version, node_protocol_version_support) = (
-    //     BlockProtocolVersionState::Current(ProtocolVersion::parse("None")?),
-    //     node::versioning::ProtocolVersionSupport::from_str("None")?,
-    // );
     let json_output = json!({"protocol_version_support": node_protocol_version_support});
     println!("{}", serde_json::to_string_pretty(&json_output)?);
     Ok(())
@@ -2072,8 +2071,7 @@ async fn test_execute() -> anyhow::Result<()> {
         .map_err(|e| anyhow::format_err!("Failed to load global config: {e}"))?
         .ensure_min_sync_gap();
 
-    let config_read =
-        ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None);
+    let config_read = ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone());
     let zerostate = ZeroState::load_from_file(config.local.zerostate_path.as_ref().unwrap())
         .expect("Failed to open zerostate");
 

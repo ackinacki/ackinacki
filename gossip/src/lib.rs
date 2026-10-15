@@ -2,6 +2,8 @@
 //
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::SystemTime;
 pub mod gossip_peer;
@@ -21,7 +23,6 @@ use poem::Server;
 use poem_openapi::payload::Json;
 use poem_openapi::OpenApi;
 use poem_openapi::OpenApiService;
-use rand::Rng;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::task::JoinHandle;
@@ -29,6 +30,8 @@ use tokio::task::JoinHandle;
 use crate::gossip_peer::GossipPeer;
 
 pub static DEFAULT_GOSSIP_INTERVAL: Duration = Duration::from_millis(500);
+
+static LAST_GENERATION_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiResponse {
@@ -63,11 +66,6 @@ impl Api {
     }
 }
 
-fn generate_chitchat_node_id(prefix: &str) -> String {
-    let x: u64 = rand::thread_rng().gen();
-    format!("{prefix}-{x:x}")
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct GossipConfig {
     /// UDP socket address to listen gossip.
@@ -88,6 +86,16 @@ pub struct GossipConfig {
     #[serde(default = "default_chitchat_cluster_id")]
     pub cluster_id: String,
 
+    /// Stable identifier of this gossip process. If omitted, it is derived from
+    /// the process role and gossip advertise address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+
+    /// Time to retain a dead Chitchat member before removing its state.
+    /// Defaults to 7200 seconds (2 hours).
+    #[serde(default = "default_dead_node_grace_period_seconds")]
+    pub dead_node_grace_period_seconds: u64,
+
     /// Gossip peer TTL in seconds.
     /// Defaults to 900 (15 minutes).
     /// Value 0 means no TTL.
@@ -102,6 +110,8 @@ impl Default for GossipConfig {
             advertise_addr: None,
             seeds: Vec::new(),
             cluster_id: default_chitchat_cluster_id(),
+            instance_id: None,
+            dead_node_grace_period_seconds: default_dead_node_grace_period_seconds(),
             peer_ttl_seconds: default_gossip_peer_ttl_seconds(),
         }
     }
@@ -112,14 +122,14 @@ impl GossipConfig {
         self.advertise_addr.unwrap_or(self.listen_addr)
     }
 
-    fn chitchat_config(&self, chitchat_node_id: String) -> ChitchatConfig {
-        let generation = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_else(|err| {
-                tracing::warn!("System time error: {err:?}");
-                Duration::from_secs(0)
-            })
-            .as_secs();
+    fn chitchat_config(&self, chitchat_id_prefix: &str) -> ChitchatConfig {
+        let chitchat_node_id = self
+            .instance_id
+            .as_ref()
+            .filter(|id| !id.is_empty())
+            .map(|id| format!("{chitchat_id_prefix}-{id}"))
+            .unwrap_or_else(|| format!("{chitchat_id_prefix}-{}", self.advertise_addr()));
+        let generation = next_generation_id();
 
         let chitchat_id = ChitchatId::new(chitchat_node_id, generation, self.advertise_addr());
 
@@ -129,7 +139,10 @@ impl GossipConfig {
             gossip_interval: DEFAULT_GOSSIP_INTERVAL,
             listen_addr: self.listen_addr,
             seed_nodes: self.seeds.iter().map(|x| x.to_string()).collect(),
-            failure_detector_config: FailureDetectorConfig::default(),
+            failure_detector_config: FailureDetectorConfig {
+                dead_node_grace_period: Duration::from_secs(self.dead_node_grace_period_seconds),
+                ..Default::default()
+            },
             marked_for_deletion_grace_period: Duration::from_secs(600),
             catchup_callback: None,
             extra_liveness_predicate: None,
@@ -145,8 +158,38 @@ pub fn default_gossip_peer_ttl_seconds() -> u64 {
     60 * 15
 }
 
+pub fn default_dead_node_grace_period_seconds() -> u64 {
+    60 * 60 * 2
+}
+
 fn default_chitchat_cluster_id() -> String {
     "acki_nacki".to_string()
+}
+
+fn next_generation_id() -> u64 {
+    let wall_clock_millis = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_else(|err| {
+            tracing::warn!("System time error: {err:?}");
+            Duration::ZERO
+        })
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX);
+
+    let mut previous = LAST_GENERATION_ID.load(Ordering::Relaxed);
+    loop {
+        let generation = wall_clock_millis.max(previous.saturating_add(1));
+        match LAST_GENERATION_ID.compare_exchange_weak(
+            previous,
+            generation,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return generation,
+            Err(actual) => previous = actual,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -164,7 +207,7 @@ pub async fn run_gossip_no_reload(
     transport: impl chitchat::transport::Transport,
 ) -> anyhow::Result<(ChitchatHandle, JoinHandle<anyhow::Result<()>>)> {
     let config = config_rx.borrow().clone();
-    let chitchat_config = config.chitchat_config(generate_chitchat_node_id(chitchat_id_prefix));
+    let chitchat_config = config.chitchat_config(chitchat_id_prefix);
 
     // tracing::info!("Starting UDP gossip server on {gossip_advertise_addr}");
     // let transport = UdpTransport;
@@ -222,8 +265,7 @@ where
             let gossip_reload_config = gossip_reload_config_rx.borrow().clone();
             tracing::debug!("Config updated");
             let gossip_config = gossip_reload_config.gossip_config;
-            let chitchat_config =
-                gossip_config.chitchat_config(generate_chitchat_node_id(chitchat_id_prefix));
+            let chitchat_config = gossip_config.chitchat_config(chitchat_id_prefix);
 
             tracing::info!("Starting ChitChat server on {}", gossip_config.advertise_addr());
 
@@ -321,4 +363,45 @@ where
     });
     first_rx.await.context("Listener task failed before sending value")?;
     Ok((chitchat_rx, run_gossip_handle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gossip_config_uses_stable_instance_id_and_increasing_generation() {
+        let config = GossipConfig::default();
+        let first = config.chitchat_config("node");
+        let second = config.chitchat_config("node");
+
+        assert_eq!(first.chitchat_id.node_id, second.chitchat_id.node_id);
+        assert_eq!(first.chitchat_id.node_id, "node-127.0.0.1:10000");
+        assert!(second.chitchat_id.generation_id > first.chitchat_id.generation_id);
+    }
+
+    #[test]
+    fn gossip_config_honors_instance_id_and_dead_node_grace_period() {
+        let config = GossipConfig {
+            instance_id: Some("bk-1".to_string()),
+            dead_node_grace_period_seconds: 42,
+            ..Default::default()
+        };
+        let chitchat_config = config.chitchat_config("node");
+
+        assert_eq!(chitchat_config.chitchat_id.node_id, "node-bk-1");
+        assert_eq!(
+            chitchat_config.failure_detector_config.dead_node_grace_period,
+            Duration::from_secs(42)
+        );
+    }
+
+    #[test]
+    fn gossip_config_deserialization_uses_new_defaults() {
+        let config: GossipConfig = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(config.instance_id, None);
+        assert_eq!(config.dead_node_grace_period_seconds, default_dead_node_grace_period_seconds());
+        assert_eq!(config.dead_node_grace_period_seconds, 2 * 60 * 60);
+    }
 }

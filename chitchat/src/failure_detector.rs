@@ -53,6 +53,12 @@ impl FailureDetector {
             .report_heartbeat();
     }
 
+    pub(crate) fn remove_node(&mut self, chitchat_id: &ChitchatId) {
+        self.live_nodes.remove(chitchat_id);
+        self.dead_nodes.remove(chitchat_id);
+        self.node_samples.remove(chitchat_id);
+    }
+
     /// Marks the node as dead or alive based on the current phi value.
     pub fn update_node_liveness(&mut self, chitchat_id: &ChitchatId) {
         let phi_opt = self.phi(chitchat_id);

@@ -18,50 +18,28 @@ pub struct ConfigRead {
 }
 
 impl ConfigRead {
-    pub fn new(
-        preferred_protocol_version: ProtocolVersion,
-        config: GlobalConfig,
-        retired_version: Option<ProtocolVersion>,
-        retired_config: Option<GlobalConfig>,
-    ) -> Self {
-        let retired_node_config = if let Some(retired_version) = retired_version {
-            assert!(
-                retired_config.is_some(),
-                "retired config must not be empty if retired version is some"
-            );
-            let retired_config = retired_config.unwrap();
-            Some(ConfigWithVersion { config: Arc::new(retired_config), version: retired_version })
-        } else {
-            None
-        };
+    pub fn new(protocol_version: ProtocolVersion, config: GlobalConfig) -> Self {
         Self {
-            node_config: ConfigWithVersion {
-                config: Arc::new(config),
-                version: preferred_protocol_version,
-            },
-            retired_node_config,
+            node_config: ConfigWithVersion { config: Arc::new(config), version: protocol_version },
+            retired_node_config: None,
         }
     }
 
+    pub fn with_retired(mut self, version: ProtocolVersion, config: GlobalConfig) -> Self {
+        self.retired_node_config = Some(ConfigWithVersion { config: Arc::new(config), version });
+        self
+    }
+
     pub fn get(&self, block_version: &ProtocolVersion) -> Option<Arc<GlobalConfig>> {
-        if let Some(prev_config) = &self.retired_node_config {
-            if block_version == &prev_config.version {
-                return Some(prev_config.config.clone());
-            }
-        }
         if block_version == &self.node_config.version
             || block_version == &ProtocolVersion::parse("None").unwrap()
         {
             return Some(self.node_config.config.clone());
         }
-        None
-    }
-
-    pub fn is_retired(&self, block_version: &ProtocolVersion) -> bool {
-        if let Some(prev_config) = &self.retired_node_config {
-            return block_version == &prev_config.version;
-        }
-        false
+        self.retired_node_config
+            .as_ref()
+            .filter(|config| block_version == &config.version)
+            .map(|config| config.config.clone())
     }
 }
 

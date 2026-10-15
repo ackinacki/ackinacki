@@ -336,12 +336,7 @@ fn build_bench_repository(env: &DurableBenchEnv) -> anyhow::Result<RepositoryImp
         MessageDurableStorage::mem(),
         finalized_blocks_storage(),
         mock_bk_set_updates_tx(),
-        ConfigRead::new(
-            ProtocolVersion::parse("None").unwrap(),
-            GlobalConfig::default(),
-            None,
-            None,
-        ),
+        ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
     )
 }
 

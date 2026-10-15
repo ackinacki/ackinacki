@@ -119,6 +119,8 @@ fn gossip_config(instance: usize, seed_instances: &[usize]) -> GossipConfig {
         listen_addr: instance_gossip_addr(instance),
         seeds: seed_instances.iter().copied().map(instance_gossip_addr).collect(),
         cluster_id: "transport_test".to_string(),
+        instance_id: Some(format!("test-{instance}")),
+        dead_node_grace_period_seconds: gossip::default_dead_node_grace_period_seconds(),
         peer_ttl_seconds: default_gossip_peer_ttl_seconds(),
     }
 }

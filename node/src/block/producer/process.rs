@@ -1216,8 +1216,7 @@ mod tests {
         crate::tests::init_db(&root_dir).expect("Failed to init DB 1");
         let mut config = crate::tests::default_config(NodeIdentifier::test(1));
         let global_config = GlobalConfig::default();
-        let config_read =
-            ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None);
+        let config_read = ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone());
         let config_dir = project_root().join("node/tests/resources/config");
         config.local.blockchain_config_path = config_dir.join("blockchain.conf.json");
         config.local.key_path =
@@ -1259,7 +1258,7 @@ mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone(), None, None),
+            ConfigRead::new(ProtocolVersion::parse("None")?, global_config.clone()),
         )?;
         let (router, _router_rx) = RoutingService::stub();
         let feedback_sender = router.feedback_sender.clone();

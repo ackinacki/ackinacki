@@ -92,6 +92,13 @@ subscribe:
 
 # Gossip configuration
 gossip:
+  # Stable identifier of this proxy's gossip process. It must be unique in the
+  # cluster and remain unchanged across restarts.
+  instance_id: proxy-1
+
+  # Seconds to retain a dead Chitchat member. Defaults to 7200 (2 hours).
+  dead_node_grace_period_seconds: 7200
+
   # UDP socket address to listen gossip.
   # Defaults to "127.0.0.1:10000"
   listen_addr: 0.0.0.0:10000

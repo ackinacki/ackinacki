@@ -93,7 +93,7 @@ abstract contract Modifiers is Errors {
     uint128 constant BoostNewHasSimpleWalletEmit = 9;
 
     uint64 constant MinerRewardPeriod = 1000;
-    uint64 constant MinerRewardDelay = 262000;
+    uint64 constant MinerRewardDelay = 6000;
     uint64 constant MinerTapDelay = 262000;
 
     uint64 constant IntervalRadius = 20;

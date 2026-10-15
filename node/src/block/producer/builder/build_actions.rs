@@ -175,7 +175,6 @@ impl BlockBuilder {
         metrics: Option<BlockProductionMetrics>,
         wasm_cache: WasmNodeCache,
         is_verifier: bool,
-        filter_unsigned_miner_messages: bool,
         check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
     ) -> anyhow::Result<Self> {
         let (initial_accounts, usage_tree) =
@@ -237,7 +236,6 @@ impl BlockBuilder {
             .is_stop_requested(false)
             .wasm_cache(wasm_cache)
             .is_verifier(is_verifier)
-            .filter_unsigned_miner_messages(filter_unsigned_miner_messages)
             .check_history_proof_hash(check_history_proof_hash);
 
         #[cfg(feature = "monitor-accounts-number")]
@@ -2569,18 +2567,15 @@ impl BlockBuilder {
                 break;
             }
 
-            let reject_unsigned_miner_message = self.filter_unsigned_miner_messages
-                && match self.resolve_account(&active_dst)? {
-                    Some(account) => account
-                        .vm_account()?
-                        .code_hash()?
-                        .as_ref()
-                        .map(|code_hash| {
-                            is_unsigned_miner_message(code_hash, ext_msg.tvm_message())
-                        })
-                        .unwrap_or(false),
-                    None => false,
-                };
+            let reject_unsigned_miner_message = match self.resolve_account(&active_dst)? {
+                Some(account) => account
+                    .vm_account()?
+                    .code_hash()?
+                    .as_ref()
+                    .map(|code_hash| is_unsigned_miner_message(code_hash, ext_msg.tvm_message()))
+                    .unwrap_or(false),
+                None => false,
+            };
             if reject_unsigned_miner_message {
                 tracing::debug!(
                     target: "ext_messages",
@@ -3351,7 +3346,6 @@ mod tests {
             None,
             WasmNodeCache::new()?,
             false,
-            false,
             None,
         )?;
 
@@ -3613,19 +3607,6 @@ mod tests {
             &other_code_hash,
             &external_message_with_signature(None)
         ));
-    }
-
-    #[test]
-    fn unsigned_miner_message_filter_starts_with_engine_version_1_0_7() {
-        assert!(!BlockBuilder::should_filter_unsigned_miner_messages(&semver::Version::new(
-            1, 0, 6
-        )));
-        assert!(BlockBuilder::should_filter_unsigned_miner_messages(&semver::Version::new(
-            1, 0, 7
-        )));
-        assert!(BlockBuilder::should_filter_unsigned_miner_messages(&semver::Version::new(
-            1, 1, 0
-        )));
     }
 
     #[test]

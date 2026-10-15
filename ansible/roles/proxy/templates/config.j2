@@ -30,6 +30,8 @@ bk_addrs:
 - {{ hostvars[groups['block_keepers'][2]].HOST_PUBLIC_IP }}:8600
 {% endif %}
 gossip:
+  instance_id: {{ inventory_hostname }}
+  dead_node_grace_period_seconds: {{ GOSSIP_DEAD_NODE_GRACE_PERIOD_SECONDS }}
   listen_addr: {{ HOST_PUBLIC_IP }}:{{ PROXY_GOSSIP_PORT }}
   advertise_addr: {{ HOST_PUBLIC_IP }}:{{ PROXY_GOSSIP_PORT }}
   seeds:

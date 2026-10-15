@@ -83,13 +83,13 @@ contract MobileVerifiersContractGameRoot is Modifiers {
         uint64 epochStart = block.seqno - r;
         if (_epochStart < epochStart){
             _epochStart = epochStart;
-            _tapData[_epochStart] = TapData(new uint64[](vectorSize), _reward_adjustment * MINING_DUR_TAP); 
-            optional(uint64, TapData) oldData = _tapData.min();
-            if (oldData.hasValue()) {
+            _tapData[_epochStart] = TapData(new uint64[](vectorSize), _reward_adjustment * MINING_DUR_TAP);
+            for (uint8 i = 0; i < 5; i++) {
+                optional(uint64, TapData) oldData = _tapData.min();
+                if (!oldData.hasValue()) { break; }
                 (uint64 data,) = oldData.get();
-                if (data + MinerRewardDelay < _epochStart) {
-                    delete _tapData[data];
-                }
+                if (data + MinerRewardDelay >= _epochStart) { break; }
+                delete _tapData[data];
             }
         }
         if (_tapData.exists(tapEpochStart) == false) { 
@@ -146,7 +146,6 @@ contract MobileVerifiersContractGameRoot is Modifiers {
     function onCodeUpgrade(TvmCell cell) private {
         cell;
         tvm.accept();
-        tvm.resetStorage();
     }
 
     //Getters

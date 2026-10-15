@@ -8,6 +8,7 @@ use chitchat::ChitchatRef;
 
 use crate::metrics::NetMetrics;
 use crate::resolver::gossip::collect_gossip_peers;
+use crate::resolver::gossip::GOSSIP_STATS_REPORT_INTERVAL;
 use crate::resolver::topology_watcher::TopologyWatcher;
 use crate::topology::NetEndpoint;
 use crate::topology::NetTopology;
@@ -33,11 +34,20 @@ pub async fn watch_gossip<PeerId>(
         Clone + Display + Debug + Send + Sync + Hash + Eq + Ord + FromStr<Err: Display> + 'static,
 {
     let mut live_nodes_rx = chitchat.lock().live_nodes_watcher();
-    let (peers, _) = collect_gossip_peers(&chitchat, &config_rx.borrow());
+    let (peers, _, _) = collect_gossip_peers(&chitchat, &config_rx.borrow());
+    let gossip_metrics = metrics.clone();
     let mut watcher =
         TopologyWatcher::new(metrics, config_rx.borrow().clone(), peers, net_topology_tx);
+    let mut stats_interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + GOSSIP_STATS_REPORT_INTERVAL,
+        GOSSIP_STATS_REPORT_INTERVAL,
+    );
+    stats_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let stop_reason = loop {
-        let (peers, live_nodes_len) = collect_gossip_peers(&chitchat, &config_rx.borrow());
+        let (peers, live_nodes_len, stats) = collect_gossip_peers(&chitchat, &config_rx.borrow());
+        if let Some(metrics) = &gossip_metrics {
+            metrics.report_gossip_stats(stats);
+        }
         watcher.refresh(config_rx.borrow().clone(), peers, live_nodes_len);
         tokio::select! {
             shutdown_changed = shutdown_rx.changed() => if shutdown_changed.is_err() || *shutdown_rx.borrow() {
@@ -48,7 +58,8 @@ pub async fn watch_gossip<PeerId>(
             },
             live_nodes_changed = live_nodes_rx.changed() => if live_nodes_changed.is_err() {
                 break "live nodes channel closed";
-            }
+            },
+            _ = stats_interval.tick() => {}
         }
     };
     tracing::trace!("Gossip watcher stopped: {stop_reason}");

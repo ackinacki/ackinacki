@@ -2979,8 +2979,6 @@ impl RepositoryImpl {
             config_read: ConfigRead::new(
                 ProtocolVersion::parse("None").unwrap(),
                 GlobalConfig::default(),
-                None,
-                None,
             ),
             history_proof_data,
         }
@@ -4444,12 +4442,7 @@ pub mod tests {
             MessageDurableStorage::mem(),
             finalized_blocks_storage(),
             mock_bk_set_updates_tx(),
-            ConfigRead::new(
-                ProtocolVersion::parse("None").unwrap(),
-                GlobalConfig::default(),
-                None,
-                None,
-            ),
+            ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
         )?;
         Ok((repository, block_state_repository))
     }
@@ -4572,12 +4565,7 @@ pub mod tests {
             MessageDurableStorage::mem(),
             finalized_blocks_storage(),
             mock_bk_set_updates_tx(),
-            ConfigRead::new(
-                ProtocolVersion::parse("None").unwrap(),
-                GlobalConfig::default(),
-                None,
-                None,
-            ),
+            ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
         )?;
         repository.metadatas.lock().insert(
             ThreadIdentifier::default(),
@@ -4808,12 +4796,7 @@ pub mod tests {
             MessageDurableStorage::mem(),
             finalized_blocks_storage(),
             mock_bk_set_updates_tx(),
-            ConfigRead::new(
-                ProtocolVersion::parse("None").unwrap(),
-                GlobalConfig::default(),
-                None,
-                None,
-            ),
+            ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
         )?;
 
         let thread_id = ThreadIdentifier::default();
@@ -4979,12 +4962,7 @@ pub mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            ConfigRead::new(
-                ProtocolVersion::parse("None").unwrap(),
-                GlobalConfig::default(),
-                None,
-                None,
-            ),
+            ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
         )?;
 
         let path = "block_status";
@@ -5027,12 +5005,7 @@ pub mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            ConfigRead::new(
-                ProtocolVersion::parse("None").unwrap(),
-                GlobalConfig::default(),
-                None,
-                None,
-            ),
+            ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
         )?;
         Ok(())
     }
@@ -5064,12 +5037,7 @@ pub mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            ConfigRead::new(
-                ProtocolVersion::parse("None").unwrap(),
-                GlobalConfig::default(),
-                None,
-                None,
-            ),
+            ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
         )?;
 
         let path = "metadata";
@@ -5108,12 +5076,7 @@ pub mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            ConfigRead::new(
-                ProtocolVersion::parse("None").unwrap(),
-                GlobalConfig::default(),
-                None,
-                None,
-            ),
+            ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
         )?;
         let path = "optimistic_state";
         let oid = OID::ID(String::from("200"));
@@ -5162,12 +5125,7 @@ pub mod tests {
             message_db.clone(),
             finalized_blocks,
             mock_bk_set_updates_tx(),
-            ConfigRead::new(
-                ProtocolVersion::parse("None").unwrap(),
-                GlobalConfig::default(),
-                None,
-                None,
-            ),
+            ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
         )?;
 
         let state_path =
@@ -5257,12 +5215,7 @@ pub mod tests {
                 message_db.clone(),
                 finalized_blocks,
                 mock_bk_set_updates_tx(),
-                ConfigRead::new(
-                    ProtocolVersion::parse("None").unwrap(),
-                    GlobalConfig::default(),
-                    None,
-                    None,
-                ),
+                ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
             )?;
 
             let zerostate = ZeroState::load_from_file(PathBuf::from(ZEROSTATE))?;

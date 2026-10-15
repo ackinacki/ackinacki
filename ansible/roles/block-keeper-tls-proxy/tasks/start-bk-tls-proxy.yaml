@@ -44,6 +44,7 @@
     dest: "{{ TLS_PROXY_DIR }}/Dockerfile"
     mode: "0644"
   register: dockerfile
+  when: not TLS_PROXY_IMAGE
 
 - name: Production compose
   ansible.builtin.template:
@@ -90,16 +91,23 @@
   ignore_errors: true
   when: CREATE_NET | default(false)
 
+# With TLS_PROXY_IMAGE unset the caddy image is built from source here (xcaddy
+# pulls Go modules, and the Go module proxy intermittently drops HTTP/2
+# streams); the pull of a prebuilt image can fail transiently too. Retry both.
 - name: Compose up
   ansible.builtin.shell:
     chdir: "{{ TLS_PROXY_DIR }}"
-    cmd: docker compose up -d --build --remove-orphans
+    cmd: docker compose up -d {{ '' if TLS_PROXY_IMAGE else '--build ' }}--remove-orphans
+  register: tls_proxy_up
+  retries: 3
+  delay: 20
+  until: tls_proxy_up.rc == 0
 
 - name: Restart caddy
   ansible.builtin.shell:
     chdir: "{{ TLS_PROXY_DIR }}"
     cmd: docker compose restart caddy
-  when: caddyfile.changed or dockerfile.changed
+  when: caddyfile.changed or (dockerfile.changed | default(false))
 
 - name: Restart otel-collector
   ansible.builtin.shell:

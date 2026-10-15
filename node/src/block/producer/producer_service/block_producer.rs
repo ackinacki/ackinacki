@@ -1302,16 +1302,7 @@ impl BlockProducer {
         let mut producer_selector = self.get_producer_selector(&candidate_block.parent())?;
 
         // 2 step: update index if we have rotated BP:
-        let selector_source_bk_set = if self.config_read.is_retired(match &parent_block_version {
-            BlockProtocolVersionState::CompleteTransition { to, .. } => to,
-            other => other.to_use(),
-        }) {
-            tracing::trace!(target: "monit", "selector_source_bk_set = bk_set");
-            bk_set.clone()
-        } else {
-            tracing::trace!(target: "monit", "selector_source_bk_set = descendant_bk_set");
-            descendant_bk_set.clone()
-        };
+        let selector_source_bk_set = descendant_bk_set.clone();
 
         let find_bp = producer_selector.get_producer_node_id(&selector_source_bk_set);
         if find_bp.is_err() || find_bp.unwrap() != *self.node_credentials.node_id() {

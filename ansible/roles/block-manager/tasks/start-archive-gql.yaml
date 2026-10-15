@@ -24,6 +24,10 @@
   ansible.builtin.shell:
     chdir: "{{ AGQL_DIR }}"
     cmd: docker compose pull
+  register: compose_pull
+  retries: 3
+  delay: 15
+  until: compose_pull.rc == 0
 
 - name: Create ackinacki-net manually
   ansible.builtin.shell:

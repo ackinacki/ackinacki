@@ -31,6 +31,7 @@ pub use self::configuration::ChitchatConfig;
 pub use self::state::{ClusterStateSnapshot, NodeState};
 use crate::digest::Digest;
 pub use crate::message::ChitchatMessage;
+use crate::message::SERIALIZED_MESSAGE_HEADER_SIZE;
 pub use crate::server::{ChitchatHandle, ChitchatRef, spawn_chitchat};
 use crate::state::ClusterState;
 pub use crate::types::{ChitchatId, DeletionStatus, Heartbeat, Version, VersionedValue};
@@ -60,6 +61,21 @@ pub struct Chitchat {
     live_nodes_watcher_tx: watch::Sender<BTreeMap<ChitchatId, NodeState>>,
     live_nodes_watcher_rx: watch::Receiver<BTreeMap<ChitchatId, NodeState>>,
     max_datagram_payload_size: usize,
+    latest_chitchat_ids: HashMap<String, ChitchatId>,
+    superseded_generations: u64,
+    rejected_obsolete_generations: u64,
+    digest_warning_level: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ChitchatStats {
+    pub digest_size_bytes: usize,
+    pub node_count: usize,
+    pub live_node_count: usize,
+    pub dead_node_count: usize,
+    pub scheduled_for_deletion_node_count: usize,
+    pub superseded_generations: u64,
+    pub rejected_obsolete_generations: u64,
 }
 
 impl Chitchat {
@@ -72,6 +88,10 @@ impl Chitchat {
         let failure_detector = FailureDetector::new(config.failure_detector_config.clone());
         let previous_live_nodes = HashMap::new();
         let (live_nodes_watcher_tx, live_nodes_watcher_rx) = watch::channel(BTreeMap::new());
+        let latest_chitchat_ids = HashMap::from([(
+            config.chitchat_id.node_id.clone(),
+            config.chitchat_id.clone(),
+        )]);
         let mut chitchat = Chitchat {
             config,
             cluster_state: ClusterState::with_seed_addrs(seed_addrs),
@@ -80,6 +100,10 @@ impl Chitchat {
             live_nodes_watcher_tx,
             live_nodes_watcher_rx,
             max_datagram_payload_size,
+            latest_chitchat_ids,
+            superseded_generations: 0,
+            rejected_obsolete_generations: 0,
+            digest_warning_level: 0,
         };
 
         let self_node_state = chitchat.self_node_state();
@@ -111,9 +135,81 @@ impl Chitchat {
         }
     }
 
-    fn process_delta(&mut self, delta: Delta) {
+    fn process_delta(&mut self, mut delta: Delta) {
+        delta
+            .node_deltas
+            .retain(|node_delta| self.accept_generation(&node_delta.chitchat_id));
         self.maybe_trigger_catchup_callback(&delta);
         self.cluster_state.apply_delta(delta);
+    }
+
+    fn accept_generation(&mut self, chitchat_id: &ChitchatId) -> bool {
+        let Some(latest_id) = self.latest_chitchat_ids.get(&chitchat_id.node_id).cloned() else {
+            self.latest_chitchat_ids
+                .insert(chitchat_id.node_id.clone(), chitchat_id.clone());
+            return true;
+        };
+
+        if chitchat_id == &latest_id {
+            return true;
+        }
+        if chitchat_id.generation_id <= latest_id.generation_id {
+            self.rejected_obsolete_generations += 1;
+            tracing::debug!(
+                node_id = %chitchat_id.node_id,
+                rejected_generation = chitchat_id.generation_id,
+                latest_generation = latest_id.generation_id,
+                "Ignoring obsolete Chitchat generation"
+            );
+            return false;
+        }
+        if latest_id == *self.self_chitchat_id() {
+            self.rejected_obsolete_generations += 1;
+            tracing::error!(
+                node_id = %chitchat_id.node_id,
+                self_generation = latest_id.generation_id,
+                conflicting_generation = chitchat_id.generation_id,
+                "A newer generation is using this process's gossip instance ID"
+            );
+            return false;
+        }
+
+        let superseded_ids = self
+            .cluster_state
+            .nodes()
+            .filter(|known_id| known_id.node_id == chitchat_id.node_id && *known_id != chitchat_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for superseded_id in &superseded_ids {
+            self.failure_detector.remove_node(superseded_id);
+            self.cluster_state.remove_node(superseded_id);
+            self.previous_live_nodes.remove(superseded_id);
+        }
+        self.superseded_generations += superseded_ids.len() as u64;
+        self.latest_chitchat_ids
+            .insert(chitchat_id.node_id.clone(), chitchat_id.clone());
+        true
+    }
+
+    fn report_digest_size(&mut self, digest_size: usize) {
+        let percentage = digest_size.saturating_mul(100) / self.max_datagram_payload_size.max(1);
+        let warning_level = if percentage >= 75 {
+            2
+        } else if percentage >= 50 {
+            1
+        } else {
+            0
+        };
+        if warning_level > self.digest_warning_level {
+            tracing::warn!(
+                target: "monit",
+                digest_size,
+                max_datagram_payload_size = self.max_datagram_payload_size,
+                percentage,
+                "Gossip digest is approaching the transport message limit"
+            );
+        }
+        self.digest_warning_level = warning_level;
     }
 
     /// Executes the catch-up callback if necessary.
@@ -141,24 +237,53 @@ impl Chitchat {
                     return Some(ChitchatMessage::BadCluster);
                 }
                 self.report_heartbeats_in_digest(&digest);
-                let scheduled_for_deletion: HashSet<_> =
-                    self.scheduled_for_deletion_nodes().collect();
-                let self_digest = self.compute_digest(&scheduled_for_deletion);
+                let self_digest = {
+                    let scheduled_for_deletion: HashSet<_> =
+                        self.scheduled_for_deletion_nodes().collect();
+                    self.compute_digest(&scheduled_for_deletion)
+                };
+                let digest_size = self_digest.serialized_len();
+                self.report_digest_size(digest_size);
 
-                let delta_mtu = self.max_datagram_payload_size as isize
-                    - 1
-                    - self_digest.serialized_len() as isize;
-                if delta_mtu < 100 {
-                    error!(target: "monit",
-                        "Critical error: too many nodes in gossip cluster"
+                let min_delta_size = Delta::default().serialized_len();
+                let Some(delta_mtu) = self
+                    .max_datagram_payload_size
+                    .checked_sub(SERIALIZED_MESSAGE_HEADER_SIZE + digest_size)
+                else {
+                    error!(
+                        target: "monit",
+                        digest_size,
+                        max_datagram_payload_size = self.max_datagram_payload_size,
+                        "Critical error: gossip digest does not fit in a SynAck"
+                    );
+                    return None;
+                };
+                if delta_mtu < min_delta_size {
+                    error!(
+                        target: "monit",
+                        digest_size,
+                        max_datagram_payload_size = self.max_datagram_payload_size,
+                        "Critical error: gossip digest leaves no room for a SynAck delta"
                     );
                     return None;
                 }
-                let delta = self.cluster_state.compute_partial_delta_respecting_mtu(
-                    &digest,
-                    delta_mtu as usize,
-                    &scheduled_for_deletion,
-                );
+                let delta = if delta_mtu < 100 {
+                    warn!(
+                        target: "monit",
+                        digest_size,
+                        max_datagram_payload_size = self.max_datagram_payload_size,
+                        "Gossip digest leaves no room for updates; responding with an empty delta"
+                    );
+                    Delta::default()
+                } else {
+                    let scheduled_for_deletion: HashSet<_> =
+                        self.scheduled_for_deletion_nodes().collect();
+                    self.cluster_state.compute_partial_delta_respecting_mtu(
+                        &digest,
+                        delta_mtu,
+                        &scheduled_for_deletion,
+                    )
+                };
                 Some(ChitchatMessage::SynAck {
                     digest: self_digest,
                     delta,
@@ -199,6 +324,9 @@ impl Chitchat {
     /// Reports heartbeats to the failure detector for nodes in the delta for which we received an
     /// update.
     fn report_heartbeat(&mut self, chitchat_id: &ChitchatId, heartbeat: Heartbeat) {
+        if !self.accept_generation(chitchat_id) {
+            return;
+        }
         if chitchat_id == self.self_chitchat_id() {
             return;
         }
@@ -274,6 +402,21 @@ impl Chitchat {
 
     pub fn node_states(&self) -> &BTreeMap<ChitchatId, NodeState> {
         self.cluster_state.node_states()
+    }
+
+    pub fn stats(&self) -> ChitchatStats {
+        let scheduled_for_deletion = self.scheduled_for_deletion_nodes().collect::<HashSet<_>>();
+        ChitchatStats {
+            digest_size_bytes: self
+                .compute_digest(&scheduled_for_deletion)
+                .serialized_len(),
+            node_count: self.cluster_state.nodes().count(),
+            live_node_count: self.live_nodes().count(),
+            dead_node_count: self.dead_nodes().count(),
+            scheduled_for_deletion_node_count: scheduled_for_deletion.len(),
+            superseded_generations: self.superseded_generations,
+            rejected_obsolete_generations: self.rejected_obsolete_generations,
+        }
     }
 
     pub fn node_state(&self, chitchat_id: &ChitchatId) -> Option<&NodeState> {
@@ -359,6 +502,9 @@ impl Chitchat {
         max_version: Version,
         last_gc_version: Version,
     ) {
+        if !self.accept_generation(chitchat_id) {
+            return;
+        }
         let should_init_if_absent = self
             .cluster_state
             .last_heartbeat_if_deleted(chitchat_id)
@@ -623,6 +769,92 @@ mod tests {
         }
         run_chitchat_handshake(&mut node1, &mut node2);
         assert_nodes_sync(&[&node1, &node2]);
+    }
+
+    #[test]
+    fn test_new_generation_replaces_old_generation() {
+        let config = ChitchatConfig::for_test(10_001);
+        let empty_seeds = watch::channel(Default::default()).1;
+        let mut observer = Chitchat::with_chitchat_id_and_seeds(
+            config,
+            empty_seeds,
+            Vec::new(),
+            MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
+        );
+        let old_id = ChitchatId::new(
+            "stable-peer".to_string(),
+            10,
+            ([127, 0, 0, 1], 20_001).into(),
+        );
+        let new_id = ChitchatId::new(
+            "stable-peer".to_string(),
+            11,
+            ([127, 0, 0, 1], 20_001).into(),
+        );
+
+        observer.report_heartbeat(&old_id, Heartbeat(1));
+        assert!(observer.node_state(&old_id).is_some());
+
+        observer.report_heartbeat(&new_id, Heartbeat(1));
+        assert!(observer.node_state(&old_id).is_none());
+        assert!(observer.node_state(&new_id).is_some());
+
+        observer.report_heartbeat(&old_id, Heartbeat(100));
+        assert!(observer.node_state(&old_id).is_none());
+        assert_eq!(observer.stats().superseded_generations, 1);
+        assert_eq!(observer.stats().rejected_obsolete_generations, 1);
+    }
+
+    #[test]
+    fn test_restarts_do_not_accumulate_generations() {
+        let config = ChitchatConfig::for_test(10_001);
+        let empty_seeds = watch::channel(Default::default()).1;
+        let mut observer = Chitchat::with_chitchat_id_and_seeds(
+            config,
+            empty_seeds,
+            Vec::new(),
+            MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
+        );
+
+        for generation_id in 1..=500 {
+            let restarted_id = ChitchatId::new(
+                "frequently-restarted-peer".to_string(),
+                generation_id,
+                ([127, 0, 0, 1], 20_001).into(),
+            );
+            observer.report_heartbeat(&restarted_id, Heartbeat(1));
+        }
+
+        assert_eq!(observer.node_states().len(), 2);
+        assert_eq!(observer.stats().superseded_generations, 499);
+    }
+
+    #[test]
+    fn test_syn_ack_uses_empty_delta_when_digest_leaves_less_than_minimum_delta_mtu() {
+        let config = ChitchatConfig::for_test(10_001);
+        let empty_seeds = watch::channel(Default::default()).1;
+        let mut chitchat = Chitchat::with_chitchat_id_and_seeds(
+            config,
+            empty_seeds,
+            Vec::new(),
+            MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
+        );
+        let digest_size = chitchat.compute_digest(&HashSet::new()).serialized_len();
+        chitchat.max_datagram_payload_size =
+            SERIALIZED_MESSAGE_HEADER_SIZE + digest_size + Delta::default().serialized_len();
+
+        let response = chitchat
+            .process_message(ChitchatMessage::Syn {
+                cluster_id: chitchat.cluster_id().to_string(),
+                digest: Digest::default(),
+            })
+            .expect("SynAck should fit with an empty delta");
+
+        assert!(response.serialized_len() <= chitchat.max_datagram_payload_size);
+        let ChitchatMessage::SynAck { delta, .. } = response else {
+            panic!("expected SynAck response");
+        };
+        assert_eq!(delta, Delta::default());
     }
 
     #[test]

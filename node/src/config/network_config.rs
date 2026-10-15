@@ -116,6 +116,17 @@ pub struct NetworkConfig {
     #[builder(default)]
     pub gossip_seeds: SocketAddrSet,
 
+    /// Stable identifier of this gossip process. It must be unique for each
+    /// independently running node instance.
+    #[builder(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gossip_instance_id: Option<String>,
+
+    /// Time to retain a dead gossip member before removing its Chitchat state.
+    #[builder(default = gossip::default_dead_node_grace_period_seconds())]
+    #[serde(default = "gossip::default_dead_node_grace_period_seconds")]
+    pub gossip_dead_node_grace_period_seconds: u64,
+
     /// Gossip peer TTL in seconds.
     /// Defaults to 900 (15 minutes).
     /// Value 0 means no additional TTLs for dead peers.

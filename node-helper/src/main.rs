@@ -142,6 +142,14 @@ struct Config {
     #[arg(long, env)]
     pub gossip_peer_ttl_seconds: Option<u64>,
 
+    /// Stable identifier of this gossip process
+    #[arg(long, env)]
+    pub gossip_instance_id: Option<String>,
+
+    /// Time to retain a dead Chitchat member, in seconds
+    #[arg(long, env)]
+    pub gossip_dead_node_grace_period_seconds: Option<u64>,
+
     /// Gossip seed nodes addresses (e.g., hostname:port or ip:port)
     #[arg(long, env)]
     #[arg(long, env, value_delimiter = ',', value_parser = parse_gossip_addr)]
@@ -462,6 +470,14 @@ fn main() -> anyhow::Result<()> {
 
             if let Some(ttl) = config_cmd.gossip_peer_ttl_seconds {
                 config.network.gossip_peer_ttl_seconds = ttl;
+            }
+
+            if let Some(instance_id) = config_cmd.gossip_instance_id {
+                config.network.gossip_instance_id = Some(instance_id);
+            }
+
+            if let Some(grace_period) = config_cmd.gossip_dead_node_grace_period_seconds {
+                config.network.gossip_dead_node_grace_period_seconds = grace_period;
             }
 
             if let Some(gossip_advertise_addr) = config_cmd.gossip_advertise_addr {

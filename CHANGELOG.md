@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.5] – 2026-10-14
+
+### Breaking Changes
+- Removed the compatibility path for the `1.0.6` → `1.0.7` engine transition. The node no longer reads blocks and saved block states in the pre-transition format, and unsigned external messages to Miner accounts are rejected with `UNSIGNED_MINER_MESSAGE` regardless of the block's engine version. Upgrade from 0.19.4 only after the network has finished the transition to engine `1.0.7`.
+- The `block-keeper` Ansible role no longer pins the retired config to engine `1.0.6`: the `RETIRED_ENGINE_VERSION` variable and the `--engine-version` argument of the retired `node-helper config` call are removed, so the retired config now matches the current one. A node whose retired config is identical to its current config no longer advertises a protocol transition. Remove `RETIRED_ENGINE_VERSION` from inventories that override it; it is ignored.
+
+### New / Improvements
+- Gossip now uses a stable instance identity for each node and proxy, immediately replaces superseded process generations, and rejects obsolete generations replayed by other peers. Set the node field `network.gossip_instance_id` (`node-helper config --gossip-instance-id` or `GOSSIP_INSTANCE_ID`) and the proxy field `gossip.instance_id` to keep the identity stable when the advertised address changes; otherwise it is derived from the process role and the gossip advertise address. The gossip wire format is unchanged.
+- Added `network.gossip_dead_node_grace_period_seconds` for nodes (`node-helper config --gossip-dead-node-grace-period-seconds` or `GOSSIP_DEAD_NODE_GRACE_PERIOD_SECONDS`) and `gossip.dead_node_grace_period_seconds` for proxies. The default is 7200 seconds (2 hours) instead of Chitchat's previous fixed 24-hour retention; deployments that must tolerate longer network partitions should raise it explicitly.
+- The `block-keeper` and `proxy` Ansible roles set the gossip identity and retention: the new `GOSSIP_DEAD_NODE_GRACE_PERIOD_SECONDS` variable (default `7200`) feeds both, the Block Keeper gets `GOSSIP_INSTANCE_ID` = `<inventory_hostname>-<NODE_ID>`, and the proxy config gets `gossip.instance_id` = `<inventory_hostname>`.
+- Added gossip metrics `node_network_gossip_digest_size_bytes`, `node_network_gossip_state_nodes`, `node_network_gossip_dead_nodes`, `node_network_gossip_scheduled_for_deletion_nodes`, `node_network_gossip_superseded_generations` and `node_network_gossip_rejected_obsolete_generations`, refreshed at least every five seconds. Chitchat warns when its digest reaches 50% and 75% of the transport message limit, and sends a `SynAck` with an empty delta when the digest fits but leaves no room for updates.
+- External `sendTransaction` and `submitTransaction` calls encoded with the multifactor ABI and addressed to dApp id `1` now get low priority when they carry a non-empty `payload`, except when `dest` is `ROOT_PN` (`0:1010101010101010101010101010101010101010101010101010101010101010`) or a mirror address in workchain 0 with the `2000…000` prefix (the last three hex digits hold the index). Calls with an empty `payload`, calls to these addresses and messages to other dApps keep normal priority; messages to other dApps are no longer decoded with the wallet ABI. Existing queue limits apply without configuration changes.
+- Added the Miner `getReward` call to the built-in set of low-priority external-message functions.
+- With `TEST_EXT_MESSAGES_QUEUE_LOG=true` the node logs every external message that gets low priority as an `ext_message_low_priority` record on the `ext_messages_queue_detailed` target, with the message hash, destination account and the matched rule.
+- The `mainnet_ext_message_dst_stats` helper uses the same low-priority rules as the node and prints the total count and percentage of low-priority external inbound messages at the end of its console summary.
+- The `block-keeper-tls-proxy` role now deploys the prebuilt public image `teamgosh/caddy-ratelimit:2.8.4` (caddy with the `caddy-ratelimit` plugin) instead of building it with `xcaddy` on every host, so the deploy no longer needs access to proxy.golang.org; `compose up` runs without `--build`. The image is selected by the new `TLS_PROXY_IMAGE` variable; point it at a copy in your own registry, or set it to `""` to keep building locally from `Dockerfile`.
+
+### Fixes
+- Made the Ansible deployment tolerate transient registry and network errors: `docker compose pull` in the `block-keeper`, `block-manager` and `proxy` roles is retried 3 times with a 15 s pause, `compose up` in `block-keeper-tls-proxy` 3 times with a 20 s pause, and the test-state download in the `block-keeper` role and the `apt` installs in `prepare-hosts.yml` 5 times, instead of failing the deploy on the first error.
+
 ## [0.19.4] – 2026-10-05
 
 ### Fixes

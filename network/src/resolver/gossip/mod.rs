@@ -3,16 +3,20 @@ pub mod watch_hot_reload;
 
 use std::fmt::Display;
 use std::str::FromStr;
+use std::time::Duration;
 
 use chitchat::ChitchatRef;
+use chitchat::ChitchatStats;
 use gossip::gossip_peer::GossipPeer;
 pub use watch::watch_gossip;
 pub use watch::WatchGossipConfig;
 
+const GOSSIP_STATS_REPORT_INTERVAL: Duration = Duration::from_secs(5);
+
 pub(crate) fn collect_gossip_peers<PeerId: Display + FromStr<Err: Display>>(
     chitchat: &ChitchatRef,
     config: &WatchGossipConfig<PeerId>,
-) -> (Vec<GossipPeer<PeerId>>, usize) {
+) -> (Vec<GossipPeer<PeerId>>, usize, ChitchatStats) {
     let chitchat = chitchat.lock();
     let mut peers = Vec::new();
     let mut live_nodes_len = 0;
@@ -34,5 +38,5 @@ pub(crate) fn collect_gossip_peers<PeerId: Display + FromStr<Err: Display>>(
             peers.push(peer);
         }
     }
-    (peers, live_nodes_len)
+    (peers, live_nodes_len, chitchat.stats())
 }

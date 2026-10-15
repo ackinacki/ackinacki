@@ -4,6 +4,10 @@
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"
     cmd: docker compose pull
+  register: compose_pull
+  retries: 3
+  delay: 15
+  until: compose_pull.rc == 0
   when:
     - DO_START or (UPGRADE is defined and 'compose' in UPGRADE)
     - SUBNODE_ID is not defined or SUBNODE_ID == 0 or (PULL_ALL is defined and PULL_ALL)

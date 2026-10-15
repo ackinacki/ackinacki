@@ -7,6 +7,7 @@ use crate::digest::Digest;
 use crate::serialize::{Deserializable, Serializable};
 
 const MAGIC_NUMBER: u16 = 45_139;
+pub(crate) const SERIALIZED_MESSAGE_HEADER_SIZE: usize = 4;
 
 /// Chitchat message.
 ///
@@ -109,18 +110,18 @@ impl Serializable for ChitchatMessage {
     }
 
     fn serialized_len(&self) -> usize {
-        2 + 1
+        SERIALIZED_MESSAGE_HEADER_SIZE
             + match self {
                 ChitchatMessage::Syn { cluster_id, digest } => {
-                    1 + cluster_id.serialized_len() + digest.serialized_len()
+                    cluster_id.serialized_len() + digest.serialized_len()
                 }
                 ChitchatMessage::SynAck { digest, delta } => {
-                    1 + digest.serialized_len() + delta.serialized_len()
+                    digest.serialized_len() + delta.serialized_len()
                 }
-                ChitchatMessage::Ack { delta } => 1 + delta.serialized_len(),
-                ChitchatMessage::BadCluster => 1,
+                ChitchatMessage::Ack { delta } => delta.serialized_len(),
+                ChitchatMessage::BadCluster => 0,
                 #[cfg(test)]
-                ChitchatMessage::PanicForTest => 1,
+                ChitchatMessage::PanicForTest => 0,
             }
     }
 }

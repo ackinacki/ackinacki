@@ -4,6 +4,10 @@
   ansible.builtin.shell:
     chdir: "{{ BK_DIR }}"
     cmd: docker compose pull
+  register: compose_pull
+  retries: 3
+  delay: 15
+  until: compose_pull.rc == 0
   when:
     - compose is defined and compose.changed
 

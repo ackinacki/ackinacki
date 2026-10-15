@@ -1,9 +1,13 @@
 services:
   caddy:
+{% if TLS_PROXY_IMAGE %}
+    image: {{ TLS_PROXY_IMAGE }}
+{% else %}
     build:
       context: .
       dockerfile: Dockerfile
     image: caddy-ratelimit:2.8.4
+{% endif %}
     ports:
       - "${HOST_PUBLIC_IP}:80:80"
       - "${HOST_PUBLIC_IP}:443:443"

@@ -397,6 +397,7 @@ all:
       - shellnet2.ackinacki.org:10000
       - shellnet3.ackinacki.org:10000
       - shellnet4.ackinacki.org:10000
+    GOSSIP_DEAD_NODE_GRACE_PERIOD_SECONDS: 7200
 
     PROXIES: # delete this section if the BK operates without a Proxy
       - PROXY_IP:8085   # REPLACE WITH ACTUAL IP ADDRESS
@@ -606,6 +607,7 @@ all:
       - shellnet2.ackinacki.org:10000
       - shellnet3.ackinacki.org:10000
       - shellnet4.ackinacki.org:10000
+    GOSSIP_DEAD_NODE_GRACE_PERIOD_SECONDS: 7200
 
     PROXIES: # delete this section if the BK operates without a Proxy
       - PROXY_IP:8085   # REPLACE WITH ACTUAL IP ADDRESS
