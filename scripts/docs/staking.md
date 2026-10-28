@@ -28,6 +28,28 @@ Alternatively, you can look at function start and done metrics and alert if the 
 
 For example, if `bk_staking_place_stake` was updated, but `bk_staking_place_stake_done` was not updated for considerable time, then the function call either failed or hanged.
 
+## Block Manager endpoint failover
+
+The Block Keeper Ansible role accepts optional `TVM_ENDPOINTS` and
+`GQL_ENDPOINTS` lists. The staking process remembers the last working endpoint
+and retries read-only operations through the other configured Block Managers.
+State-changing `tvm-cli` operations are retried only when the selected Block
+Manager rejects the request with `WRONG_PRODUCER` or cannot be connected to;
+contract errors and ambiguous post-submit failures are not resent. With empty
+lists it keeps using `TVM_ENDPOINT` only.
+
+If a selected GraphQL endpoint reports the same finalized block as on the
+previous read, staking immediately compares it with the other configured
+endpoints and switches to the one with the highest finalized block. If all
+available endpoints report the same block, the current endpoint is retained;
+this avoids treating a network-wide finalization pause as an endpoint failure.
+
+The staking log records `TVM endpoint selected`, `TVM endpoint failed`,
+`TVM endpoint switched` and the equivalent GraphQL messages. A `tvm-cli`
+failure also includes its exit code and a compact reason such as
+`WRONG_PRODUCER`. GraphQL traces additionally report unchanged, regressed and
+lagging endpoints.
+
 ## Staking metrics
 
 The `staking.sh` script reports various metrics to an OpenTelemetry (otel) collector using the `report_metric` function. All metric names are prefixed with `bk_staking_`.

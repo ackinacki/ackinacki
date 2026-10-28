@@ -32,7 +32,7 @@ interface IInferenceDeal {
 contract PrivateNote is Modifiers, ReplayProtection {
 
     /// @notice Contract semantic version.
-    string constant version = "4.0.35";
+    string constant version = "4.0.36";
 
     /// @notice Max lifetime (seconds) of a resting SELL offer (spec §2.1.1). A SELL commits NO
     ///         collateral at offer time (the seller bond is funded only after a match), so an ask
@@ -110,6 +110,14 @@ contract PrivateNote is Modifiers, ReplayProtection {
     ///         NOTE_CODE_HASH; pinning the OB hash in the note's CODE would make
     ///         the two hashes mutually recursive and the build never converge.)
     TvmCell _inferenceOrderBookCode;
+
+    /// @notice TokenContract code (§3) baked at deploy by RootPN, for the SAME reason the book code
+    ///         above is: the note deploys the deal now (4.0.36), and a deploy needs the code cell,
+    ///         not the pin. `_tokenContractCodeHash`/`_tokenContractCodeDepth` stay beside it and
+    ///         keep doing what they always did — deriving the address of a deal this note did not
+    ///         deploy (the buyer's side of a match) — so both forms of the same fact are present:
+    ///         the code for the one deal this note creates, the hash for every deal it merely talks to.
+    TvmCell _tokenContractCode;
 
     /// @notice Mapping from stake hash to stake info
     mapping(uint256 => StakeInfo) public _stakes;
@@ -464,7 +472,7 @@ contract PrivateNote is Modifiers, ReplayProtection {
     /// @param oracleEventListCodeHash OracleEventList contract code hash.
     /// @param oracleEventListCodeDepth OracleEventList contract code depth.
     constructor(uint128 value, uint256 ephemeralPubkey, uint32 tokenType, TvmCell pmpCode, TvmCell orderBookCode,
-                TvmCell inferenceOrderBookCode,
+                TvmCell inferenceOrderBookCode, TvmCell tokenContractCode,
                 uint256 oracleCodeHash, uint16 oracleCodeDepth, uint256 oracleEventListCodeHash, uint16 oracleEventListCodeDepth,
                 uint256 tokenContractCodeHash, uint16 tokenContractCodeDepth,
                 uint256 rootModelCodeHash, uint16 rootModelCodeDepth) {
@@ -482,6 +490,7 @@ contract PrivateNote is Modifiers, ReplayProtection {
         _rootModelCodeDepth = rootModelCodeDepth;
         _orderBookCode = orderBookCode;
         _inferenceOrderBookCode = inferenceOrderBookCode;
+        _tokenContractCode = tokenContractCode;
         _balance[tokenType] = value;
         _ephemeralPubkey = ephemeralPubkey;
         RootPN(ROOT_PN_ADDRESS).privateNoteDeployed{value: 0.1 vmshell, flag: 1, dest_dapp_id: ROOT_PN_DAPP_ID}(_depositIdentifierHash, tokenType, value);
@@ -735,24 +744,41 @@ contract PrivateNote is Modifiers, ReplayProtection {
         // `isBuy == false` and his bond went in with `fundDeal` long before. Without this test the
         // seller would post a second bond into his own deal on every fill.
         //
-        // `value: 0.05 vmshell, flag: 17` — the native part is GAS, not the bond. A deal is
-        // self-rooted, so native never crosses into its dapp and it pays for its own transactions
-        // out of its own balance; until now that balance came only from the seller, who was
-        // therefore paying for the calls his counterparty makes. The MONEY travels as `amount`, a
-        // figure on the call, exactly as in `fundDeal` — so nothing here can be confused with the
-        // native that was burned crossing the boundary.
+        // THE BUYER PAYS FOR HIS OWN ENTRY. The BOND still travels as `amount`, a figure on the
+        // call exactly as in `fundDeal` — the ECC attached here is not the bond and the deal does
+        // not count it as one (`fundBuyerBond` credits `_balance` from the argument alone). It is
+        // exactly what this entry burns, `GAS_FUND_DEAL`, arriving with the call that burns it.
+        //
+        // `flag: 1`, not 17: flag 16 converts the ECC to native on arrival, which refills the one
+        // pocket a deal refills itself (`ensureBalance`) and leaves the pocket that is actually
+        // spent untouched. The native `value` is this message's own gas, as before.
+        //
+        // Sent only when this note really holds it — a note cannot mint ECC[2] either, and a short
+        // balance would fail in the action phase rather than at a `require`.
         //
         // `bounce: true`, like `fundDeal`: if the deal refuses the bond, the figure must come home
         // rather than be recorded as spent against a deal that never took it.
         if (isBuy) {
             uint128 bond = uint128(2 * clearingPrice);
+            uint128 held = uint128(address(this).currencies[CURRENCIES_ID_SHELL]);
             if (_balance[CURRENCIES_ID_SHELL] >= bond) {
                 _balance[CURRENCIES_ID_SHELL] -= bond;
+
                 mapping(uint32 => varuint32) ecc;
+                if (held >= DEAL_GAS_FUND) {
+                    ecc[CURRENCIES_ID_SHELL] = varuint32(DEAL_GAS_FUND);
+                }
                 IInferenceDeal(tokenContract).fundBuyerBond{
-                    value: 0.05 vmshell, flag: 17, bounce: true, currencies: ecc
+                    value: 0.05 vmshell, flag: 1, bounce: true, currencies: ecc
                 }(bond);
             }
+            // NOT ENOUGH FOR THE BOND: nothing is sent, and that is the whole of it. Winding the
+            // deal down from here was tried and taken out: this note cannot tell the deal anything
+            // it does not already know, and the deal cannot tell a note that CANNOT bond from an
+            // owner who simply changed his mind — both arrive from `_buyer` with `_buyerBondFunded`
+            // still false. Letting the message through therefore handed every buyer a way to undo
+            // a matched deal on demand. `MATCH_OPEN_TIMEOUT` recovers the seller's money instead,
+            // and `fundBuyerBondNow` below lets the owner post the bond late, once the note has it.
         }
     }
 
@@ -898,6 +924,18 @@ contract PrivateNote is Modifiers, ReplayProtection {
         // one pot: the buy is paid from `_balance[CURRENCIES_ID_SHELL]` and nothing physical moves.
         require(_balance[CURRENCIES_ID_SHELL] >= escrow, ERR_LOW_VALUE);
         _balance[CURRENCIES_ID_SHELL] -= escrow;
+
+        // A BUY ORDER COSTS WHAT A SELL OFFER COSTS. Posting a sell goes through the deal and burns
+        // GAS_POST_FROM_NOTE there; a buy rested in the same book for free, and every charge the
+        // buyer's side caused afterwards came out of a reserve the seller had funded. Same amount,
+        // taken here, where the order is placed.
+        //
+        // From this note's OWN ECC[2], not from the recorded balance — that balance is money owed
+        // to the owner, gas is not. A note cannot mint ECC[2], so an order costs a note holding
+        // none, and that is the intended answer rather than an accident.
+        require(uint128(address(this).currencies[CURRENCIES_ID_SHELL]) >= BUY_ORDER_GAS, ERR_LOW_VALUE);
+        gosh.burnecc(uint64(BUY_ORDER_GAS), CURRENCIES_ID_SHELL);
+
         // §3.1.1: forward this note's pubkey so the OB can record it in the deal
         // contract (the gateway authenticates the buyer against it). The escrow figure
         // goes to the derived canonical book, never a caller-supplied address.
@@ -972,6 +1010,46 @@ contract PrivateNote is Modifiers, ReplayProtection {
         InferenceOrderBook(orderBook).cancelAllOrders{value: 1 vmshell, flag: 1, bounce: true}();
     }
 
+    /// @notice Post the buyer's bond to a matched deal this note could not bond at match time.
+    /// @dev    The bond normally goes out by itself, from `onInferenceFilled`, the moment the book
+    ///         reports a fill. It does not when the note's recorded balance is short of `2P` right
+    ///         then — a deposit still arriving, a figure spent on another order — and the match is
+    ///         left waiting: `open` refuses without `_buyerBondFunded`, and after
+    ///         `MATCH_OPEN_TIMEOUT` anyone may unwind the deal and hand the seller his money back.
+    ///
+    ///         This is the way back into that window, and it is the ONLY thing this note may do
+    ///         about a bond it missed. Winding the deal down from here was tried and taken out:
+    ///         the deal cannot tell a note that CANNOT bond from an owner who changed his mind —
+    ///         both arrive from `_buyer` with `_buyerBondFunded` still false — so letting that
+    ///         message through handed every buyer a way to undo a matched deal on demand.
+    ///
+    ///         Conditions are enforced where they belong: the deal refuses a second bond
+    ///         (`_buyerBondFunded`), an opened stream (`_opened`), and a sender that is not its
+    ///         buyer. Nothing here can talk another note's deal into anything.
+    ///
+    ///         `bounce: true`, like the automatic path: if the deal refuses, the figure must come
+    ///         home rather than be recorded as spent against a bond that was never taken.
+    /// @param tokenContract The matched deal, as reported to this note by the book.
+    /// @param bond          `2 * clearingPrice` of that match.
+    function fundBuyerBondNow(address tokenContract, uint128 bond)
+        public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg
+    {
+        ensureBalance();
+        require(!_hasWithdrawn, ERR_INVALID_STATE);
+        require(bond > 0, ERR_INVALID_PARAMS);
+        require(_liveDeals.exists(tokenContract), ERR_INVALID_PARAMS);
+        require(_balance[CURRENCIES_ID_SHELL] >= bond, ERR_LOW_VALUE);
+        _balance[CURRENCIES_ID_SHELL] -= bond;
+        mapping(uint32 => varuint32) ecc;
+        if (uint128(address(this).currencies[CURRENCIES_ID_SHELL]) >= DEAL_GAS_FUND) {
+            ecc[CURRENCIES_ID_SHELL] = varuint32(DEAL_GAS_FUND);
+        }
+        IInferenceDeal(tokenContract).fundBuyerBond{
+            value: 0.05 vmshell, flag: 1, bounce: true, currencies: ecc
+        }(bond);
+    }
+
+
     /// @notice Buyer note stops the stream — amicable exit (spec §4.1). Max loss
     ///         is the two in-flight ticks; refund returns to this note.
     function streamStop(address tokenContract) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
@@ -979,7 +1057,15 @@ contract PrivateNote is Modifiers, ReplayProtection {
         // bounce:true — `tokenContract` is supplied by the caller, so a wrong address would
         // otherwise make this a silent no-op.
         // No figure moves here: a bounce returns the value and there is nothing to correct.
-        IInferenceDeal(tokenContract).stop{value: 1 vmshell, flag: 1, bounce: true}();
+        // The charge rides WITH the call: `stop` burns GAS_TERMINAL, so the ECC that pays
+        // for it arrives in the same message under `flag: 1` and is burned in the same
+        // transaction. Nothing has to be parked in the deal beforehand, and the buyer stops
+        // spending a reserve that only his counterparty can refill.
+        mapping(uint32 => varuint32) ecc;
+        if (uint128(address(this).currencies[CURRENCIES_ID_SHELL]) >= DEAL_GAS_TERMINAL) {
+            ecc[CURRENCIES_ID_SHELL] = varuint32(DEAL_GAS_TERMINAL);
+        }
+        IInferenceDeal(tokenContract).stop{value: 1 vmshell, flag: 1, bounce: true, currencies: ecc}();
     }
 
     /// @notice Buyer note disputes the current ≤2 ticks (spec §4.2). Neither note is locked by
@@ -992,7 +1078,15 @@ contract PrivateNote is Modifiers, ReplayProtection {
         // bounce:true — same caller-supplied address, and here a silent no-op costs the buyer his
         // contest window: he would believe the dispute was filed while it never arrived.
         // No figure moves here: a bounce returns the value and there is nothing to correct.
-        IInferenceDeal(tokenContract).dispute{value: 1 vmshell, flag: 1, bounce: true}();
+        // The charge rides WITH the call: `dispute` burns GAS_TERMINAL, so the ECC that pays
+        // for it arrives in the same message under `flag: 1` and is burned in the same
+        // transaction. Nothing has to be parked in the deal beforehand, and the buyer stops
+        // spending a reserve that only his counterparty can refill.
+        mapping(uint32 => varuint32) ecc;
+        if (uint128(address(this).currencies[CURRENCIES_ID_SHELL]) >= DEAL_GAS_TERMINAL) {
+            ecc[CURRENCIES_ID_SHELL] = varuint32(DEAL_GAS_TERMINAL);
+        }
+        IInferenceDeal(tokenContract).dispute{value: 1 vmshell, flag: 1, bounce: true, currencies: ecc}();
     }
 
     // `streamReclaim` was removed together with the deal's `reclaimOnTimeout`: there is no longer
@@ -1009,7 +1103,15 @@ contract PrivateNote is Modifiers, ReplayProtection {
     function streamCleanup(address tokenContract) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
         ensureBalance();
         // No figure moves here: a bounce returns the value and there is nothing to correct.
-        IInferenceDeal(tokenContract).cleanupUnopened{value: 1 vmshell, flag: 1, bounce: true}();
+        // The charge rides WITH the call: `cleanupUnopened` burns GAS_TERMINAL, so the ECC that pays
+        // for it arrives in the same message under `flag: 1` and is burned in the same
+        // transaction. Nothing has to be parked in the deal beforehand, and the buyer stops
+        // spending a reserve that only his counterparty can refill.
+        mapping(uint32 => varuint32) ecc;
+        if (uint128(address(this).currencies[CURRENCIES_ID_SHELL]) >= DEAL_GAS_TERMINAL) {
+            ecc[CURRENCIES_ID_SHELL] = varuint32(DEAL_GAS_TERMINAL);
+        }
+        IInferenceDeal(tokenContract).cleanupUnopened{value: 1 vmshell, flag: 1, bounce: true, currencies: ecc}();
     }
 
     /// @notice Deterministic per-deal TokenContract address from the RootPN-baked code hash/depth + the
@@ -1066,7 +1168,13 @@ contract PrivateNote is Modifiers, ReplayProtection {
         if (gasShell > 0) { ecc[CURRENCIES_ID_SHELL] = varuint32(gasShell); }
 
         IInferenceDeal(_tokenContractAddr(_ephemeralPubkey, nonce))
-            .fundDeal{value: 1 vmshell, flag: 17, bounce: true, currencies: ecc}(amount, endpointCipher);
+        // `flag: 1`, not 17. Flag 16 converted `gasShell` to native on arrival, so a seller
+        // aiming to fill the deal's ECC[2] reserve filled the one pocket the deal refills
+        // itself through `ensureBalance`, while the reserve `_chargeGas` actually burns from
+        // did not grow at all. The conversion flags are gone from this generation entirely:
+        // note and deal live in the same dapp, nothing crosses a boundary, and ECC[2] has to
+        // arrive as ECC[2].
+            .fundDeal{value: 1 vmshell, flag: 1, bounce: true, currencies: ecc}(amount, endpointCipher);
     }
 
     /// @notice A deal pays this note back (generation 4.0.33) — the receiving half of the pair.
@@ -1166,21 +1274,20 @@ contract PrivateNote is Modifiers, ReplayProtection {
     ///         targets — the canonical RootModel (per-seller) and/or per-deal TokenContract — with
     ///         SHELL (ECC[2]) straight from this note, so no external operational wallet (one-seed)
     ///         is needed; the seller-signed deploy message then lands on the funded address.
-    /// @dev    THE LINE BETWEEN THIS AND `fundDeal` IS THE TARGET'S STATE, not whether money is
-    ///         involved. `fundDeal` CALLS a live deal, so it can carry gas and a figure at once.
-    ///         This one aims at addresses where nothing exists yet: there is no contract to call,
-    ///         and a flag-16 transfer is the only thing that can land. That distinction matters
-    ///         most for the DEAL, which is deployed by an external message into its OWN dapp, has
-    ///         no dapp config, cannot mint, and therefore has no other way to get its first
-    ///         vmshell — the note-funded flow exists precisely so a seller needs no operational
-    ///         wallet, and this send is what makes it possible.
+    /// @dev    THIS IS THE DEAL'S ONLY TOP-UP, and it must land as ECC[2], not as native. Since
+    ///         4.0.36 the deal is deployed by this note into the DEX dapp, so it mints its own
+    ///         native floor in `ensureBalance` and needs no vmshell sent ahead of it. What it
+    ///         cannot mint is ECC[2], and ECC[2] is what every entry burns (`_chargeGas`). The
+    ///         deploy seeds that reserve once (`deployDeal`, `flag: 1`); without this call there
+    ///         would be no second way to add to it, and a deal that outlived its reserve would
+    ///         stall on the terminal paths — `stop`, `dispute`, `cleanupUnopened` — that a buyer
+    ///         needs. Hence `flag: 1`: it funds the balance in the currency sent. `flag: 16` would
+    ///         convert the ECC to native on arrival and top up the one pocket that refills itself.
     ///
     ///         Targets are DERIVED from THIS note's own key (`_ephemeralPubkey`) + `nonce`, never a
-    ///         caller-supplied address — SHELL can only ever reach the seller's canonical RootModel /
-    ///         TokenContract (same derivation as the IOB). ONE `flag:16` send per target (mirrors the giver
-    ///         `fund_deploy_address`): flag 16 carries the ECC[2] to an UNINIT cross-dapp address so the
-    ///         seller-signed deploy then lands + activates (flag 1 funds the balance but the cross-dapp
-    ///         deploy would not activate). `bounce:false` is REQUIRED (uninit target). amount 0 = skip.
+    ///         caller-supplied address — SHELL can only ever reach the seller's canonical
+    ///         TokenContract (same derivation as the IOB). `bounce:false` because the deal carries
+    ///         no `onBounce` and a refusal has nothing to return to. amount 0 = skip.
     /// @dev    ONE LEG NOW, NOT TWO. The `rootModelShell` leg is gone with the reason it existed:
     ///         a RootModel used to be deployed by its owner as an external message, so somebody had
     ///         to put native gas at that address first, and the note was the somebody. The super
@@ -1202,8 +1309,82 @@ contract PrivateNote is Modifiers, ReplayProtection {
         if (tcShell > 0) {
             mapping(uint32 => varuint32) tcEcc;
             tcEcc[CURRENCIES_ID_SHELL] = varuint32(tcShell);
-            _tokenContractAddr(_ephemeralPubkey, nonce).transfer({value: 1 vmshell, bounce: false, flag: 16, currencies: tcEcc});
+            _tokenContractAddr(_ephemeralPubkey, nonce).transfer({value: 1 vmshell, bounce: false, flag: 1, currencies: tcEcc});
         }
+    }
+
+    /// @notice Deploy this seller's per-deal TokenContract from the note (generation 4.0.36).
+    /// @dev    THE DEAL IS BORN INSIDE THE SYSTEM NOW. It used to be deployed off-chain: the seller
+    ///         signed an external message carrying the whole contract code, which landed the deal in
+    ///         a dapp of its OWN — with no configuration, so it could not mint, so every vmshell it
+    ///         would ever spend had to be sent ahead of it (`fundDeployShell` above) and sized by a
+    ///         published formula. Undershoot and the deal stopped forever with the escrow inside.
+    ///
+    ///         Deployed here it lands in THIS NOTE'S dapp, which is configured like everything else,
+    ///         so `TokenContract.ensureBalance` works and the deal keeps itself answering. What the
+    ///         seller sends now is not a life-support budget but a RESERVE of ECC[2] that each entry
+    ///         burns its measured charge from (#950 table) — running it down costs the seller a
+    ///         refused call, not a contract that can never be closed.
+    ///
+    ///         Terms are arguments, not statics: the address derives from
+    ///         (sellerPubkey, rootModel, nonce) exactly as before, so every party that computes this
+    ///         deal's address from the pinned hashes — the buyer's note, the book, RootPN — still
+    ///         finds it. The constructor authenticates THIS note as the canonical one for
+    ///         `_depositIdentifierHash`, which is what stops anyone else from occupying the address
+    ///         with terms of their own.
+    /// @param nonce Deal nonce; with this note's key it fixes the deal address.
+    /// @param modelName Canonical `producer--model--version` string; the ctor re-derives its hash.
+    /// @param modelHash sha256(modelName), verified on-chain against the name.
+    /// @param pricePerTick SHELL per tick (P).
+    /// @param maxTicks Upper bound on ticks this deal serves.
+    /// @param gasReserve ECC[2] sent with the deploy. What lands on it is NOT decided by whether a
+    ///        call is internal or external — it is decided by whether the caller attached anything.
+    ///
+    ///        ATTACHED, so never on the reserve — the four calls a buyer's note makes:
+    ///          fundBuyerBond 0.010 · stop / dispute / cleanupUnopened 0.045 each
+    ///
+    ///        ON THE RESERVE, because the caller cannot attach:
+    ///          the seller's own entries, all `onlyOwnerPubkey(_sellerPubkey)` + `accept`, i.e.
+    ///          EXTERNAL messages, which carry no value by construction —
+    ///            open 0.015 · acceptProbe 0.015 · claimTokens 0.015 per tick
+    ///            close / sellerStop / releaseDispute / destroy 0.045 · withdrawShell 0.005
+    ///
+    ///        ON THE RESERVE TOO, though internal — nobody attaches on these paths:
+    ///          postFromNote 0.025 · fundDeal 0.010 · fundFromOrderBook 0.020 (the order book
+    ///          attaches no ECC) · onSellClosed 0.005 · finalize / settleWeek 0.015
+    ///          · resolveDisputeTimeout 0.045
+    ///
+    ///        plus GAS_DEPLOY 0.100, which the constructor takes out of this very reserve.
+    ///
+    ///        A plain run — deploy, offer, match, open, probe, T claims, close, withdraw — comes to
+    ///        about 0.300 + 0.015·T. An earlier figure here said 0.240 and undercounted by 0.070:
+    ///        it credited `fundDeal` with topping the reserve up (it sent under flag 17, so the ECC
+    ///        converted to native and never reached it) and left out the paths nobody attaches on. Budget a second terminal for the paths that survive their own
+    ///        charge and are wound down by a later one: `dispute` -> `releaseDispute` and
+    ///        `sellerStop` -> `close`. The older figures (0.215 + 0.013·T, and 0.210 + 0.015·T in
+    ///        #950) sized a mechanism that no longer exists, when every entry drew on the reserve.
+    ///
+    ///        A short reserve is recoverable: `fundDeployShell` tops it up with no limit on repeats.
+    function deployDeal(
+        uint64 nonce, string modelName, uint256 modelHash,
+        uint128 pricePerTick, uint128 maxTicks, uint128 gasReserve
+    ) public onlyOwnerPubkey(_ephemeralPubkey) accept saveMsg {
+        ensureBalance();
+        require(!_hasWithdrawn, ERR_INVALID_STATE);
+        (address rootModel, ) = DexLib.computeCanonicalTokenContractAddress(
+            _rootModelCodeHash, _rootModelCodeDepth,
+            _tokenContractCodeHash, _tokenContractCodeDepth,
+            address.makeAddrStd(0, SUPER_ROOT_ADDR), _ephemeralPubkey, nonce);
+        TvmCell stateInit = DexLib.buildTokenContractStateInit(
+            _tokenContractCode, _ephemeralPubkey, rootModel, nonce);
+        mapping(uint32 => varuint32) reserve;
+        reserve[CURRENCIES_ID_SHELL] = varuint32(gasReserve);
+        // `bounce: false` for the same reason every other deploy here says it: there is no account
+        // at the target yet, so a bounce has nothing to come back from, and the deal's own refusal
+        // paths are what report a bad deploy.
+        new TokenContract{
+            stateInit: stateInit, value: 1 vmshell, flag: 1, bounce: false, currencies: reserve
+        }(modelName, modelHash, pricePerTick, maxTicks, address(this), _depositIdentifierHash);
     }
 
     // The seller bond no longer has a funding call of its own. It was `postSellerBond`, and it did

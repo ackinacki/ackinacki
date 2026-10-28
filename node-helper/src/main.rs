@@ -221,6 +221,10 @@ struct Config {
     #[arg(long)]
     pub shared_state_retry_download_timeout_millis: Option<u64>,
 
+    /// Wall-clock limit for one primary/legacy snapshot download
+    #[arg(long)]
+    pub shared_state_download_deadline_millis: Option<u64>,
+
     /// Comma separated files and directories with network TLS certificates
     #[arg(long)]
     pub network_peer_certs: Option<String>,
@@ -568,6 +572,10 @@ fn main() -> anyhow::Result<()> {
             {
                 config.network.shared_state_retry_download_timeout_millis =
                     shared_state_retry_download_timeout_millis;
+            }
+
+            if let Some(deadline) = config_cmd.shared_state_download_deadline_millis {
+                config.network.shared_state_download_deadline_millis = deadline;
             }
 
             if let Some(certs) = config_cmd.network_peer_certs {

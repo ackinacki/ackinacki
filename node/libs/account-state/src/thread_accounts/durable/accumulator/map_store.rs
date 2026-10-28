@@ -13,21 +13,15 @@ use node_types::ThreadIdentifier;
 
 use crate::thread_accounts::durable::maps::ThreadAccountMap;
 use crate::StateAccountsMetrics;
-use crate::ThreadAccountMapRepository;
 
 pub struct MerkleMapStore {
     store_path: PathBuf,
-    map_repo: ThreadAccountMapRepository,
     metrics: Option<StateAccountsMetrics>,
 }
 
 impl MerkleMapStore {
-    pub fn new(
-        durable_path: impl Into<PathBuf>,
-        maps: ThreadAccountMapRepository,
-        metrics: Option<StateAccountsMetrics>,
-    ) -> Self {
-        Self { store_path: durable_path.into().join("maps"), map_repo: maps, metrics }
+    pub fn new(durable_path: impl Into<PathBuf>, metrics: Option<StateAccountsMetrics>) -> Self {
+        Self { store_path: durable_path.into().join("maps"), metrics }
     }
 
     /// Recover from checkpoint + WAL and seed the running map_state.
@@ -47,7 +41,7 @@ impl MerkleMapStore {
         }
         let f = File::open(&path)?;
         let mut r = BufReader::with_capacity(512 * 1024, f);
-        let map = self.map_repo.map_read(&mut r)?;
+        let map = ThreadAccountMap::read(&mut r)?;
         Ok(Some(map))
     }
 
@@ -63,7 +57,7 @@ impl MerkleMapStore {
             {
                 let f = File::create(&tmp)?;
                 let mut w = BufWriter::with_capacity(512 * 1024, f);
-                self.map_repo.map_write(&map, &mut w)?;
+                map.write(&mut w)?;
                 w.flush()?;
                 w.into_inner()?.sync_all()?;
             }

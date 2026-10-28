@@ -25,6 +25,16 @@ pub trait Blake3Hashable {
     }
 }
 
+impl<T: Blake3Hashable + ?Sized> Blake3Hashable for std::sync::Arc<T> {
+    fn update_hasher(&self, hasher: &mut blake3::Hasher) {
+        self.as_ref().update_hasher(hasher);
+    }
+
+    fn hash(&self, prefix_tag: u8) -> [u8; 32] {
+        self.as_ref().hash(prefix_tag)
+    }
+}
+
 impl Blake3Hashable for [u8; 32] {
     fn update_hasher(&self, hasher: &mut blake3::Hasher) {
         hasher.update(self);

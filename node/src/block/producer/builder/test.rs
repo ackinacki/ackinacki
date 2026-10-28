@@ -64,7 +64,7 @@ mod tests {
             .serialize()
             .map_err(|e| anyhow::anyhow!("failed to serialize test account: {e}"))?;
         let resolved_account = ThreadAccount::new(
-            VmAccount::Tvm(account_cell),
+            VmAccount::from(account_cell),
             Default::default(),
             0,
             Some(resolved_dapp_id),
@@ -189,26 +189,30 @@ mod tests {
                 .push((dst, (Stamp { index: i, timestamp: now }, queued_ext_message.clone())));
         }
         let seed = Some(UInt256::rand());
-        let bp_builder = BlockBuilder::with_params(
-            ThreadIdentifier::default(),
-            0,
-            opt_state.clone(),
-            now,
-            1_000_000,
-            seed.clone(),
-            None,
-            ThreadAccountsRepository::builder(tempfile::tempdir()?.path().join("durable"))
-                .build()?,
-            String::new(),
-            String::new(),
-            1,
-            HashMap::new(),
-            BTreeSet::new(),
-            None,
-            WasmNodeCache::new()?,
-            false,
-            None,
-        )?;
+        let bp_builder = BlockBuilder::builder()
+            .thread_id(ThreadIdentifier::default())
+            .block_height(0)
+            .initial_optimistic_state(opt_state.clone())
+            .gen_utime_ms(now)
+            .block_gas_limit(1_000_000)
+            .rand_seed(seed.clone())
+            .control_rx_stop(None)
+            .thread_accounts_repository(
+                ThreadAccountsRepository::builder(tempfile::tempdir()?.path().join("durable"))
+                    .build()?,
+            )
+            .block_keeper_epoch_code_hash(String::new())
+            .block_keeper_preepoch_code_hash(String::new())
+            .parallelization_level(1)
+            .produced_internal_messages_to_other_threads(HashMap::new())
+            .added_high_priority_messages(HashMap::new())
+            .settled_messages(HashMap::new())
+            .tracked_ext_out_account_routings(BTreeSet::new())
+            .metrics(None)
+            .wasm_cache(WasmNodeCache::new()?)
+            .is_verifier(false)
+            .check_history_proof_hash(None)
+            .build()?;
 
         let (block, _, _) = bp_builder.build_block(
             inbound_external_messages::grouped_scheduler(ext_queue.clone()),
@@ -253,26 +257,30 @@ mod tests {
             })
             .map_err(|e| anyhow::format_err!("Failed to parse incoming block messages: {e}"))?);
 
-        let verifier_builder = BlockBuilder::with_params(
-            ThreadIdentifier::default(),
-            0,
-            opt_state.clone(),
-            now,
-            10_000_000,
-            seed,
-            None,
-            ThreadAccountsRepository::builder(tempfile::tempdir()?.path().join("durable"))
-                .build()?,
-            String::new(),
-            String::new(),
-            1,
-            HashMap::new(),
-            BTreeSet::new(),
-            None,
-            WasmNodeCache::new()?,
-            true,
-            None,
-        )?;
+        let verifier_builder = BlockBuilder::builder()
+            .thread_id(ThreadIdentifier::default())
+            .block_height(0)
+            .initial_optimistic_state(opt_state.clone())
+            .gen_utime_ms(now)
+            .block_gas_limit(10_000_000)
+            .rand_seed(seed)
+            .control_rx_stop(None)
+            .thread_accounts_repository(
+                ThreadAccountsRepository::builder(tempfile::tempdir()?.path().join("durable"))
+                    .build()?,
+            )
+            .block_keeper_epoch_code_hash(String::new())
+            .block_keeper_preepoch_code_hash(String::new())
+            .parallelization_level(1)
+            .produced_internal_messages_to_other_threads(HashMap::new())
+            .added_high_priority_messages(HashMap::new())
+            .settled_messages(HashMap::new())
+            .tracked_ext_out_account_routings(BTreeSet::new())
+            .metrics(None)
+            .wasm_cache(WasmNodeCache::new()?)
+            .is_verifier(true)
+            .check_history_proof_hash(None)
+            .build()?;
 
         let data = ext_messages.remove(4);
         ext_messages.insert(0, data);
@@ -321,26 +329,30 @@ mod tests {
         let _ = dst;
         ext_queue.restore_processed(&[entry]);
 
-        let builder = BlockBuilder::with_params(
-            ThreadIdentifier::default(),
-            0,
-            opt_state,
-            now,
-            10_000_000,
-            Some(UInt256::rand()),
-            Some(stop_rx),
-            ThreadAccountsRepository::builder(tempfile::tempdir()?.path().join("durable"))
-                .build()?,
-            String::new(),
-            String::new(),
-            1,
-            HashMap::new(),
-            BTreeSet::new(),
-            None,
-            WasmNodeCache::new()?,
-            false,
-            None,
-        )?;
+        let builder = BlockBuilder::builder()
+            .thread_id(ThreadIdentifier::default())
+            .block_height(0)
+            .initial_optimistic_state(opt_state)
+            .gen_utime_ms(now)
+            .block_gas_limit(10_000_000)
+            .rand_seed(Some(UInt256::rand()))
+            .control_rx_stop(Some(stop_rx))
+            .thread_accounts_repository(
+                ThreadAccountsRepository::builder(tempfile::tempdir()?.path().join("durable"))
+                    .build()?,
+            )
+            .block_keeper_epoch_code_hash(String::new())
+            .block_keeper_preepoch_code_hash(String::new())
+            .parallelization_level(1)
+            .produced_internal_messages_to_other_threads(HashMap::new())
+            .added_high_priority_messages(HashMap::new())
+            .settled_messages(HashMap::new())
+            .tracked_ext_out_account_routings(BTreeSet::new())
+            .metrics(None)
+            .wasm_cache(WasmNodeCache::new()?)
+            .is_verifier(false)
+            .check_history_proof_hash(None)
+            .build()?;
 
         let (_block, processed_stamps, _feedbacks) = builder.build_block(
             inbound_external_messages::owned_scheduler(ext_queue),

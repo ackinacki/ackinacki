@@ -1,0 +1,18 @@
+[package]
+name = "snapshot-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+blake3 = "1.8.2"
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+zstd.workspace = true

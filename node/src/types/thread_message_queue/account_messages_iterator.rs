@@ -4,9 +4,17 @@ use account_inbox::iter::iterable::DurableStorageIterable;
 use account_inbox::iter::iterator::MessagesRangeIterator;
 use account_inbox::storage::DurableStorageRead;
 
+use super::seek::CyclicIter;
+use super::DAppMessageQueueState;
+use super::InboxCapacity;
 use super::ThreadMessageQueueState;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
+use crate::types::AccountInbox;
+
+#[cfg(test)]
+#[path = "legacy_iterator_test_support.rs"]
+pub(crate) mod legacy_test_support;
 
 pub trait AccountMessagesIterator {
     fn iter<'a, T>(
@@ -30,10 +38,11 @@ impl AccountMessagesIterator for ThreadMessageQueueState {
             + 'a,
     {
         ThreadMessageQueueIterator::<'a, T> {
-            state: self,
-            dapp_offset: 0,
-            account_offset: 0,
+            dapps: self.messages.cyclic(self.cursor),
+            accounts: None,
             db: db_storage,
+            #[cfg(test)]
+            legacy: legacy_test_support::iterator(self, db_storage),
         }
     }
 }
@@ -42,10 +51,17 @@ pub struct ThreadMessageQueueIterator<'a, Storage>
 where
     Storage: DurableStorageRead<MessageIdentifier, Arc<WrappedMessage>>,
 {
-    state: &'a ThreadMessageQueueState,
-    dapp_offset: usize,
-    account_offset: usize,
+    dapps: CyclicIter<'a, Arc<DAppMessageQueueState>, InboxCapacity>,
+    accounts: Option<CyclicIter<'a, Arc<AccountInbox>, InboxCapacity>>,
     db: &'a Storage,
+    // Test-only substitution runs the former index-based traversal through the
+    // real producer/verifier. Release builds have no override or extra state.
+    #[cfg(test)]
+    legacy: Option<
+        std::vec::IntoIter<
+            MessagesRangeIterator<'a, MessageIdentifier, Arc<WrappedMessage>, Storage>,
+        >,
+    >,
 }
 
 impl<'a, Storage> Iterator for ThreadMessageQueueIterator<'a, Storage>
@@ -55,29 +71,16 @@ where
     type Item = MessagesRangeIterator<'a, MessageIdentifier, Arc<WrappedMessage>, Storage>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.dapp_offset < self.state.order_set.len() {
-            let dapp_index = (self.state.cursor + self.dapp_offset) % self.state.order_set.len();
-            let dapp_id = self.state.order_set.get_index(dapp_index)?;
-            let dapp_queue = self.state.messages.get(dapp_id)?;
-
-            if self.account_offset >= dapp_queue.order_set.len() {
-                self.dapp_offset += 1;
-                self.account_offset = 0;
-                continue;
-            }
-
-            let account_index =
-                (dapp_queue.cursor + self.account_offset) % dapp_queue.order_set.len();
-            self.account_offset += 1;
-            let routing = dapp_queue.order_set.get_index(account_index)?;
-            let range = dapp_queue.messages.get(routing)?.as_ref().clone();
-            return Some(MessagesRangeIterator::<
-                'a,
-                MessageIdentifier,
-                Arc<WrappedMessage>,
-                Storage,
-            >::new(self.db, range));
+        #[cfg(test)]
+        if let Some(legacy) = &mut self.legacy {
+            return legacy.next();
         }
-        None
+        loop {
+            if let Some((_, inbox)) = self.accounts.as_mut().and_then(Iterator::next) {
+                return Some(MessagesRangeIterator::new(self.db, inbox.messages.clone()));
+            }
+            let (_, dapp) = self.dapps.next()?;
+            self.accounts = Some(dapp.messages.cyclic(dapp.cursor));
+        }
     }
 }

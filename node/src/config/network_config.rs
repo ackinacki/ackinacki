@@ -176,6 +176,12 @@ pub struct NetworkConfig {
     #[serde(default = "default_shared_state_retry_download_timeout_millis")]
     pub shared_state_retry_download_timeout_millis: u64,
 
+    /// Wall-clock limit for one primary/legacy snapshot download, independent
+    /// of the retry interval. Defaults to one hour; takes effect on restart.
+    #[builder(default = 3_600_000)]
+    #[serde(default = "default_shared_state_download_deadline_millis")]
+    pub shared_state_download_deadline_millis: u64,
+
     /// Chitchat cluster id for gossip
     #[serde(default = "default_chitchat_cluster_id")]
     pub chitchat_cluster_id: String,
@@ -213,6 +219,10 @@ fn default_shared_state_retry_download_timeout_millis() -> u64 {
 
 fn default_shared_state_max_download_tries() -> u8 {
     30
+}
+
+fn default_shared_state_download_deadline_millis() -> u64 {
+    3_600_000
 }
 
 fn default_chitchat_cluster_id() -> String {

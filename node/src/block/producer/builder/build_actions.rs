@@ -1,7 +1,6 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::collections::BTreeSet;
 use std::collections::BTreeSet as StdBTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -15,7 +14,6 @@ use std::sync::Mutex;
 use account_inbox::iter::iterator::MessagesRangeIterator;
 use account_state::DurableThreadAccountsStateDiff;
 use account_state::ThreadAccount;
-use account_state::ThreadAccountsRepository;
 use account_state::ThreadAccountsStateTransition;
 use account_state::VmAccount;
 use anyhow::bail;
@@ -32,7 +30,6 @@ use node_types::BlockIdentifier;
 use node_types::DAppIdentifier;
 use node_types::ThreadIdentifier;
 use telemetry_utils::mpsc::instrumented_channel;
-use telemetry_utils::mpsc::InstrumentedReceiver;
 use tracing::instrument;
 use tracing::trace_span;
 use tvm_abi::contract::ABI_VERSION_2_4;
@@ -86,7 +83,6 @@ use crate::block::producer::builder::trace::simple_trace_callback;
 use crate::block::producer::errors::verify_error;
 use crate::block::producer::errors::VerifyError;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
-use crate::block::producer::wasm::WasmNodeCache;
 use crate::block_keeper_system::epoch::decode_epoch_data;
 use crate::block_keeper_system::epoch::decode_preepoch_call_message;
 use crate::block_keeper_system::epoch::decode_preepoch_data;
@@ -103,7 +99,6 @@ use crate::external_messages::ExtMessagesSelectionCursor;
 use crate::external_messages::ExtMessagesSource;
 use crate::external_messages::QueuedExtMessage;
 use crate::external_messages::Stamp;
-use crate::helper::metrics::BlockProductionMetrics;
 use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::mvconfig::abi::MV_CONFIG_CONTRACT_ADDR;
@@ -153,30 +148,29 @@ lazy_static::lazy_static!(
 );
 
 impl BlockBuilder {
-    /// Initialize BlockBuilder
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_params(
-        thread_id: ThreadIdentifier,
-        block_height: u64,
-        initial_optimistic_state: OptimisticStateImpl,
-        gen_utime_ms: u64,
-        block_gas_limit: u64,
-        rand_seed: Option<UInt256>,
-        control_rx_stop: Option<InstrumentedReceiver<()>>,
-        thread_accounts_repository: ThreadAccountsRepository,
-        block_keeper_epoch_code_hash: String,
-        block_keeper_preepoch_code_hash: String,
-        parallelization_level: usize,
-        produced_internal_messages_to_other_threads: HashMap<
-            AccountRouting,
-            Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
-        >,
-        tracked_ext_out_account_routings: BTreeSet<AccountRouting>,
-        metrics: Option<BlockProductionMetrics>,
-        wasm_cache: WasmNodeCache,
-        is_verifier: bool,
-        check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
-    ) -> anyhow::Result<Self> {
+    /// Prepare derived state after all named inputs have been supplied.
+    pub(super) fn from_params(params: super::BlockBuilderParams) -> anyhow::Result<Self> {
+        let super::BlockBuilderParams {
+            thread_id,
+            block_height,
+            initial_optimistic_state,
+            gen_utime_ms,
+            block_gas_limit,
+            rand_seed,
+            control_rx_stop,
+            thread_accounts_repository,
+            block_keeper_epoch_code_hash,
+            block_keeper_preepoch_code_hash,
+            parallelization_level,
+            produced_internal_messages_to_other_threads,
+            added_high_priority_messages,
+            settled_messages,
+            tracked_ext_out_account_routings,
+            metrics,
+            wasm_cache,
+            is_verifier,
+            check_history_proof_hash,
+        } = params;
         let (initial_accounts, usage_tree) =
             initial_optimistic_state.get_shard_state().with_tvm_usage_tree()?;
         // let shard_state = initial_optimistic_state.get_shard_state();
@@ -210,37 +204,52 @@ impl BlockBuilder {
         let base_config_stateinit = StateInit::construct_from_bytes(DAPP_CONFIG_TVC)
             .map_err(|e| anyhow::format_err!("Failed to construct DAPP config tvc: {e}"))?;
 
-        let builder = BlockBuilder::builder()
-            .thread_id(thread_id)
-            .block_height(block_height)
-            .initial_accounts(initial_accounts)
-            .accounts_builder(accounts_builder)
-            .block_info(block_info)
-            .rand_seed(rand_seed)
-            .start_lt(start_lt)
-            .end_lt(start_lt + 1)
-            .block_gas_limit(block_gas_limit)
-            .control_rx_stop(control_rx_stop)
-            .usage_tree(usage_tree)
-            .initial_optimistic_state(initial_optimistic_state)
-            .block_keeper_epoch_code_hash(block_keeper_epoch_code_hash)
-            .block_keeper_preepoch_code_hash(block_keeper_preepoch_code_hash)
-            .parallelization_level(parallelization_level)
-            .base_config_stateinit(base_config_stateinit)
-            .thread_accounts_repository(thread_accounts_repository)
-            .produced_internal_messages_to_other_threads(
-                produced_internal_messages_to_other_threads,
-            )
-            .tracked_ext_out_account_routings(tracked_ext_out_account_routings)
-            .metrics(metrics)
-            .is_stop_requested(false)
-            .wasm_cache(wasm_cache)
-            .is_verifier(is_verifier)
-            .check_history_proof_hash(check_history_proof_hash);
-
-        #[cfg(feature = "monitor-accounts-number")]
-        let builder = builder.accounts_number_diff(0);
-        Ok(builder.build())
+        Ok(Self {
+            thread_id,
+            block_height,
+            initial_accounts,
+            accounts_builder,
+            block_info,
+            rand_seed,
+            new_messages: Default::default(),
+            in_msg_descr: Default::default(),
+            out_msg_descr: Default::default(),
+            block_gas_limit,
+            account_blocks: Default::default(),
+            total_gas_used: Default::default(),
+            start_lt,
+            end_lt: start_lt + 1,
+            copyleft_rewards: Default::default(),
+            control_rx_stop,
+            is_stop_requested: false,
+            parallelization_level,
+            tx_cnt: Default::default(),
+            tx_count_per_routing: Default::default(),
+            usage_tree,
+            initial_optimistic_state,
+            block_keeper_epoch_code_hash,
+            block_keeper_preepoch_code_hash,
+            block_keeper_set_changes: Default::default(),
+            base_config_stateinit,
+            dapp_credit_map: Default::default(),
+            dapp_minted_map: Default::default(),
+            thread_accounts_repository,
+            consumed_internal_messages: Default::default(),
+            consumed_high_priority_messages: Default::default(),
+            settled_messages,
+            added_high_priority_messages,
+            produced_internal_messages_to_the_current_thread: Default::default(),
+            produced_internal_messages_to_other_threads,
+            tracked_ext_out_account_routings,
+            accounts_that_changed_their_dapp_id: Default::default(),
+            metrics,
+            wasm_cache,
+            #[cfg(feature = "monitor-accounts-number")]
+            accounts_number_diff: 0,
+            tracked_ext_out_messages: Default::default(),
+            is_verifier,
+            check_history_proof_hash,
+        })
     }
 
     fn out_msg_key(&self, prefix: u64, hash: UInt256) -> OutMsgQueueKey {
@@ -266,7 +275,7 @@ impl BlockBuilder {
         let start = std::time::Instant::now();
         tracing::trace!(target: "builder", "execute_with_libs_and_params: {:?} {msg:?}", msg.hash().map(|h| h.to_hex_string()));
         let mut is_ext_message = msg.is_inbound_external();
-        let mut tvm_account_cell = Cell::try_from(&mut *vm_account)?;
+        let mut tvm_account_cell = Cell::from(&mut *vm_account);
         let result =
             executor.execute_with_libs_and_params(Some(msg), &mut tvm_account_cell, execute_params);
         *vm_account = tvm_account_cell.into();
@@ -381,6 +390,7 @@ impl BlockBuilder {
     pub(super) fn after_transaction(
         &mut self,
         mut thread_result: ThreadResult,
+        is_high_priority: bool,
     ) -> anyhow::Result<()> {
         let mut base_transaction_execution_time_ms =
             thread_result.read_account_time_ms + thread_result.message_execution_time_ms;
@@ -734,6 +744,7 @@ impl BlockBuilder {
             tr_cell,
             thread_result.in_msg.clone(),
             is_tracked_account_routing,
+            is_high_priority,
         ) {
             anyhow::bail!("Error append transaction {:?}", err);
         }
@@ -895,13 +906,13 @@ impl BlockBuilder {
             )
             .map_err(|e| anyhow::format_err!("failed to update out msg descr: {e}"))?;
 
-        let wrapped_message = WrappedMessage { message };
+        let wrapped_message = WrappedMessage::from_tvm(&message);
         let dapp_id = dest_dapp_id.unwrap_or_else(|| acc_id.redirect_dapp_id());
         let entry = self
             .produced_internal_messages_to_other_threads
             .entry(acc_id.routing(dapp_id))
             .or_default();
-        entry.push((MessageIdentifier::from(&wrapped_message), Arc::new(wrapped_message)));
+        entry.push((wrapped_message.identifier(), Arc::new(wrapped_message)));
         Ok(())
     }
 
@@ -929,6 +940,7 @@ impl BlockBuilder {
     fn execute_msg(
         &mut self,
         mut message: Message,
+        is_high_priority: bool,
         blockchain_config: &BlockchainConfig,
         acc_id: &AccountIdentifier,
         ext_dst: Option<ExtMessageDst>,
@@ -973,6 +985,7 @@ impl BlockBuilder {
                     orig_message_cell,
                     tr.serialize().unwrap(),
                     Some(orig_message),
+                    is_high_priority,
                 )?;
                 header.set_dest_dapp_id(Some(dest_dapp_id.into()));
                 true
@@ -1158,6 +1171,7 @@ impl BlockBuilder {
     pub(super) fn execute_internal(
         &mut self,
         message: Message,
+        is_high_priority: bool,
         blockchain_config: &BlockchainConfig,
         acc_id: &AccountIdentifier,
         block_unixtime: u32,
@@ -1168,6 +1182,7 @@ impl BlockBuilder {
     ) -> anyhow::Result<ActiveThread> {
         self.execute_msg(
             message,
+            is_high_priority,
             blockchain_config,
             acc_id,
             None,
@@ -1193,6 +1208,7 @@ impl BlockBuilder {
     ) -> anyhow::Result<ActiveThread> {
         self.execute_msg(
             message,
+            false,
             blockchain_config,
             &dst.account_id,
             Some(*dst),
@@ -1207,6 +1223,7 @@ impl BlockBuilder {
     #[allow(clippy::too_many_arguments)]
     fn execute_internal_messages(
         &mut self,
+        is_high_priority: bool,
         blockchain_config: &BlockchainConfig,
         check_messages_map: &mut Option<HashMap<AccountIdentifier, BTreeMap<u64, UInt256>>>,
         _white_list_of_slashing_messages_hashes: HashSet<UInt256>, // TODO: check usage
@@ -1367,6 +1384,7 @@ impl BlockBuilder {
                             let first_acc_id = AccountIdentifier::from(message.int_dst_account_id().expect("Failed to get int_dst_account_id"));
                             let first_thread = self.execute_internal(
                                 message,
+                                is_high_priority,
                                 blockchain_config,
                                 &first_acc_id,
                                 block_unixtime,
@@ -1408,6 +1426,7 @@ impl BlockBuilder {
                                     let acc_id = AccountIdentifier::from(message.int_dst_account_id().ok_or_else(|| anyhow::anyhow!("int_dst_account_id is None"))?);
                                     let thread = self.execute_internal(
                                         message,
+                                        is_high_priority,
                                         blockchain_config,
                                         &acc_id,
                                         block_unixtime,
@@ -1452,7 +1471,7 @@ impl BlockBuilder {
                                 let thread_result = thread_result?;
                                 let acc_id = thread_result.account_id;
 
-                                self.after_transaction(thread_result)?;
+                                self.after_transaction(thread_result, is_high_priority)?;
 
                                 active_int_destinations.lock().remove(&acc_id);
                             } else {
@@ -1491,7 +1510,7 @@ impl BlockBuilder {
                                     // sorted.push((key, thread.message, acc_id.clone(), 0));
                                     // } else {
                                     tracing::trace!(target: "builder", "parallel int message finished dest: {}, key: {}", acc_id.to_hex_string(), key.inner().hash.to_hex_string());
-                                    self.after_transaction(thread_result)?;
+                                    self.after_transaction(thread_result, is_high_priority)?;
 
                                     // self.out_queue_info
                                     //     .out_queue_mut()
@@ -1681,6 +1700,7 @@ impl BlockBuilder {
 
                         let thread = self.execute_internal(
                             message.clone(),
+                            false,
                             blockchain_config,
                             &acc_id,
                             block_unixtime,
@@ -1700,13 +1720,13 @@ impl BlockBuilder {
                                             "New message for another thread: {:?}",
                                             message.hash().map(|h| h.to_hex_string())
                                         );
-                                        let wrapped_message = WrappedMessage { message: message.clone() };
+                                        let wrapped_message = WrappedMessage::from_tvm(&message);
                                         let entry = self
                                             .produced_internal_messages_to_other_threads
                                             .entry(*account_routing)
                                             .or_default();
                                         entry.push((
-                                            MessageIdentifier::from(&wrapped_message),
+                                            wrapped_message.identifier(),
                                             Arc::new(wrapped_message),
                                         ));
                                     }
@@ -1836,6 +1856,7 @@ impl BlockBuilder {
         msg_cell: Cell,
         tr_cell: Cell,
         msg: Option<Message>,
+        is_high_priority: bool,
     ) -> anyhow::Result<()> {
         let msg = msg.unwrap_or(
             Message::construct_from_cell(msg_cell.clone())
@@ -1853,9 +1874,13 @@ impl BlockBuilder {
                 .map(DAppIdentifier::from)
                 .unwrap_or_else(|| acc_id.redirect_dapp_id());
 
-            let wrapped_message = WrappedMessage { message: msg.clone() };
-            let entry = self.consumed_internal_messages.entry(acc_id.routing(dapp_id)).or_default();
-            entry.insert(MessageIdentifier::from(&wrapped_message));
+            let consumed = if is_high_priority {
+                &mut self.consumed_high_priority_messages
+            } else {
+                &mut self.consumed_internal_messages
+            };
+            let entry = consumed.entry(acc_id.routing(dapp_id)).or_default();
+            entry.push(MessageIdentifier::from(&msg));
 
             InMsg::immediate(
                 env.serialize()
@@ -1890,6 +1915,7 @@ impl BlockBuilder {
         tr_cell: Cell,
         in_message: Message,
         is_tracked_account_routing: Option<AccountRouting>,
+        is_high_priority: bool,
     ) -> anyhow::Result<()> {
         tracing::debug!(
             target: "builder",
@@ -1908,7 +1934,12 @@ impl BlockBuilder {
         }
 
         if let Some(msg_cell) = transaction.in_msg_cell() {
-            self.add_msg_to_in_msg_descr(msg_cell, tr_cell.clone(), Some(in_message))?;
+            self.add_msg_to_in_msg_descr(
+                msg_cell,
+                tr_cell.clone(),
+                Some(in_message),
+                is_high_priority,
+            )?;
         }
         transaction
             .iterate_out_msgs(|mut msg| {
@@ -1972,13 +2003,13 @@ impl BlockBuilder {
                             msg.hash().map(|h| h.to_hex_string()),
                             destination_routing
                         );
-                        let wrapped_message = WrappedMessage { message: msg.clone() };
+                        let wrapped_message = WrappedMessage::from_tvm(&msg);
                         let entry = self
                             .produced_internal_messages_to_other_threads
                             .entry(destination_routing)
                             .or_default();
                         entry.push((
-                            MessageIdentifier::from(&wrapped_message),
+                            wrapped_message.identifier(),
                             Arc::new(wrapped_message),
                         ));
                     }
@@ -2189,6 +2220,9 @@ impl BlockBuilder {
         let (new_state, cross_thread_ref_data, durable_accounts_diff) = postprocess(
             self.initial_optimistic_state,
             self.consumed_internal_messages.clone(),
+            self.consumed_high_priority_messages.clone(),
+            self.settled_messages,
+            self.added_high_priority_messages,
             self.produced_internal_messages_to_the_current_thread.clone(),
             accounts_that_changed_their_dapp_id.clone(),
             block_id,
@@ -2228,10 +2262,10 @@ impl BlockBuilder {
                 break;
             }
         }
-        let wrapped_message = WrappedMessage { message: message.clone() };
+        let wrapped_message = WrappedMessage::from_tvm(&message);
         tracing::debug!(target: "builder",
             "Add message to produced_internal_messages_to_the_current_thread: {}",
-            wrapped_message.message.hash().unwrap().to_hex_string()
+            wrapped_message.identifier().inner().hash.to_hex_string()
         );
         let header = message.int_header().expect("internal message must have header");
         let dst: AccountIdentifier = header.dst.address().into();
@@ -2244,7 +2278,7 @@ impl BlockBuilder {
             .produced_internal_messages_to_the_current_thread
             .entry(dst.routing(dapp_id))
             .or_default();
-        entry.push((MessageIdentifier::from(&wrapped_message), Arc::new(wrapped_message)));
+        entry.push((wrapped_message.identifier(), Arc::new(wrapped_message)));
         tracing::debug!(
             target: "builder",
             "Inserting new message with {} {:?}",
@@ -2266,11 +2300,11 @@ impl BlockBuilder {
         time_limits: &ExecutionTimeLimits,
         mvconfig: MVConfig,
     ) -> anyhow::Result<(bool, bool)> {
-        let high_priority_messages = std::mem::replace(
-            &mut self.initial_optimistic_state.high_priority_messages,
-            ThreadMessageQueueState::empty(),
-        );
+        let mut high_priority_messages =
+            self.initial_optimistic_state.high_priority_messages.clone();
+        high_priority_messages.append_messages(&self.added_high_priority_messages);
         let high_priority_result = self.execute_internal_messages(
+            true,
             blockchain_config,
             check_messages_map,
             white_list_of_slashing_messages_hashes.clone(),
@@ -2279,16 +2313,14 @@ impl BlockBuilder {
             time_limits,
             mvconfig.clone(),
         );
-        self.initial_optimistic_state.high_priority_messages = high_priority_messages;
         let (mut block_full, mut verify_block_contains_missing_messages_from_prev_state) =
             high_priority_result?;
 
         if !block_full && !verify_block_contains_missing_messages_from_prev_state {
-            let messages = std::mem::replace(
-                &mut self.initial_optimistic_state.messages,
-                ThreadMessageQueueState::empty(),
-            );
+            let mut messages = self.initial_optimistic_state.messages.clone();
+            messages.append_messages(&self.settled_messages);
             let messages_result = self.execute_internal_messages(
+                false,
                 blockchain_config,
                 check_messages_map,
                 white_list_of_slashing_messages_hashes,
@@ -2297,7 +2329,6 @@ impl BlockBuilder {
                 time_limits,
                 mvconfig,
             );
-            self.initial_optimistic_state.messages = messages;
             (block_full, verify_block_contains_missing_messages_from_prev_state) = messages_result?;
         }
 
@@ -2322,7 +2353,7 @@ impl BlockBuilder {
 
                     let acc_id = thread_result.account_id;
                     tracing::trace!(target: "builder", "parallel new message finished dest: {}, key {}", acc_id.to_hex_string(), key.repr_hash().to_hex_string());
-                    self.after_transaction(thread_result)?;
+                    self.after_transaction(thread_result, false)?;
                     let Some(index) = active_destinations.remove(&acc_id) else {
                         bail!("active_destinations doesn't contain address: {acc_id}");
                     };
@@ -2746,7 +2777,7 @@ impl BlockBuilder {
                     None,
                 )?;
 
-                self.after_transaction(thread_result)?;
+                self.after_transaction(thread_result, false)?;
                 active_destinations.remove(&active_dst);
                 ext_message_feedbacks.push(feedback);
                 processed_stamps.push(stamp);
@@ -2920,8 +2951,10 @@ impl BlockBuilder {
                             match value.next() {
                                 Some(Ok((message, key))) => {
                                     tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?}", message);
+                                    let tvm_message =
+                                        message.tvm_message().map_err(anyhow::Error::msg)?;
                                     let Some(acc_id) =
-                                        message.message.int_dst_account_id().map(|x| x.into())
+                                        tvm_message.int_dst_account_id().map(|x| x.into())
                                     else {
                                         // TODO: We expect only messages with internal destination, skip it
                                         // check if it should be deleted from out_queue_info
@@ -2941,8 +2974,7 @@ impl BlockBuilder {
                                             };
                                             ensure!(
                                                 *next_message
-                                                    == message
-                                                        .message
+                                                    == tvm_message
                                                         .hash()
                                                         .map_err(anyhow::Error::msg)?,
                                                 "Wrong int messages order"
@@ -2958,7 +2990,7 @@ impl BlockBuilder {
                                     guarded.insert(acc_id);
 
                                     tracing::trace!(target: "builder", "get_next_int_message: return: {:?}", message);
-                                    break Some((message.message.clone(), key));
+                                    break Some((tvm_message.clone(), key));
                                 }
                                 Some(Err(_)) => {
                                     // TODO: we have received an error while fetching a message, skip it for now, but it needs check
@@ -2986,15 +3018,16 @@ impl BlockBuilder {
                     match account_msgs_iter.next() {
                         Some(Ok((message, key))) => {
                             tracing::trace!(target: "builder", "get_next_int_message: Got message from queue iter: {:?}", message);
+                            let tvm_message = message.tvm_message().map_err(anyhow::Error::msg)?;
                             let Some(acc_id): Option<AccountIdentifier> =
-                                message.message.int_dst_account_id().map(|x| x.into())
+                                tvm_message.int_dst_account_id().map(|x| x.into())
                             else {
                                 // TODO: We expect only messages with internal destination, skip it
                                 // check if it should be deleted from out_queue_info
                                 tracing::trace!(target: "builder", "get_next_int_message: skip ext: {:?}", message);
                                 continue;
                             };
-                            let Some(_header) = message.message.int_header() else {
+                            let Some(_header) = tvm_message.int_header() else {
                                 tracing::trace!(target: "builder", "get_next_int_message: skip not internal msg: {:?}", message);
                                 continue;
                             };
@@ -3019,10 +3052,7 @@ impl BlockBuilder {
                                     };
                                     ensure!(
                                         *next_message
-                                            == message
-                                                .message
-                                                .hash()
-                                                .map_err(anyhow::Error::msg)?,
+                                            == tvm_message.hash().map_err(anyhow::Error::msg)?,
                                         "Wrong int messages order"
                                     );
                                 } else {
@@ -3048,7 +3078,7 @@ impl BlockBuilder {
                             started_accounts.insert(acc_id, account_msgs_iter);
 
                             tracing::trace!(target: "builder", "get_next_int_message: return: {:?}", message);
-                            break Some((message.message.clone(), key));
+                            break Some((tvm_message.clone(), key));
                         }
                         Some(Err(_)) => {
                             // TODO: we have received an error while fetching a message, skip it for now, but it needs check
@@ -3265,10 +3295,14 @@ fn create_wrong_dapp_id_feedback(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use account_state::ThreadAccountsRepository;
     use tvm_types::IBitstring;
     use tvm_types::ED25519_SIGNATURE_LENGTH;
 
     use super::*;
+    use crate::block::producer::wasm::WasmNodeCache;
 
     fn external_message_with_signature(signature: Option<&[u8]>) -> Message {
         let mut body = tvm_types::BuilderData::new();
@@ -3296,6 +3330,75 @@ mod tests {
     }
 
     #[test]
+    fn named_builder_preserves_prepared_state_and_runtime_defaults() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let repository = ThreadAccountsRepository::builder(dir.path().join("durable")).build()?;
+        let mut state = OptimisticStateImpl::zero();
+        state.block_info =
+            BlkPrevInfo::Block { prev: ExtBlkRef { end_lt: 555, ..Default::default() } }.into();
+        let expected_seq_no = repository.state_seq_no(&state.get_shard_state()) + 1;
+        let seed = UInt256::from([7; 32]);
+        let routing = AccountRouting::default();
+        let message = Arc::new(WrappedMessage::from_tvm(&Message::with_int_header(
+            tvm_block::InternalMessageHeader::default(),
+        )));
+        for is_verifier in [false, true] {
+            let params = BlockBuilder::builder()
+                .thread_id(ThreadIdentifier::default())
+                .block_height(13)
+                .initial_optimistic_state(state.clone())
+                .gen_utime_ms(12_000)
+                .block_gas_limit(123_456)
+                .thread_accounts_repository(repository.clone())
+                .block_keeper_epoch_code_hash("epoch".into())
+                .block_keeper_preepoch_code_hash("preepoch".into())
+                .parallelization_level(3)
+                .produced_internal_messages_to_other_threads(HashMap::new())
+                .added_high_priority_messages(HashMap::new())
+                .settled_messages(HashMap::from([(
+                    routing,
+                    vec![(message.identifier(), message.clone())],
+                )]))
+                .tracked_ext_out_account_routings(BTreeSet::from([routing]))
+                .wasm_cache(WasmNodeCache::new()?)
+                .is_verifier(is_verifier);
+            let builder = if is_verifier {
+                params.rand_seed(Some(seed.clone())).build()?
+            } else {
+                params.build()? // Omitted optional settings use the old None defaults.
+            };
+            if is_verifier {
+                assert_eq!(builder.rand_seed, seed);
+            }
+            #[cfg(not(feature = "test_enforce_min_seq"))]
+            assert_eq!(builder.block_info.seq_no(), expected_seq_no);
+            assert!(builder.block_info.seq_no() >= expected_seq_no);
+            assert_eq!(builder.at_and_lt(), (12, 556));
+            assert_eq!(builder.end_lt, 557);
+            assert_eq!(builder.block_height, 13);
+            assert_eq!(builder.block_gas_limit, 123_456);
+            assert_eq!(builder.parallelization_level, 3);
+            assert_eq!(builder.is_verifier, is_verifier);
+            assert!(!builder.is_stop_requested);
+            assert!(builder.control_rx_stop.is_none());
+            assert!(builder.metrics.is_none());
+            assert!(builder.check_history_proof_hash.is_none());
+            assert_eq!(builder.total_gas_used, 0);
+            assert_eq!(builder.tx_cnt, 0);
+            assert!(builder.new_messages.is_empty());
+            assert!(builder.consumed_internal_messages.is_empty());
+            assert!(builder.consumed_high_priority_messages.is_empty());
+            assert!(builder.produced_internal_messages_to_the_current_thread.is_empty());
+            assert!(builder.tracked_ext_out_messages.is_empty());
+            assert_eq!(builder.settled_messages[&routing][0].0, message.identifier());
+            assert!(builder.tracked_ext_out_account_routings.contains(&routing));
+            #[cfg(feature = "monitor-accounts-number")]
+            assert_eq!(builder.accounts_number_diff, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn external_account_redirect_is_resolved_only_during_verification() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let repository = ThreadAccountsRepository::builder(dir.path().join("durable"))
@@ -3310,7 +3413,7 @@ mod tests {
         let account_id = test_account(2);
         let dapp_id = test_dapp(1);
         let account = ThreadAccount::new(
-            VmAccount::Tvm(tvm_block::Account::default().serialize().map_err(anyhow::Error::msg)?),
+            VmAccount::from(tvm_block::Account::default().serialize().map_err(anyhow::Error::msg)?),
             Default::default(),
             42,
             Some(dapp_id),
@@ -3329,25 +3432,27 @@ mod tests {
         assert!(repository.flush_pending_and_wait_for_drain(std::time::Duration::from_secs(5)));
         let mut optimistic_state = OptimisticStateImpl::zero();
         optimistic_state.set_shard_state(transition.new_state);
-        let mut builder = BlockBuilder::with_params(
-            ThreadIdentifier::default(),
-            1,
-            optimistic_state,
-            0,
-            1_000_000,
-            None,
-            None,
-            repository,
-            String::new(),
-            String::new(),
-            1,
-            HashMap::new(),
-            BTreeSet::new(),
-            None,
-            WasmNodeCache::new()?,
-            false,
-            None,
-        )?;
+        let mut builder = BlockBuilder::builder()
+            .thread_id(ThreadIdentifier::default())
+            .block_height(1)
+            .initial_optimistic_state(optimistic_state)
+            .gen_utime_ms(0)
+            .block_gas_limit(1_000_000)
+            .rand_seed(None)
+            .control_rx_stop(None)
+            .thread_accounts_repository(repository)
+            .block_keeper_epoch_code_hash(String::new())
+            .block_keeper_preepoch_code_hash(String::new())
+            .parallelization_level(1)
+            .produced_internal_messages_to_other_threads(HashMap::new())
+            .added_high_priority_messages(HashMap::new())
+            .settled_messages(HashMap::new())
+            .tracked_ext_out_account_routings(BTreeSet::new())
+            .metrics(None)
+            .wasm_cache(WasmNodeCache::new()?)
+            .is_verifier(false)
+            .check_history_proof_hash(None)
+            .build()?;
 
         // Production preserves the stub so execution rejects the submitted redirect route.
         // Verification recovers the real account even though block messages lack a dApp ID.
@@ -3377,6 +3482,62 @@ mod tests {
         tx.write_description(&TransactionDescr::Ordinary(description))
             .expect("test transaction should accept description");
         tx
+    }
+
+    #[test]
+    fn producer_and_verifier_record_consumption_in_separate_priority_lists() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let repository = ThreadAccountsRepository::builder(dir.path().join("durable")).build()?;
+        let routing = AccountIdentifier::default().redirect();
+        for is_verifier in [false, true] {
+            let mut builder = BlockBuilder::builder()
+                .thread_id(ThreadIdentifier::default())
+                .block_height(1)
+                .initial_optimistic_state(OptimisticStateImpl::zero())
+                .gen_utime_ms(0)
+                .block_gas_limit(1_000_000)
+                .rand_seed(None)
+                .control_rx_stop(None)
+                .thread_accounts_repository(repository.clone())
+                .block_keeper_epoch_code_hash(String::new())
+                .block_keeper_preepoch_code_hash(String::new())
+                .parallelization_level(1)
+                .produced_internal_messages_to_other_threads(HashMap::new())
+                .added_high_priority_messages(HashMap::new())
+                .settled_messages(HashMap::new())
+                .tracked_ext_out_account_routings(BTreeSet::new())
+                .metrics(None)
+                .wasm_cache(WasmNodeCache::new()?)
+                .is_verifier(is_verifier)
+                .check_history_proof_hash(None)
+                .build()?;
+            let messages: Vec<_> = (1..=4)
+                .map(|lt| {
+                    let header =
+                        tvm_block::InternalMessageHeader { created_lt: lt, ..Default::default() };
+                    Message::with_int_header(header)
+                })
+                .collect();
+            for (index, message) in messages.iter().enumerate() {
+                let mut transaction = Transaction::default();
+                transaction.set_logical_time(100 + index as u64);
+                builder.add_msg_to_in_msg_descr(
+                    message.serialize().map_err(anyhow::Error::msg)?,
+                    transaction.serialize().map_err(anyhow::Error::msg)?,
+                    Some(message.clone()),
+                    index < 2,
+                )?;
+            }
+            assert_eq!(
+                builder.consumed_high_priority_messages[&routing],
+                messages[..2].iter().map(MessageIdentifier::from).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                builder.consumed_internal_messages[&routing],
+                messages[2..].iter().map(MessageIdentifier::from).collect::<Vec<_>>()
+            );
+        }
+        Ok(())
     }
 
     #[test]

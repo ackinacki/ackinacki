@@ -16,6 +16,8 @@ struct StoredRecord {
 pub struct InMemoryKVStore {
     /// set_name → (key_bytes → StoredRecord)
     sets: Arc<RwLock<HashMap<String, HashMap<Vec<u8>, StoredRecord>>>>,
+    #[cfg(test)]
+    next_put_error: Arc<parking_lot::Mutex<Option<anyhow::Error>>>,
 }
 
 impl InMemoryKVStore {
@@ -42,6 +44,10 @@ impl InMemoryKVStore {
     }
 
     pub fn put(&self, set: &str, records: Vec<KVRecord>, cas: bool) -> anyhow::Result<()> {
+        #[cfg(test)]
+        if let Some(error) = self.next_put_error.lock().take() {
+            return Err(error);
+        }
         let mut sets = self.sets.write();
         let set_map = sets.entry(set.to_string()).or_default();
         for record in records {
@@ -67,6 +73,11 @@ impl InMemoryKVStore {
             );
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_put(&self, error: anyhow::Error) {
+        *self.next_put_error.lock() = Some(error);
     }
 
     pub fn delete(&self, set: &str, keys: &[Vec<u8>]) -> anyhow::Result<()> {

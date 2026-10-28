@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::Envelope;
+use crate::node::background_dropper::BACKGROUND_DROPPER;
 use crate::node::block_state::repository::BlockState;
 use crate::types::notification::Notification;
 use crate::types::AckiNackiBlock;
@@ -20,15 +21,28 @@ use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
 
+pub(crate) type CandidateEntry = (BlockState, Arc<Envelope<AckiNackiBlock>>);
+pub(crate) type CandidateMap = BTreeMap<BlockIndex, CandidateEntry>;
+
 #[allow(clippy::mutable_key_type)]
 #[derive(Default, Getters)]
 pub struct UnfinalizedBlocksSnapshot {
-    blocks: BTreeMap<BlockIndex, (BlockState, Arc<Envelope<AckiNackiBlock>>)>,
+    blocks: CandidateMap,
     notifications_stamp: u32,
     block_id_set: HashSet<BlockIdentifier>,
 }
 
 impl AllowGuardedMut for UnfinalizedBlocksSnapshot {}
+
+impl Drop for UnfinalizedBlocksSnapshot {
+    fn drop(&mut self) {
+        if !self.blocks.is_empty() {
+            // Move the map as-is: no per-block sends and no rebuilding a large vector. This also
+            // covers early returns/continues and snapshots used outside the two processing loops.
+            BACKGROUND_DROPPER.defer_heavy_drop_block_snapshot(std::mem::take(&mut self.blocks));
+        }
+    }
+}
 
 #[derive(Default, Dbg)]
 struct UnfinalizedBlocksData {
@@ -43,23 +57,27 @@ impl UnfinalizedBlocksData {
         self.filter = filter;
     }
 
-    fn insert(&mut self, index: BlockIndex, value: (BlockState, Arc<Envelope<AckiNackiBlock>>)) {
+    fn insert(&mut self, index: BlockIndex, value: CandidateEntry) -> Option<CandidateEntry> {
         let block_id = *index.block_identifier();
         self.identifier_to_seqno.insert(block_id, *index.block_seq_no());
-        self.main_map.blocks.insert(index, value);
+        let previous = self.main_map.blocks.insert(index, value);
         self.main_map.block_id_set.insert(block_id);
+        previous
     }
 
-    fn remove_indices(&mut self, indices: impl IntoIterator<Item = BlockIndex>) -> Vec<BlockState> {
+    fn remove_indices(
+        &mut self,
+        indices: impl IntoIterator<Item = BlockIndex>,
+    ) -> Vec<CandidateEntry> {
         let mut removed = Vec::new();
         for index in indices {
             let block_id = *index.block_identifier();
-            if let Some((block_state, _)) = self.main_map.blocks.remove(&index) {
+            if let Some(entry) = self.main_map.blocks.remove(&index) {
                 if self.identifier_to_seqno.get(&block_id) == Some(index.block_seq_no()) {
                     self.identifier_to_seqno.remove(&block_id);
                 }
                 self.main_map.block_id_set.remove(&block_id);
-                removed.push(block_state);
+                removed.push(entry);
             }
         }
         removed
@@ -115,11 +133,17 @@ impl UnfinalizedCandidateBlockCollection {
     pub fn new(states: impl Iterator<Item = (BlockState, Arc<Envelope<AckiNackiBlock>>)>) -> Self {
         let mut data = UnfinalizedBlocksData::default();
         let notifications = Notification::new();
+        let mut replaced = Vec::new();
 
         for (state, block) in states {
             let index = BlockIndex::from(block.as_ref());
             state.guarded_mut(|e| e.add_subscriber(notifications.clone()));
-            data.insert(index, (state, block));
+            if let Some(previous) = data.insert(index, (state, block)) {
+                replaced.push(previous);
+            }
+        }
+        if !replaced.is_empty() {
+            BACKGROUND_DROPPER.defer_heavy_drop_blocks(replaced);
         }
 
         Self { candidates: Arc::new(Mutex::new(data)), notifications }
@@ -157,14 +181,15 @@ impl UnfinalizedCandidateBlockCollection {
         let (block_seq_no, block_height) =
             block_state.guarded(|e| (*e.block_seq_no(), *e.block_height()));
         block_state.guarded_mut(|e| e.add_subscriber(self.notifications().clone()));
-        let rejected = self.candidates.guarded_mut(|data| {
+        let (rejected, replaced) = self.candidates.guarded_mut(|data| {
             if data.filter.rejects(block_seq_no, block_height) {
-                true
+                (true, Some((block_state.clone(), block)))
             } else {
-                data.insert(index.clone(), (block_state.clone(), block));
-                false
+                (false, data.insert(index.clone(), (block_state.clone(), block)))
             }
         });
+        // A single rejected/replaced entry is released locally, but outside the collection lock.
+        drop(replaced);
         if rejected {
             tracing::debug!(
                 target: "node",
@@ -240,12 +265,17 @@ impl UnfinalizedCandidateBlockCollection {
         removed_count
     }
 
-    fn finish_removal(&self, removed: Vec<BlockState>) {
+    fn finish_removal(&self, removed: Vec<CandidateEntry>) {
         if !removed.is_empty() {
             self.touch();
         }
-        for block_state in removed {
+        // Detach collection notifications before handing off ownership. Both bodies and states
+        // remain in the vector until all state locks are released; enqueueing may block.
+        for (block_state, _) in &removed {
             block_state.guarded_mut(|e| e.remove_subscriber(self.notifications()));
+        }
+        if !removed.is_empty() {
+            BACKGROUND_DROPPER.defer_heavy_drop_blocks(removed);
         }
     }
 
@@ -340,10 +370,11 @@ impl Drop for UnfinalizedCandidateBlockCollection {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
+    use std::time::Instant;
 
     use account_state::DurableThreadAccountsStateDiff;
     use node_types::BlockIdentifier;
@@ -356,6 +387,7 @@ mod tests {
 
     use super::*;
     use crate::bls::envelope::BLSSignedEnvelope;
+    use crate::node::background_dropper::HEAVY_DROP_MIN_ENTRIES;
     use crate::node::NodeIdentifier;
     use crate::node::SignerIndex;
     use crate::types::bp_selector::ProducerSelector;
@@ -391,7 +423,10 @@ mod tests {
         ProducerSelector::builder().rng_seed_block_id(parent_block_id).index(0).build()
     }
 
-    fn make_block_state(seq_no: u32, height: u64) -> (BlockState, Arc<Envelope<AckiNackiBlock>>) {
+    pub(crate) fn make_block_state(
+        seq_no: u32,
+        height: u64,
+    ) -> (BlockState, Arc<Envelope<AckiNackiBlock>>) {
         let block_height = make_height(height);
         let parent_block_id = block_id(seq_no as u8);
         let mut block = AckiNackiBlock::new(
@@ -436,6 +471,50 @@ mod tests {
         UnfinalizedCandidateBlockCollection::new(
             values.into_iter().map(|(seq_no, height)| make_block_state(seq_no, height)),
         )
+    }
+
+    #[test]
+    fn removal_keeps_bodies_alive_until_the_whole_batch_is_dropped() {
+        let mut data = UnfinalizedBlocksData::default();
+        let mut indices = Vec::new();
+        let mut weak_blocks = Vec::new();
+        for seq_no in 1..=3 {
+            let (state, block) = make_block_state(seq_no, seq_no as u64);
+            let index = BlockIndex::from(block.as_ref());
+            indices.push(index.clone());
+            weak_blocks.push(Arc::downgrade(&block));
+            assert!(data.insert(index, (state, block)).is_none());
+        }
+        let removed = data.remove_indices(indices);
+        assert!(data.main_map.blocks.is_empty());
+        assert!(data.identifier_to_seqno.is_empty());
+        assert!(data.main_map.block_id_set.is_empty());
+        assert_eq!(removed.len(), 3);
+
+        assert!(weak_blocks.iter().all(|block| block.strong_count() == 1));
+        drop(removed);
+        assert!(weak_blocks.iter().all(|block| block.upgrade().is_none()));
+    }
+
+    #[test]
+    fn snapshot_drop_eventually_releases_last_block_references() {
+        let (state, block) = make_block_state(1, 1);
+        let weak = Arc::downgrade(&block);
+        let count = HEAVY_DROP_MIN_ENTRIES as u32;
+        let collection = UnfinalizedCandidateBlockCollection::new(
+            std::iter::once((state, block))
+                .chain((2..=count).map(|seq| make_block_state(seq, seq as u64))),
+        );
+        let (snapshot, _) = collection.clone_queue();
+        collection.remove_old_blocks(&BlockSeqNo::from(count));
+        // The snapshot still owns a reference, even if the removal batch has already been dropped.
+        assert!(weak.upgrade().is_some());
+        drop(snapshot);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while weak.strong_count() != 0 {
+            assert!(Instant::now() < deadline, "background-dropper did not release the snapshot");
+            std::thread::yield_now();
+        }
     }
 
     #[test]

@@ -1248,6 +1248,7 @@ mod tests {
                 u32::MAX,
                 1,
                 CrossRefStorage::mem(),
+                false,
             ),
             Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
             false,
@@ -1282,6 +1283,7 @@ mod tests {
                 config.local.rate_limit_on_incoming_block_req,
                 global_config.thread_count_soft_limit,
                 CrossRefStorage::mem(),
+                false,
             ))
             .share_service(None)
             .wasm_cache(WasmNodeCache::new()?)

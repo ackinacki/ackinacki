@@ -72,8 +72,8 @@ impl AnchorBlockRef {
 ///
 /// - update_loop drain step :
 ///   - Releasing(next=None) → Idle
-///   - Releasing(next=Some(B)) → Requested(B)            (if still alignable)
-///     OR Idle                    (otherwise, dropped + WARN)
+///   - Releasing(next=Some(B)) → BoundaryReached(B) if already applied with no
+///     pending transition; otherwise Requested(B), subject to acquisition timeout
 #[derive(Default)]
 pub(crate) enum SnapshotPinState {
     #[default]

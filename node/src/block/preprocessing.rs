@@ -23,7 +23,7 @@ use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
 use crate::storage::MessageDurableStorage;
 use crate::types::account::WrappedAccount;
-use crate::types::thread_message_queue::ThreadMessageQueueState;
+use crate::types::thread_message_queue::ThreadMessageQueueStateDiff;
 use crate::types::AccountInbox;
 use crate::types::ThreadsTable;
 
@@ -34,6 +34,8 @@ pub struct PreprocessingResult {
     pub threads_table: ThreadsTable,
     pub redirected_messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     pub settled_messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    pub added_high_priority_messages:
+        HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
 }
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
@@ -152,7 +154,7 @@ where
         true,
     )?;
 
-    let mut preprocessed_state = trace_span!("").in_scope(|| {
+    let preprocessed_state = trace_span!("").in_scope(|| {
         let x = import_migrating_accounts_with_their_inboxes(
             &all_referenced_blocks,
             &in_table,
@@ -201,40 +203,16 @@ where
         }
         Ok::<_, anyhow::Error>(())
     })?;
-    let x = preprocessed_state.messages;
-    tracing::trace!(
-        "preprocessing: ThreadMessageQueueState::build_next: settled_messages.len()={} ",
-        settled_messages.len()
-    );
-    let y = ThreadMessageQueueState::build_next()
-        .with_initial_state(x)
-        .with_consumed_messages(HashMap::new())
-        .with_removed_accounts(vec![])
-        .with_added_accounts(BTreeMap::new())
-        .with_produced_messages(settled_messages.clone())
-        .with_db(message_db.clone())
-        .build()?;
-    preprocessed_state.messages = y;
-
-    let high_priority_messages = preprocessed_state.high_priority_messages;
+    // Keep the queues after inbox migration as the base for the block diff.
+    // Execution builds temporary queues by appending the collected additions.
     let mut high_priority_messages_map = convert_slashing_messages(slashing_messages)?;
     convert_epoch_messages(&mut high_priority_messages_map, epoch_block_keeper_data)?;
-    tracing::trace!(
-        "preprocessing: ThreadMessageQueueState::build_next: slashing_messages.len()={} ",
-        high_priority_messages_map.len()
-    );
-    let queue_message_state = ThreadMessageQueueState::build_next()
-        .with_initial_state(high_priority_messages)
-        .with_consumed_messages(HashMap::new())
-        .with_removed_accounts(vec![])
-        .with_added_accounts(BTreeMap::new())
-        .with_produced_messages(high_priority_messages_map)
-        .with_db(message_db.clone())
-        .build()?;
-    //    preprocessed_state.add_slashing_messages(slashing_messages)?;
-    preprocessed_state.high_priority_messages = queue_message_state;
+    for messages in high_priority_messages_map.values_mut() {
+        messages.sort_by(|a, b| a.1.cmp(&b.1));
+    }
 
     Ok(PreprocessingResult {
+        added_high_priority_messages: high_priority_messages_map,
         state: preprocessed_state,
         threads_table: in_table,
         redirected_messages,
@@ -250,7 +228,7 @@ pub fn convert_slashing_messages(
         Vec<(MessageIdentifier, Arc<WrappedMessage>)>,
     > = HashMap::new();
     for message in slashing_messages.into_iter() {
-        let msg = message.message.clone();
+        let msg = message.tvm_message().map_err(anyhow::Error::msg)?;
         let info = msg.int_header().unwrap();
         let dst = AccountIdentifier::from(info.dst.address());
         let dst_dapp_id = info
@@ -261,7 +239,7 @@ pub fn convert_slashing_messages(
         slashing_messages_map
             .entry(dst.routing(dst_dapp_id))
             .or_default()
-            .push((MessageIdentifier::from(&*message), message));
+            .push((message.identifier(), message));
     }
     Ok(slashing_messages_map)
 }
@@ -276,7 +254,7 @@ pub fn convert_epoch_messages(
         let msg = create_epoch_touch_message(&data, time).map_err(|e| {
             anyhow::Error::msg(format!("Failed to create epoch touch message: {e}"))
         })?;
-        let wrapped_message = WrappedMessage { message: msg.clone() };
+        let wrapped_message = WrappedMessage::from_tvm(&msg);
         let info =
             msg.int_header().ok_or_else(|| anyhow::Error::msg("Failed to get message header"))?;
         let dst = AccountIdentifier::from(info.dst.address());
@@ -288,7 +266,7 @@ pub fn convert_epoch_messages(
         high_priority_map
             .entry(dst.routing(dst_dapp_id))
             .or_default()
-            .push((MessageIdentifier::from(&wrapped_message), Arc::new(wrapped_message)));
+            .push((wrapped_message.identifier(), Arc::new(wrapped_message)));
     }
     Ok(())
 }
@@ -363,14 +341,13 @@ fn import_migrating_accounts_with_their_inboxes(
         thread_accounts_repository,
     )?;
     let x = state.messages;
-    let y = ThreadMessageQueueState::build_next()
-        .with_initial_state(x)
+    let y = ThreadMessageQueueStateDiff::builder()
         .with_consumed_messages(HashMap::new())
         .with_removed_accounts(vec![])
         .with_added_accounts(migrated_inboxes)
         .with_produced_messages(HashMap::new())
-        .with_db(message_db.clone())
-        .build()?;
+        .build()
+        .apply(x, &message_db)?;
     state.messages = y;
     Ok(state)
 }

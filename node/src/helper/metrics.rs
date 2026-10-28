@@ -180,6 +180,67 @@ pub struct Metrics {
     pub routing: RoutingMetrics,
     pub state_accounts: StateAccountsMetrics,
     pub tokio: TokioMetrics,
+    activity: Gauge<u64>,
+}
+
+#[derive(Clone)]
+pub struct ActivityMetric {
+    process: String,
+    phase: String,
+    parallel_slot: String,
+}
+
+impl ActivityMetric {
+    /// Instrument leaf services without passing the entire metrics registry
+    /// through their APIs. The global meter is a no-op when telemetry is off.
+    /// Keep labels bounded (process/phase/thread/worker), never use blob IDs.
+    pub(crate) fn enter(self) -> ActivityMetricGuard<'static> {
+        static ACTIVITY: std::sync::OnceLock<Gauge<u64>> = std::sync::OnceLock::new();
+        let gauge = ACTIVITY.get_or_init(|| {
+            opentelemetry::global::meter("node").u64_gauge("node_activity").build()
+        });
+        gauge.record(1, &self.attributes());
+        ActivityMetricGuard { gauge, activity: self }
+    }
+
+    /// Whole process.
+    pub fn process(process: impl Into<String>) -> Self {
+        Self { process: process.into(), phase: String::new(), parallel_slot: String::new() }
+    }
+
+    /// Process phase.
+    pub fn phase(process: impl Into<String>, phase: impl Into<String>) -> Self {
+        Self { process: process.into(), phase: phase.into(), parallel_slot: String::new() }
+    }
+
+    /// Parallel execution slot of a phase.
+    pub fn parallel(
+        process: impl Into<String>,
+        phase: impl Into<String>,
+        parallel_slot: impl Into<String>,
+    ) -> Self {
+        Self { process: process.into(), phase: phase.into(), parallel_slot: parallel_slot.into() }
+    }
+
+    fn attributes(&self) -> [KeyValue; 3] {
+        [
+            KeyValue::new("process", self.process.clone()),
+            KeyValue::new("phase", self.phase.clone()),
+            KeyValue::new("parallel_slot", self.parallel_slot.clone()),
+        ]
+    }
+}
+
+#[must_use]
+pub struct ActivityMetricGuard<'a> {
+    gauge: &'a Gauge<u64>,
+    activity: ActivityMetric,
+}
+
+impl Drop for ActivityMetricGuard<'_> {
+    fn drop(&mut self) {
+        self.gauge.record(0, &self.activity.attributes());
+    }
 }
 
 impl Metrics {
@@ -190,7 +251,21 @@ impl Metrics {
             routing: RoutingMetrics::new(meter),
             state_accounts: StateAccountsMetrics::new(meter),
             tokio: TokioMetrics::new(meter),
+            activity: meter.u64_gauge("node_activity").build(),
         }
+    }
+
+    pub fn start_activity(&self, activity: &ActivityMetric) {
+        self.activity.record(1, &activity.attributes());
+    }
+
+    pub fn end_activity(&self, activity: &ActivityMetric) {
+        self.activity.record(0, &activity.attributes());
+    }
+
+    pub fn activity(&self, activity: ActivityMetric) -> ActivityMetricGuard<'_> {
+        self.start_activity(&activity);
+        ActivityMetricGuard { gauge: &self.activity, activity }
     }
 }
 

@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
+use std::time::Duration;
+use std::time::Instant;
 
 use node_types::BlockIdentifier;
 use opentelemetry::global::ObjectSafeSpan;
@@ -42,6 +44,7 @@ pub const NODE_EXECUTION_DETAILED_TARGET: &str = "node_execution_detailed";
 pub const EXT_MESSAGES_QUEUE_DETAILED_TARGET: &str = "ext_messages_queue_detailed";
 const EXECUTION_VERBOSE_ENV: &str = "EXECUTION_VERBOSE";
 const EXT_MESSAGES_QUEUE_LOG_ENV: &str = "TEST_EXT_MESSAGES_QUEUE_LOG";
+const OTEL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub static SHUTDOWN_FINALIZATION_FLAG: OnceLock<bool> = OnceLock::new();
 pub static FINALIZATION_LOOPS_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -250,8 +253,30 @@ pub fn init_tracing() -> (Option<Metrics>, Vec<WorkerGuard>) {
 
 pub fn shutdown_tracing(tracing_guards: Vec<WorkerGuard>) {
     tracing::trace!("shutting down tracing");
-    opentelemetry::global::shutdown_tracer_provider();
-    drop(tracing_guards);
+    let shutdown_handle = std::thread::Builder::new()
+        .name("tracing shutdown".into())
+        .spawn(opentelemetry::global::shutdown_tracer_provider)
+        .expect("Failed to start tracing shutdown thread");
+    let shutdown_started = Instant::now();
+
+    while !shutdown_handle.is_finished() && shutdown_started.elapsed() < OTEL_SHUTDOWN_TIMEOUT {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    if shutdown_handle.is_finished() {
+        if shutdown_handle.join().is_err() {
+            tracing::warn!("OpenTelemetry tracer shutdown thread panicked");
+        }
+    } else {
+        tracing::warn!(
+            timeout_secs = OTEL_SHUTDOWN_TIMEOUT.as_secs(),
+            "OpenTelemetry tracer shutdown timed out; continuing process shutdown"
+        );
+    }
+
+    // WorkerGuard can wait forever when a background task still owns the log
+    // channel. Process exit will reclaim it after this bounded shutdown path.
+    std::mem::forget(tracing_guards);
 }
 
 pub fn init_tracer(endpoint: String) -> opentelemetry_sdk::trace::Tracer {

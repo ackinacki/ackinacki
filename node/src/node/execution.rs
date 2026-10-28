@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::ops::Add;
-use std::ops::Sub;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
@@ -33,8 +32,19 @@ use crate::types::next_seq_no;
 use crate::types::BlockSeqNo;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
+use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
 
 pub const LOOP_PAUSE_DURATION: Duration = Duration::from_millis(10);
+
+fn snapshot_matches_finalized_protocol(
+    snapshot: Option<&BlockProtocolVersionState>,
+    finalized: Option<&BlockProtocolVersionState>,
+) -> bool {
+    match (snapshot, finalized) {
+        (Some(snapshot), Some(finalized)) => snapshot.to_use() == finalized.to_use(),
+        _ => false,
+    }
+}
 
 struct ExecutionMessageLogStats {
     last_flush: Instant,
@@ -200,7 +210,7 @@ where
                 }
                 SynchronizationResult::Interrupted => {
                     tracing::error!("Synchronization was interrupted. Stop execution.");
-                    return Ok(());
+                    break;
                 }
             }?;
             match exec_result {
@@ -233,15 +243,7 @@ where
         let mut message_log_stats = ExecutionMessageLogStats::default();
         // let mut in_flight_productions = self.start_block_production()?;
 
-        let last_state_sync_executed = Arc::new(parking_lot::Mutex::new(
-            std::time::Instant::now()
-                .sub(self.global_config.min_time_between_state_publish_directives),
-        ));
-        // if self.is_this_node_a_producer() {
-        // Allow producer sync its state from the very beginning
-        //    let mut guard = last_state_sync_executed.lock();
-        //    *guard = guard.sub(self.global_config.min_time_between_state_publish_directives);
-        //}
+        let last_state_sync_executed = self.last_state_sync_executed.clone();
 
         let iteration_start = std::time::Instant::now();
         // let mut clear_ext_messages_timestamp = std::time::Instant::now();
@@ -610,7 +612,9 @@ where
                     "BP is stopped or has no finalized blocks, share last finalized state"
                 );
                 self.share_finalized_state(last_finalized_seq_no, last_finalized_id)?;
-            } else {
+            }
+
+            {
                 // Otherwise share state in one of the next blocks if we have not marked one block yet
                 if self.is_state_sync_requested.guarded(|e| e.is_none()) {
                     // TODO check that we need to take finalized block, not stored
@@ -627,13 +631,69 @@ where
                 }
             }
         } else if let Some((id, seq_no, block_height)) = self.last_synced_state {
-            // if let Ok(Some(state)) =
-            //     self.repository.get_optimistic_state(&id, &self.thread_id, None)
-            // {
+            // A protocol transition does not clear last_synced_state. Do not
+            // advertise that old snapshot while a joining node is waiting for
+            // the new protocol's format. Use finalized protocol state, not the
+            // binary's supported version or an unfinalized transition.
+            let Some((finalized_id, _)) =
+                self.repository.select_thread_last_finalized_block(&self.thread_id)?
+            else {
+                return Ok(());
+            };
+            let snapshot_state = self.block_state_repository.get(&id)?;
+            let finalized_state = self.block_state_repository.get(&finalized_id)?;
+            let snapshot_version = snapshot_state.guarded(|e| e.block_version_state().clone());
+            let finalized_version = finalized_state.guarded(|e| e.block_version_state().clone());
+            if !snapshot_matches_finalized_protocol(
+                snapshot_version.as_ref(),
+                finalized_version.as_ref(),
+            ) {
+                tracing::debug!(
+                    ?id,
+                    ?snapshot_version,
+                    ?finalized_version,
+                    "Not advertising snapshot from a different finalized protocol"
+                );
+                // Keep the normal publication throttle: a pending directive
+                // will produce a fresh snapshot, or the next eligible joining
+                // request will schedule one through the branch above.
+                return Ok(());
+            }
             let hint = HashMap::from_iter([(self.thread_id, id)]);
             self.send_sync_finalized(id, seq_no, block_height, hint, node_id)?;
-            // }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod snapshot_protocol_tests {
+    use super::snapshot_matches_finalized_protocol;
+    use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
+    use crate::versioning::ProtocolVersion;
+
+    #[test]
+    fn snapshot_advertisement_tracks_effective_finalized_protocol() {
+        let old = ProtocolVersion::parse("old_1.0.7_0").unwrap();
+        let new = ProtocolVersion::parse("new_1.0.8_0").unwrap();
+        let snapshot = BlockProtocolVersionState::Current(old.clone());
+        let transition = BlockProtocolVersionState::TransitionLocked {
+            from: old.clone(),
+            to: new.clone(),
+            milestone: Default::default(),
+        };
+        let completing =
+            BlockProtocolVersionState::CompleteTransition { from: old, to: new.clone() };
+        // Announcing/locking a transition is not activation: these blocks still
+        // use the old protocol, so its snapshot remains eligible.
+        assert!(snapshot_matches_finalized_protocol(Some(&snapshot), Some(&snapshot)));
+        assert!(snapshot_matches_finalized_protocol(Some(&snapshot), Some(&transition)));
+        assert!(snapshot_matches_finalized_protocol(Some(&snapshot), Some(&completing)));
+        let activated = BlockProtocolVersionState::Current(new);
+        assert!(!snapshot_matches_finalized_protocol(Some(&snapshot), Some(&activated)));
+        assert!(snapshot_matches_finalized_protocol(Some(&activated), Some(&activated)));
+        assert!(!snapshot_matches_finalized_protocol(None, Some(&activated)));
+        assert!(!snapshot_matches_finalized_protocol(Some(&snapshot), None));
+        assert!(!snapshot_matches_finalized_protocol(None, None));
     }
 }

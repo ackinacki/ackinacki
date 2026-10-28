@@ -46,16 +46,15 @@ impl<'de> Deserialize<'de> for MessageIdentifier {
         D: Deserializer<'de>,
     {
         let data = <&[u8]>::deserialize(deserializer)?;
-        let out_msg_queue_key = OutMsgQueueKey::construct_from_bytes(data)
-            .expect("Message Identifier must be deserializable");
+        let out_msg_queue_key =
+            OutMsgQueueKey::construct_from_bytes(data).map_err(serde::de::Error::custom)?;
         Ok(Self(out_msg_queue_key))
     }
 }
 
-impl From<&WrappedMessage> for MessageIdentifier {
-    fn from(value: &WrappedMessage) -> Self {
+impl From<&tvm_block::Message> for MessageIdentifier {
+    fn from(value: &tvm_block::Message) -> Self {
         let dest_acc_id = value
-            .message
             .int_dst_account_id()
             .expect("Failed to get MessageIdentifier for message with ext destination");
         let prefix = dest_acc_id
@@ -66,14 +65,14 @@ impl From<&WrappedMessage> for MessageIdentifier {
         Self(OutMsgQueueKey::with_workchain_id_and_prefix(
             0,
             prefix,
-            value.message.hash().expect("Failed to get message hash"),
+            value.hash().expect("Failed to get message hash"),
         ))
     }
 }
 
 impl From<Arc<WrappedMessage>> for MessageIdentifier {
     fn from(value: Arc<WrappedMessage>) -> Self {
-        Self::from(value.as_ref())
+        value.identifier()
     }
 }
 

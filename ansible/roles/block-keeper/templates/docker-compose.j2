@@ -107,7 +107,8 @@ services:
       - -c
       - >
         tvm-cli config -g --url "{{ TVM_ENDPOINT }}"
-        && exec /staking/staking.sh -l /staking/logs/staking.log -d {{ STAKING_TIME }} /staking/configs/{{ NODE_OWNER_KEY | basename }} /staking/configs/block_keeper{{ NODE_ID }}_bls.keys.json {{ HOST_PUBLIC_IP }} /staking/configs/.protocol_version {{ TVM_ENDPOINT }}/graphql
+        && (tvm-cli config -g endpoint remove "{{ TVM_ENDPOINT }}" > /dev/null 2>&1 || true)
+        && exec /staking/staking.sh -l /staking/logs/staking.log -d {{ STAKING_TIME }} /staking/configs/{{ NODE_OWNER_KEY | basename }} /staking/configs/block_keeper{{ NODE_ID }}_bls.keys.json {{ HOST_PUBLIC_IP }} /staking/configs/.protocol_version "{% if GQL_ENDPOINTS is defined and GQL_ENDPOINTS | length > 0 %}{{ GQL_ENDPOINTS | join(',') }}{% else %}{{ TVM_ENDPOINT }}/graphql{% endif %}" "{% if TVM_ENDPOINTS is defined and TVM_ENDPOINTS | length > 0 %}{{ TVM_ENDPOINTS | join(',') }}{% else %}{{ TVM_ENDPOINT }}{% endif %}"
     environment:
       OTEL_RESOURCE_ATTRIBUTES: node={{ otel_node_id }},service.namespace={{ NETWORK_NAME }},service.instance.id={{ otel_node_id }},host.name={{ OTEL_MY_HOST_NAME | default(inventory_hostname) | default(ansible_host) }}
 {% if OTEL_COLLECTOR is defined and OTEL_COLLECTOR %}
@@ -231,6 +232,7 @@ services:
         --chitchat-cluster-id "{{ UPD_NETWORK_NAME | default(NETWORK_NAME) }}"
         --block-keeper-epoch-code-hash {{ CODE_HASH }}
         --bk-api-host-port {{ BK_HOSTNAME | default(inventory_hostname) }}
+        --engine-version "1.0.7"
 {% if HAS_BK_SET_FILE is defined and HAS_BK_SET_FILE %}
         --bk-set-update-path=/bk-configs/bk_set.json
 {% endif %}

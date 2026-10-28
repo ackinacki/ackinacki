@@ -1,0 +1,17 @@
+[package]
+name = "inbox-map-bench"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish = false
+
+[dependencies]
+account-inbox = { path = "../account-inbox" }
+anyhow.workspace = true
+bincode.workspace = true
+blake3 = "1.8.2"
+indexset = "0.10.3"
+multi-map.workspace = true
+node-types.workspace = true
+serde.workspace = true

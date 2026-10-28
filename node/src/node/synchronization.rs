@@ -212,6 +212,9 @@ where
         &mut self,
     ) -> anyhow::Result<SynchronizationResult<(NetworkMessage, SocketAddr)>> {
         tracing::trace!(target: "monit", "Start synchronization");
+        // A new snapshot attempt replaces the post-import catch-up phase, but
+        // must not disable the broader processing-mode flag below.
+        self.shared_services.set_thread_catch_up_activity(&self.thread_id, false);
         // Synchronization and catch-up must be one continuous mode. A snapshot import mutates the
         // repository before the load worker reports `SyncSnapshotLoaded` back to this loop. If a
         // newer snapshot target arrives while the import is in progress, the imported snapshot can
@@ -256,7 +259,13 @@ where
             // responses just push into the candidate queue (with dedup
             // and capacity-bounded eviction); the worker iterates
             // newest-first on each pass.
-            if last_node_join_message_time.elapsed() > self.global_config.node_joining_timeout {
+            // The first announcement can precede peer connectivity. Retry soon
+            // enough that a fresh node does not wait for the full join timeout.
+            let join_rebroadcast_interval = std::cmp::min(
+                self.global_config.node_joining_timeout,
+                std::time::Duration::from_secs(15),
+            );
+            if last_node_join_message_time.elapsed() > join_rebroadcast_interval {
                 self.broadcast_node_joining()?;
                 last_node_join_message_time = Instant::now();
                 // We may already have a downloaded state buffered; the

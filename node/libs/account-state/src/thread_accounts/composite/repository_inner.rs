@@ -101,10 +101,11 @@ impl ThreadAccountsRepositoryInner {
         thread_id: &ThreadIdentifier,
         shard_state: ShardStateUnsplit,
     ) -> anyhow::Result<ThreadAccountsState> {
-        let durable = self
-            .durable
-            .state_load(block_id, thread_id)?
-            .unwrap_or_else(DurableThreadAccountsRepository::new_state);
+        let durable = self.durable.state_load(block_id, thread_id)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Missing durable account map for checkpoint: block_id={block_id}, thread_id={thread_id}"
+            )
+        })?;
         let tvm = TvmThreadAccountsState::with_shard_state(shard_state)?;
         Ok(Self::state_ref(durable, tvm))
     }
@@ -333,10 +334,7 @@ fn found_info(
     let hash_str = if state_account.is_redirect() {
         format!("redirect -> {:?}", state_account.get_dapp_id())
     } else {
-        state_account
-            .vm_account()
-            .map(|a| a.hash().to_hex_string())
-            .unwrap_or_else(|_| "<error>".to_string())
+        state_account.account_hash().to_hex_string()
     };
     let info = format!(
         "Account found in {state} state: {} hash: {hash_str} durable_state_hash={durable_state_hash}",

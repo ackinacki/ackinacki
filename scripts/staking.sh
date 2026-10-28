@@ -41,9 +41,16 @@ if [[ -f $LOGFILE ]]; then
 fi
 
 exec 1>"$LOGFILE" 2>&1
+# Endpoint traces must remain visible even when a caller intentionally silences
+# a tvm-cli readiness probe with `>/dev/null 2>&1`.
+exec 3>&1
 # Function for proper logging
 log() {
   echo "[$(date -Is)]" "$@"
+}
+
+trace_endpoint() {
+  log "$@" >&3
 }
 
 report_metric() {
@@ -133,11 +140,11 @@ trigger_stopping_staking () {
   EPOCH_FINISH=$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')
   log "Current epoch address $EPOCH_ADDRESS and epoch seqNo finish $EPOCH_FINISH"
 
-  CUR_BLOCK_SEQ=$(curl -s -X POST "$GQL_ENDPOINT" -H 'Content-Type: application/json' -d '{"query":"{ blockchain { blocks(last:1) { edges { node { height } } } } }"}' | jq -e -r '.data.blockchain.blocks.edges[0].node.height | select(. != null)' || { log "Error with getting current block seqNo. Returning..." >&2 ; return ;})
+  CUR_BLOCK_SEQ=$(get_current_block_seq || { log "Error with getting current block seqNo. Returning..." >&2 ; return ;})
   while [ "$(echo "$EPOCH_FINISH < $CUR_BLOCK_SEQ" | bc)" -ne 1 ]; do
     log "Current block seq_no is less than epoch finishing block seq_no. Waiting..."
     sleep 2
-    CUR_BLOCK_SEQ=$(curl -s -X POST "$GQL_ENDPOINT" -H 'Content-Type: application/json' -d '{"query":"{ blockchain { blocks(last:1) { edges { node { height } } } } }"}' | jq -e -r '.data.blockchain.blocks.edges[0].node.height | select(. != null)' || { log "Error with getting current block seqNo. Returning..." >&2 ; return ;})
+    CUR_BLOCK_SEQ=$(get_current_block_seq || { log "Error with getting current block seqNo. Returning..." >&2 ; return ;})
   done
 
   log "Current epoch $EPOCH_ADDRESS is ready to be touched"
@@ -202,7 +209,8 @@ NODE_OWNER_KEY=$1
 BLS_KEYS_FILE=$2
 NODE_IP=$3
 PROTOCOL_VERSION_FILE=$4
-GQL_ENDPOINT=$5
+GQL_ENDPOINTS_RAW=$5
+TVM_ENDPOINTS_RAW=${6:-}
 
 if [[ ! -f $NODE_OWNER_KEY ]]; then
   log "$NODE_OWNER_KEY not found."
@@ -226,14 +234,299 @@ if [[ ! -f $PROTOCOL_VERSION_FILE ]]; then
   exit 1
 fi
 
-if [[ -z "$GQL_ENDPOINT" ]]; then
-  log "GQL_ENDPOINT is not set."
+if [[ -z "$GQL_ENDPOINTS_RAW" ]]; then
+  log "GraphQL endpoints are not set."
   exit 1
 fi
 
-if [[ ! "$GQL_ENDPOINT" =~ ^https?:// ]]; then
-  log "GQL_ENDPOINT is not a valid URL - $GQL_ENDPOINT"
-  exit 1
+IFS=',' read -r -a GQL_ENDPOINTS <<< "$GQL_ENDPOINTS_RAW"
+for GQL_ENDPOINT in "${GQL_ENDPOINTS[@]}"; do
+  if [[ ! "$GQL_ENDPOINT" =~ ^https?:// ]]; then
+    log "GraphQL endpoint is not a valid URL - $GQL_ENDPOINT"
+    exit 1
+  fi
+done
+
+# Keep compatibility with direct staking.sh invocations that only provide the
+# GraphQL argument. The Ansible role passes TVM_ENDPOINTS explicitly.
+if [[ -z "$TVM_ENDPOINTS_RAW" ]]; then
+  TVM_ENDPOINTS=()
+  for GQL_ENDPOINT in "${GQL_ENDPOINTS[@]}"; do
+    TVM_ENDPOINTS+=("${GQL_ENDPOINT%/graphql}")
+  done
+else
+  IFS=',' read -r -a TVM_ENDPOINTS <<< "$TVM_ENDPOINTS_RAW"
+fi
+
+for TVM_ENDPOINT in "${TVM_ENDPOINTS[@]}"; do
+  if [[ ! "$TVM_ENDPOINT" =~ ^https?:// ]]; then
+    log "TVM endpoint is not a valid URL - $TVM_ENDPOINT"
+    exit 1
+  fi
+done
+
+TVM_ENDPOINT_STATE_FILE=/tmp/staking-tvm-endpoint
+GQL_ENDPOINT_STATE_FILE=/tmp/staking-gql-endpoint
+GQL_BLOCK_STATE_FILE=/tmp/staking-gql-block-state
+
+endpoint_is_configured () {
+  local NEEDLE=$1
+  shift
+  local ENDPOINT
+
+  for ENDPOINT in "$@"; do
+    if [[ "$ENDPOINT" == "$NEEDLE" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+tvm_cli_failure_is_retryable () {
+  local COMMAND_NAME=$1
+  local OUTPUT=$2
+  local NORMALIZED_OUTPUT=${OUTPUT,,}
+
+  # Only known read-only requests are unconditionally safe to repeat. Unknown
+  # commands stay on the conservative path so a future state-changing command
+  # is not made retryable by accident.
+  case "$COMMAND_NAME" in
+    account|account-wait|fetch|fetch-block|getconfig|query-raw|run|runget|runx)
+      return 0
+      ;;
+  esac
+
+  # WRONG_PRODUCER means that this BM explicitly rejected the message. The
+  # connection errors below happen before a message can be accepted. Other
+  # failures can be contract errors or an ambiguous post-submit timeout, so a
+  # state-changing operation must not be sent again automatically.
+  if [[ "$OUTPUT" == *WRONG_PRODUCER* ||
+        "$NORMALIZED_OUTPUT" == *"connection refused"* ||
+        "$NORMALIZED_OUTPUT" == *"failed to connect"* ||
+        "$NORMALIZED_OUTPUT" == *"couldn't connect"* ||
+        "$NORMALIZED_OUTPUT" == *"could not resolve"* ||
+        "$NORMALIZED_OUTPUT" == *"name or service not known"* ||
+        "$NORMALIZED_OUTPUT" == *"network is unreachable"* ||
+        "$NORMALIZED_OUTPUT" == *"client error (connect)"* ||
+        "$NORMALIZED_OUTPUT" == *"tcp open error"* ||
+        "$NORMALIZED_OUTPUT" == *"connect timeout"* ||
+        "$NORMALIZED_OUTPUT" == *"connection timed out"* ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+tvm-cli () {
+  local PREFERRED_ENDPOINT=""
+  local ENDPOINT
+  local OUTPUT
+  local STDERR_OUTPUT
+  local COMBINED_OUTPUT
+  local STDERR_FILE
+  local LAST_OUTPUT=""
+  local RESULT=1
+  local REASON
+  local COMMAND_NAME="unknown"
+  local ARG
+  local -a ENDPOINTS_TO_TRY=()
+
+  for ARG in "$@"; do
+    if [[ "$ARG" != -* ]]; then
+      COMMAND_NAME=$ARG
+      break
+    fi
+  done
+
+  if [[ -s "$TVM_ENDPOINT_STATE_FILE" ]]; then
+    PREFERRED_ENDPOINT=$(<"$TVM_ENDPOINT_STATE_FILE")
+  fi
+  if [[ -n "$PREFERRED_ENDPOINT" ]] && endpoint_is_configured "$PREFERRED_ENDPOINT" "${TVM_ENDPOINTS[@]}"; then
+    ENDPOINTS_TO_TRY+=("$PREFERRED_ENDPOINT")
+  else
+    PREFERRED_ENDPOINT=""
+  fi
+  for ENDPOINT in "${TVM_ENDPOINTS[@]}"; do
+    if [[ "$ENDPOINT" != "$PREFERRED_ENDPOINT" ]]; then
+      ENDPOINTS_TO_TRY+=("$ENDPOINT")
+    fi
+  done
+
+  for ENDPOINT in "${ENDPOINTS_TO_TRY[@]}"; do
+    STDERR_FILE=$(mktemp /tmp/staking-tvm-cli-stderr.XXXXXX)
+    if OUTPUT=$(command tvm-cli -u "$ENDPOINT" "$@" 2>"$STDERR_FILE"); then
+      STDERR_OUTPUT=$(<"$STDERR_FILE")
+      rm -f "$STDERR_FILE"
+      printf '%s\n' "$OUTPUT"
+      if [[ -n "$STDERR_OUTPUT" ]]; then
+        printf '%s\n' "$STDERR_OUTPUT" >&2
+      fi
+      if [[ "$ENDPOINT" != "$PREFERRED_ENDPOINT" ]]; then
+        if [[ -n "$PREFERRED_ENDPOINT" ]]; then
+          trace_endpoint "TVM endpoint switched: $PREFERRED_ENDPOINT -> $ENDPOINT after $COMMAND_NAME"
+        else
+          trace_endpoint "TVM endpoint selected: $ENDPOINT for $COMMAND_NAME"
+        fi
+        printf '%s\n' "$ENDPOINT" > "$TVM_ENDPOINT_STATE_FILE"
+      fi
+      return 0
+    else
+      RESULT=$?
+    fi
+
+    STDERR_OUTPUT=$(<"$STDERR_FILE")
+    rm -f "$STDERR_FILE"
+    COMBINED_OUTPUT=$OUTPUT
+    if [[ -n "$STDERR_OUTPUT" ]]; then
+      COMBINED_OUTPUT+=$'\n'
+      COMBINED_OUTPUT+=$STDERR_OUTPUT
+    fi
+    LAST_OUTPUT=$COMBINED_OUTPUT
+    if [[ "$COMBINED_OUTPUT" == *WRONG_PRODUCER* ]]; then
+      REASON=WRONG_PRODUCER
+    else
+      REASON=$(printf '%s' "$OUTPUT" | jq -r '.Error.code // .error.code // empty' 2>/dev/null || true)
+      REASON=${REASON:-unknown}
+    fi
+    if ! tvm_cli_failure_is_retryable "$COMMAND_NAME" "$COMBINED_OUTPUT"; then
+      if [[ -n "$LAST_OUTPUT" ]]; then
+        printf '%s\n' "$LAST_OUTPUT"
+      fi
+      trace_endpoint "TVM endpoint failed: $ENDPOINT for $COMMAND_NAME (exit $RESULT, reason $REASON); not retrying a state-changing operation"
+      return "$RESULT"
+    fi
+
+    trace_endpoint "TVM endpoint failed: $ENDPOINT for $COMMAND_NAME (exit $RESULT, reason $REASON); trying the next endpoint"
+  done
+
+  if [[ -n "$LAST_OUTPUT" ]]; then
+    printf '%s\n' "$LAST_OUTPUT"
+  fi
+  trace_endpoint "All TVM endpoints failed for $COMMAND_NAME"
+  return "$RESULT"
+}
+
+query_current_block_seq () {
+  local GQL_ENDPOINT=$1
+
+  curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+    -X POST "$GQL_ENDPOINT" \
+    -H 'Content-Type: application/json' \
+    -d '{"query":"{ blockchain { blocks(last:1) { edges { node { height } } } } }"}' \
+    | jq -e -r '.data.blockchain.blocks.edges[0].node.height | select(type == "number" and . >= 0)'
+}
+
+save_gql_block_state () {
+  printf '%s\t%s\n' "$1" "$2" > "$GQL_BLOCK_STATE_FILE"
+}
+
+get_current_block_seq () {
+  local PREFERRED_ENDPOINT=""
+  local GQL_ENDPOINT
+  local CUR_BLOCK_SEQ=""
+  local BEST_ENDPOINT=""
+  local BEST_BLOCK_SEQ=""
+  local RESULT=1
+  local STATE_ENDPOINT=""
+  local STATE_BLOCK_SEQ=""
+  local LEGACY_STATE_PROGRESS_AT=""
+  local LEGACY_STATE_PROBED_AT=""
+  local SHOULD_PROBE_ALTERNATIVES=false
+  local -a ENDPOINTS_TO_TRY=()
+
+  if [[ -s "$GQL_BLOCK_STATE_FILE" ]]; then
+    # The two ignored fields keep state files written by the previous
+    # timestamp-based implementation readable during an upgrade.
+    IFS=$'\t' read -r STATE_ENDPOINT STATE_BLOCK_SEQ LEGACY_STATE_PROGRESS_AT LEGACY_STATE_PROBED_AT < "$GQL_BLOCK_STATE_FILE" || true
+  fi
+  if [[ ! "$STATE_BLOCK_SEQ" =~ ^[0-9]+$ ]]; then
+    STATE_ENDPOINT=""
+    STATE_BLOCK_SEQ=""
+  fi
+
+  if [[ -s "$GQL_ENDPOINT_STATE_FILE" ]]; then
+    PREFERRED_ENDPOINT=$(<"$GQL_ENDPOINT_STATE_FILE")
+  fi
+  if [[ -n "$PREFERRED_ENDPOINT" ]] && endpoint_is_configured "$PREFERRED_ENDPOINT" "${GQL_ENDPOINTS[@]}"; then
+    ENDPOINTS_TO_TRY+=("$PREFERRED_ENDPOINT")
+  else
+    PREFERRED_ENDPOINT=""
+  fi
+  for GQL_ENDPOINT in "${GQL_ENDPOINTS[@]}"; do
+    if [[ "$GQL_ENDPOINT" != "$PREFERRED_ENDPOINT" ]]; then
+      ENDPOINTS_TO_TRY+=("$GQL_ENDPOINT")
+    fi
+  done
+
+  for GQL_ENDPOINT in "${ENDPOINTS_TO_TRY[@]}"; do
+    # A preferred endpoint that advanced since the previous read can be
+    # returned immediately. If it did not advance, query the alternatives and
+    # select the highest available height instead of mistaking a stale BM for
+    # a healthy one.
+    if [[ -n "$BEST_ENDPOINT" && "$SHOULD_PROBE_ALTERNATIVES" != true ]]; then
+      break
+    fi
+
+    if CUR_BLOCK_SEQ=$(query_current_block_seq "$GQL_ENDPOINT"); then
+      if [[ -z "$BEST_ENDPOINT" || "$CUR_BLOCK_SEQ" -gt "$BEST_BLOCK_SEQ" ]]; then
+        BEST_ENDPOINT=$GQL_ENDPOINT
+        BEST_BLOCK_SEQ=$CUR_BLOCK_SEQ
+      elif [[ "$CUR_BLOCK_SEQ" -lt "$BEST_BLOCK_SEQ" ]]; then
+        trace_endpoint "GraphQL endpoint lagging: $GQL_ENDPOINT at block $CUR_BLOCK_SEQ, $BEST_ENDPOINT at block $BEST_BLOCK_SEQ"
+      fi
+
+      if [[ "$GQL_ENDPOINT" == "$PREFERRED_ENDPOINT" ]]; then
+        if [[ "$STATE_ENDPOINT" == "$GQL_ENDPOINT" && -n "$STATE_BLOCK_SEQ" ]]; then
+          if [[ "$CUR_BLOCK_SEQ" -lt "$STATE_BLOCK_SEQ" ]]; then
+            SHOULD_PROBE_ALTERNATIVES=true
+            trace_endpoint "GraphQL endpoint regressed: $GQL_ENDPOINT from block $STATE_BLOCK_SEQ to $CUR_BLOCK_SEQ; checking alternatives"
+          elif [[ "$CUR_BLOCK_SEQ" -eq "$STATE_BLOCK_SEQ" ]]; then
+            SHOULD_PROBE_ALTERNATIVES=true
+            trace_endpoint "GraphQL endpoint unchanged: $GQL_ENDPOINT is still at block $CUR_BLOCK_SEQ; checking alternatives"
+          fi
+        fi
+      fi
+    else
+      RESULT=$?
+      trace_endpoint "GraphQL endpoint failed: $GQL_ENDPOINT (exit $RESULT); trying the next endpoint"
+      SHOULD_PROBE_ALTERNATIVES=true
+    fi
+  done
+
+  if [[ -z "$BEST_ENDPOINT" ]]; then
+    trace_endpoint "All GraphQL endpoints failed"
+    return "$RESULT"
+  fi
+
+  if [[ "$BEST_ENDPOINT" != "$PREFERRED_ENDPOINT" ]]; then
+    if [[ -n "$PREFERRED_ENDPOINT" ]]; then
+      trace_endpoint "GraphQL endpoint switched: $PREFERRED_ENDPOINT -> $BEST_ENDPOINT at block $BEST_BLOCK_SEQ"
+    else
+      trace_endpoint "GraphQL endpoint selected: $BEST_ENDPOINT at block $BEST_BLOCK_SEQ"
+    fi
+    printf '%s\n' "$BEST_ENDPOINT" > "$GQL_ENDPOINT_STATE_FILE"
+  elif [[ "$SHOULD_PROBE_ALTERNATIVES" == true ]]; then
+    trace_endpoint "GraphQL endpoint retained: $BEST_ENDPOINT has the highest available block $BEST_BLOCK_SEQ"
+  fi
+
+  save_gql_block_state "$BEST_ENDPOINT" "$BEST_BLOCK_SEQ"
+  printf '%s\n' "$BEST_BLOCK_SEQ"
+  return 0
+}
+
+log "Configured TVM endpoints: ${TVM_ENDPOINTS[*]}"
+log "Configured GraphQL endpoints: ${GQL_ENDPOINTS[*]}"
+if [[ -s "$TVM_ENDPOINT_STATE_FILE" ]]; then
+  RESTORED_TVM_ENDPOINT=$(<"$TVM_ENDPOINT_STATE_FILE")
+  if endpoint_is_configured "$RESTORED_TVM_ENDPOINT" "${TVM_ENDPOINTS[@]}"; then
+    trace_endpoint "TVM endpoint restored: $RESTORED_TVM_ENDPOINT"
+  fi
+fi
+if [[ -s "$GQL_ENDPOINT_STATE_FILE" ]]; then
+  RESTORED_GQL_ENDPOINT=$(<"$GQL_ENDPOINT_STATE_FILE")
+  if endpoint_is_configured "$RESTORED_GQL_ENDPOINT" "${GQL_ENDPOINTS[@]}"; then
+    trace_endpoint "GraphQL endpoint restored: $RESTORED_GQL_ENDPOINT"
+  fi
 fi
 
 NODE_OWNER_PUB_KEY_JSON=$(jq -e -r .public $NODE_OWNER_KEY || { log "Error with reading node owner public key" >&2 ; exit 1 ;})
@@ -524,7 +817,7 @@ process_cooler_epoch () {
   report_metric process_cooler_epoch
   COOLER_SEQNO_FINISH=$(tvm-cli -j runx --abi $COOLER_ABI --addr $1 -m getDetails | jq -r -e '.seqNoFinish' || { log "Error with getting cooler seq_no finish" >&2 ; return ;})
   log "Cooler Epoch found with address \"$1\" and finish seqno \"$COOLER_SEQNO_FINISH\""
-  CUR_BLOCK_SEQ=$(curl -s -X POST "$GQL_ENDPOINT" -H 'Content-Type: application/json' -d '{"query":"{ blockchain { blocks(last:1) { edges { node { height } } } } }"}' | jq -e -r '.data.blockchain.blocks.edges[0].node.height' || { log "Error with getting current block seqNo" >&2 ; return ;})
+  CUR_BLOCK_SEQ=$(get_current_block_seq || { log "Error with getting current block seqNo" >&2 ; return ;})
   report_metric cooler_seqno_finish "$COOLER_SEQNO_FINISH"
   report_metric cooler_seqno_current "$CUR_BLOCK_SEQ"
   if [ "$(echo "$COOLER_SEQNO_FINISH < $CUR_BLOCK_SEQ" | bc)" -ne 1 ]; then
@@ -587,7 +880,7 @@ process_epoch () {
     case $ACTIVE_STAKES_CASE in
       0)
         log "Pre Epoch - $k"
-        CUR_BLOCK_SEQ=$(curl -s -X POST "$GQL_ENDPOINT" -H 'Content-Type: application/json' -d '{"query":"{ blockchain { blocks(last:1) { edges { node { height } } } } }"}' | jq -e -r '.data.blockchain.blocks.edges[0].node.height | select(. != null)' || { log "Error with getting current block seqNo" >&2 ; return ;})
+        CUR_BLOCK_SEQ=$(get_current_block_seq || { log "Error with getting current block seqNo" >&2 ; return ;})
         PRE_EPOCH_ADDRESS=$(tvm-cli -j runx --abi $ABI --addr $ROOT -m getBlockKeeperPreEpochAddress "{\"pubkey\": \"0x$EPOCH_PARAMS\", \"seqNoStart\": \"$ACTIVE_STAKES_SEQ\"}" | jq -r -e '.preEpochAddress' || { log "Error with getting pre-epoch address" >&2 ; return ;})
         PRE_EPOCH_ADDRESS="0000000000000000000000000000000000000000000000000000000000000000::${PRE_EPOCH_ADDRESS:2}"
         log "PreEpoch contract address \"$PRE_EPOCH_ADDRESS\" and sequence start is \"$ACTIVE_STAKES_SEQ\" and current sequence is \"$CUR_BLOCK_SEQ\""
@@ -595,7 +888,7 @@ process_epoch () {
         while [ "$(echo "$ACTIVE_STAKES_SEQ < $CUR_BLOCK_SEQ" | bc)" -ne 1 ]; do
           log "Current block seq_no is less than starting block seq_no. Waiting..."
           sleep 1
-          CUR_BLOCK_SEQ=$(curl -s -X POST "$GQL_ENDPOINT" -H 'Content-Type: application/json' -d '{"query":"{ blockchain { blocks(last:1) { edges { node { height } } } } }"}' | jq -e -r '.data.blockchain.blocks.edges[0].node.height | select(. != null)' || { log "Error with getting current block seqNo" >&2 ; return ;})
+          CUR_BLOCK_SEQ=$(get_current_block_seq || { log "Error with getting current block seqNo" >&2 ; return ;})
         done
         log "Touching preEpoch contract"
         tvm-cli -j callx --abi $PRE_EPOCH_ABI --addr $PRE_EPOCH_ADDRESS -m touch
@@ -612,7 +905,7 @@ process_epoch () {
         SEQNO=$ACTIVE_STAKES_SEQ
         EPOCH_SEQNO_START=$(echo $EPOCH_DETAILS | jq -r '.seqNoStart')
         EPOCH_SEQNO_FINISH=$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')
-        CUR_BLOCK_SEQ=$(curl -s -X POST "$GQL_ENDPOINT" -H 'Content-Type: application/json' -d '{"query":"{ blockchain { blocks(last:1) { edges { node { height } } } } }"}' | jq -e -r '.data.blockchain.blocks.edges[0].node.height | select(. != null)' || { log "Error with getting current block seqNo" >&2 ; return ;})
+        CUR_BLOCK_SEQ=$(get_current_block_seq || { log "Error with getting current block seqNo" >&2 ; return ;})
         if [ "$IS_EPOCH_CONTINUE" = false ] && [ "$WILL_EPOCH_CONTINUE" = true ] && [ "$(echo "($EPOCH_SEQNO_FINISH - $EPOCH_SEQNO_START) * 0.07 + $EPOCH_SEQNO_START < $CUR_BLOCK_SEQ" | bc)" -eq 1 ]; then
           # if tvm-cli -j runx --abi $WALLET_ABI --addr $WALLET_ADDR -m getDetails | jq -e '.activeStakes | .[] | select(.status == "2")' > /dev/null 2>&1; then
           #   log "There is active Cooler in stakes"
@@ -623,7 +916,7 @@ process_epoch () {
         fi
         IS_EPOCH_CONTINUE=$(echo $EPOCH_DETAILS | jq -r '.isContinue')
         log "Epoch with address \"$EPOCH_ADDRESS\" is being continued: $IS_EPOCH_CONTINUE"
-        CUR_BLOCK_SEQ=$(curl -s -X POST "$GQL_ENDPOINT" -H 'Content-Type: application/json' -d '{"query":"{ blockchain { blocks(last:1) { edges { node { height } } } } }"}' | jq -e -r '.data.blockchain.blocks.edges[0].node.height | select(. != null)' || { log "Error with getting current block seqNo" >&2 ; return ;})
+        CUR_BLOCK_SEQ=$(get_current_block_seq || { log "Error with getting current block seqNo" >&2 ; return ;})
         if [ "$(echo $EPOCH_DETAILS | jq -r '.seqNoFinish')" -le $CUR_BLOCK_SEQ ]; then
           log "Current epoch $EPOCH_ADDRESS is ready to be touched"
           tvm-cli -j callx --abi $EPOCH_ABI --addr $EPOCH_ADDRESS -m touch
@@ -662,4 +955,3 @@ else
   report_metric heartbeat
 fi
 report_metric exited
-

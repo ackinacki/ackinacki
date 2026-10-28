@@ -44,6 +44,39 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_download_cache_defaults_and_accepts_local_overrides() -> anyhow::Result<()> {
+        let config = crate::config::NodeConfig::default();
+        assert_eq!(config.snapshot_download_cache_bytes, 50 * 1024 * 1024 * 1024);
+        let mut value = serde_json::to_value(config)?;
+        value.as_object_mut().unwrap().remove("snapshot_download_cache_bytes");
+        let defaulted: crate::config::NodeConfig = serde_json::from_value(value.clone())?;
+        assert_eq!(defaulted.snapshot_download_cache_bytes, 50 * 1024 * 1024 * 1024);
+        value["snapshot_download_cache_bytes"] = serde_json::json!(20 * 1024_u64 * 1024 * 1024);
+        let overridden: crate::config::NodeConfig = serde_json::from_value(value)?;
+        assert_eq!(overridden.snapshot_download_cache_bytes, 20 * 1024 * 1024 * 1024);
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_partition_size_defaults_and_accepts_test_overrides() -> anyhow::Result<()> {
+        let config = GlobalConfig::default();
+        assert_eq!(config.snapshot_partition_size_bytes, 1024 * 1024 * 1024);
+        let mut value = serde_json::to_value(config)?;
+        value.as_object_mut().unwrap().remove("snapshot_partition_size_bytes");
+        let defaulted: GlobalConfig = serde_json::from_value(value.clone())?;
+        assert_eq!(defaulted.snapshot_partition_size_bytes, 1024 * 1024 * 1024);
+        value["snapshot_partition_size_bytes"] = serde_json::json!(1024);
+        let overridden: GlobalConfig = serde_json::from_value(value.clone())?;
+        assert_eq!(overridden.snapshot_partition_size_bytes, 1024);
+        value["snapshot_partition_size_bytes"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<GlobalConfig>(value)
+            .unwrap_err()
+            .to_string()
+            .contains("snapshot_partition_size_bytes must be positive"));
+        Ok(())
+    }
+
+    #[test]
     fn test_config_load() -> anyhow::Result<()> {
         let config_str = r#"{
     "network": {

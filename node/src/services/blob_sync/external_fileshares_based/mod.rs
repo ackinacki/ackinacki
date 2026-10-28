@@ -14,12 +14,18 @@ use super::ResourceId;
 use crate::helper::metrics::BlockProductionMetrics;
 
 mod download_blob;
+pub(crate) mod download_cache;
+// Retain the previous transport only as a compatibility reference in its tests.
+#[cfg(test)]
+pub(crate) mod resumable_download;
 mod service_inner_loop;
 mod share_blob;
 
 #[derive(TypedBuilder)]
 pub struct ExternalFileSharesBased {
     local_storage_share_base_path: PathBuf,
+    #[builder(default = download_cache::DEFAULT_DOWNLOAD_CACHE_BYTES)]
+    download_cache_bytes: u64,
 }
 
 pub struct Service {
@@ -34,6 +40,11 @@ pub struct ServiceInterface {
 
 impl ExternalFileSharesBased {
     pub fn start(self, metrics: Option<BlockProductionMetrics>) -> anyhow::Result<Service> {
+        let cache = download_cache::DownloadCache::open(
+            &self.local_storage_share_base_path.join(".snapshot-downloads"),
+            Some(self.download_cache_bytes),
+        )?;
+        cache.migrate_legacy_downloads(&self.local_storage_share_base_path)?;
         let (tx, rx) = instrumented_channel(
             metrics.clone(),
             crate::helper::metrics::BLOB_SYNC_COMMAND_CHANNEL,
@@ -41,7 +52,11 @@ impl ExternalFileSharesBased {
         let inner_loop = std::thread::Builder::new()
             .name("External file share service inner loop".to_string())
             .spawn(move || {
-                service_inner_loop::service_inner_loop(self.local_storage_share_base_path, rx);
+                service_inner_loop::service_inner_loop(
+                    self.local_storage_share_base_path,
+                    rx,
+                    cache,
+                );
             })?;
         Ok(Service { inner_loop, interface: ServiceInterface { control: tx } })
     }

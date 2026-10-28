@@ -55,7 +55,7 @@ impl AccountsRepository {
         let data = std::fs::read(&path).map_err(|err| {
             anyhow::format_err!("Failed to read account {}: {err}", path.display())
         })?;
-        ThreadAccount::read_bytes(&data)
+        ThreadAccount::read_owned_bytes(data)
     }
 
     pub fn store_account(
@@ -76,11 +76,10 @@ impl AccountsRepository {
             PathBuf::new()
         };
         let tmp_file_path = get_temp_file_path(&parent_dir);
-        let data = account.write_bytes()?;
         let mut file = std::fs::File::create(&tmp_file_path).map_err(|err| {
             anyhow::format_err!("Failed to write account {}: {err}", tmp_file_path.display())
         })?;
-        file.write_all(&data).map_err(|err| {
+        file.write_all(account.canonical_bytes()).map_err(|err| {
             anyhow::format_err!("Failed to write account {}: {err}", tmp_file_path.display())
         })?;
 

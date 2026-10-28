@@ -260,6 +260,23 @@ library DexLib {
         tokenContract = address.makeAddrStd(0, abi.stateInitHash(tcCodeHash, tvm.hash(dataCell), tcCodeDepth, dataCell.depth()));
     }
 
+    /// @notice StateInit for a per-deal TokenContract, built from the REAL code rather than its
+    ///         hash — the note deploys the deal now (4.0.36) and a deploy needs the code cell.
+    /// @dev    Deliberately the same three statics and the same `pubkey` as
+    ///         `computeCanonicalTokenContractAddress` above, which derives the address from a hash
+    ///         for the callers that only hold a pin. The two MUST agree: the note deploys through
+    ///         this one and every other party (buyer note, RootPN, book) still finds the deal
+    ///         through that one. Change either varInit list and the deal deployed at one address
+    ///         becomes unreachable at the address everyone else computes.
+    function buildTokenContractStateInit(
+        TvmCell tokenContractCode, uint256 sellerPubkey, address rootModel, uint64 nonce
+    ) public returns (TvmCell) {
+        return abi.encodeStateInit({
+            code: tokenContractCode, contr: TokenContract, pubkey: sellerPubkey,
+            varInit: { _sellerPubkey: sellerPubkey, _rootModelAddress: rootModel, _nonce: nonce }
+        });
+    }
+
     /// @notice Deterministic InferenceOrderBook address from its (unsalted) code
     ///         hash/depth + the model static — matches
     ///         computeInferenceOrderBookAddress(code, modelHash) but takes the

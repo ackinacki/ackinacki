@@ -1,4 +1,6 @@
 mod get;
+mod merge;
+mod partition;
 mod split;
 mod update;
 
@@ -11,64 +13,88 @@ use std::sync::Arc;
 
 use blake3::Hasher;
 pub use get::get;
+pub use get::get_leaf;
+pub use merge::merge_disjoint;
+pub use merge::DisjointMergeError;
 use node_types::Blake3Hashable;
-pub use split::merge;
-pub use split::merge_batch;
+pub use partition::partition_nested_by_capacity;
+pub(crate) use partition::plan_capacity_partitions;
+pub use partition::CapacityPartitionError;
+pub use partition::NestedCapacityPartition;
+pub use split::graft;
+// Compatibility names: these operations graft subtrees, not merge unions.
+pub use split::graft as merge;
+pub use split::graft_batch;
+pub use split::graft_batch as merge_batch;
 pub use split::split;
 pub use update::update;
+pub use update::update_aug;
 pub use update::update_single;
+pub use update::update_single_aug;
 
-use crate::node::BranchData;
-use crate::node::Node;
+use crate::node::BranchDataAug;
+use crate::node::NodeAug;
+use crate::MultiMapAugmentation;
 use crate::MultiMapValue;
 
 /// Node pointer equality check (same allocation).
-pub(crate) fn node_ptr_eq<V: MultiMapValue>(a: &Node<V>, b: &Node<V>) -> bool {
+pub(crate) fn node_ptr_eq<V: MultiMapValue, A: MultiMapAugmentation>(
+    a: &NodeAug<V, A>,
+    b: &NodeAug<V, A>,
+) -> bool {
     match (a, b) {
-        (Node::Empty, Node::Empty) => true,
-        (Node::Leaf(a), Node::Leaf(b)) => Arc::ptr_eq(a, b),
-        (Node::Branch(a), Node::Branch(b)) => Arc::ptr_eq(a, b),
-        (Node::Ext(a), Node::Ext(b)) => Arc::ptr_eq(a, b),
+        (NodeAug::Empty, NodeAug::Empty) => true,
+        (NodeAug::Leaf(a), NodeAug::Leaf(b)) => Arc::ptr_eq(a, b),
+        (NodeAug::Branch(a), NodeAug::Branch(b)) => Arc::ptr_eq(a, b),
+        (NodeAug::Ext(a), NodeAug::Ext(b)) => Arc::ptr_eq(a, b),
         _ => false,
     }
 }
 
 /// Compressing branch constructor: single-child branch → Ext node.
-pub(crate) fn make_branch<V: MultiMapValue>(bitmap: u16, mut children: [Node<V>; 16]) -> Node<V> {
+pub(crate) fn make_branch<V: MultiMapValue, A: MultiMapAugmentation>(
+    bitmap: u16,
+    mut children: [NodeAug<V, A>; 16],
+) -> NodeAug<V, A> {
     if bitmap == 0 {
-        return Node::Empty;
+        return NodeAug::Empty;
     }
     if bitmap.count_ones() == 1 {
         let nib = bitmap.trailing_zeros() as u8;
         let child = std::mem::take(&mut children[nib as usize]);
         return compress_single_child(nib, child);
     }
-    Node::new_branch(bitmap, children)
+    NodeAug::new_branch(bitmap, children)
 }
 
 /// Single nibble → Ext([nib], child), fusing with child Ext if possible.
-pub(crate) fn compress_single_child<V: MultiMapValue>(nib: u8, child: Node<V>) -> Node<V> {
-    if let Node::Ext(data) = &child {
+pub(crate) fn compress_single_child<V: MultiMapValue, A: MultiMapAugmentation>(
+    nib: u8,
+    child: NodeAug<V, A>,
+) -> NodeAug<V, A> {
+    if let NodeAug::Ext(data) = &child {
         let cc = data.nibble_count as usize;
         let mut merged = [0u8; 64];
         merged[0] = nib;
         merged[1..1 + cc].copy_from_slice(&data.nibbles[..cc]);
-        return Node::new_ext(&merged[..1 + cc], data.child.clone());
+        return NodeAug::new_ext(&merged[..1 + cc], data.child.clone());
     }
-    Node::new_ext(&[nib], child)
+    NodeAug::new_ext(&[nib], child)
 }
 
 /// Flatten `Ext(a, Ext(b, x))` → `Ext(a||b, x)`.
-pub(crate) fn merge_ext_if_possible<V: MultiMapValue>(node: Node<V>) -> Node<V> {
-    if let Node::Ext(data) = &node {
-        if let Node::Ext(child_data) = &data.child {
+pub(crate) fn merge_ext_if_possible<V: MultiMapValue, A: MultiMapAugmentation>(
+    node: NodeAug<V, A>,
+) -> NodeAug<V, A> {
+    if let NodeAug::Ext(data) = &node {
+        if let NodeAug::Ext(child_data) = &data.child {
             let nc = data.nibble_count as usize;
             let cc = child_data.nibble_count as usize;
             let total = nc + cc;
             let mut merged = [0u8; 64];
             merged[..nc].copy_from_slice(&data.nibbles[..nc]);
             merged[nc..total].copy_from_slice(&child_data.nibbles[..cc]);
-            return Node::new_ext(&merged[..total], child_data.child.clone());
+            return NodeAug::new_ext(&merged[..total], child_data.child.clone());
         }
     }
     node
@@ -76,11 +102,13 @@ pub(crate) fn merge_ext_if_possible<V: MultiMapValue>(node: Node<V>) -> Node<V> 
 
 /// Materialize an Ext node into a Branch consuming 1 nibble.
 /// Uses unhashed constructors — the intermediate node is temporary and its hash is never read.
-pub(crate) fn ensure_branch_at_depth<V: MultiMapValue>(root: &Node<V>) -> Node<V> {
+pub(crate) fn ensure_branch_at_depth<V: MultiMapValue, A: MultiMapAugmentation>(
+    root: &NodeAug<V, A>,
+) -> NodeAug<V, A> {
     match root {
-        Node::Empty => Node::Empty,
-        Node::Branch(_) => root.clone(),
-        Node::Ext(data) => {
+        NodeAug::Empty => NodeAug::Empty,
+        NodeAug::Branch(_) => root.clone(),
+        NodeAug::Ext(data) => {
             let count = data.nibble_count as usize;
             if count == 0 {
                 return data.child.clone();
@@ -90,44 +118,48 @@ pub(crate) fn ensure_branch_at_depth<V: MultiMapValue>(root: &Node<V>) -> Node<V
                 data.child.clone()
             } else {
                 // Ext tail must be hashed — it may be kept in the final tree
-                Node::new_ext(&data.nibbles[1..count], data.child.clone())
+                NodeAug::new_ext(&data.nibbles[1..count], data.child.clone())
             };
-            let mut children: [Node<V>; 16] = Default::default();
-            children[first as usize] = tail_child;
             // Branch wrapper is always temporary (destructured for children), safe to skip hash
-            Node::new_branch_unhashed(children)
+            NodeAug::new_branch_unhashed_single(first, tail_child)
         }
-        Node::Leaf(_) => root.clone(),
+        NodeAug::Leaf(_) => root.clone(),
     }
 }
 
 /// Rebuild a Branch node with one child changed. Uses `make_branch` (compressing).
-pub(crate) fn rebuild_branch_with_child<V: MultiMapValue>(
-    br: &Arc<BranchData<V>>,
+pub(crate) fn rebuild_branch_with_child<V: MultiMapValue, A: MultiMapAugmentation>(
+    br: &Arc<BranchDataAug<V, A>>,
     nib: u8,
-    new_child: Node<V>,
-) -> Node<V> {
+    new_child: NodeAug<V, A>,
+) -> NodeAug<V, A> {
     let bit = 1u16 << (nib as u16);
     let existed = (br.bitmap & bit) != 0;
 
     if !existed && new_child.is_empty() {
-        return Node::Branch(Arc::clone(br));
+        return NodeAug::Branch(Arc::clone(br));
     }
 
+    let updated_augmentation = A::replace_child(
+        &br.augmentation,
+        br.children[nib as usize].augmentation_ref(),
+        new_child.augmentation_ref(),
+    );
     let mut out = br.children.clone();
     out[nib as usize] = new_child;
 
-    let mut out_bitmap: u16 = 0;
-    for n in 0..16u16 {
-        if !out[n as usize].is_empty() {
-            out_bitmap |= 1u16 << n;
-        }
-    }
+    let out_bitmap = if out[nib as usize].is_empty() { br.bitmap & !bit } else { br.bitmap | bit };
 
     if out_bitmap == 0 {
-        Node::Empty
+        NodeAug::Empty
+    } else if out_bitmap.count_ones() == 1 {
+        let only_nib = out_bitmap.trailing_zeros() as u8;
+        let child = std::mem::take(&mut out[only_nib as usize]);
+        compress_single_child(only_nib, child)
+    } else if let Some(augmentation) = updated_augmentation {
+        NodeAug::new_branch_with_augmentation(out_bitmap, out, augmentation)
     } else {
-        make_branch(out_bitmap, out)
+        NodeAug::new_branch(out_bitmap, out)
     }
 }
 
@@ -138,7 +170,7 @@ pub fn boundary_mask(r: usize) -> u8 {
 }
 
 #[inline]
-pub fn prefix_bits_match(prefix: &[u8; 32], key: &[u8; 32], bits: u8) -> bool {
+pub fn prefix_bits_match(prefix: &[u8; 32], key: &[u8; 32], bits: u16) -> bool {
     let bits = bits as usize;
     let full = bits / 8;
     let rem = bits % 8;

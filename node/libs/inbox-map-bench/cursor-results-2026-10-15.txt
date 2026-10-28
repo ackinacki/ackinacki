@@ -1,0 +1,103 @@
+KEY CURSOR / SEEK EXPERIMENT
+Date: 2026-10-15
+Host: Apple M3 Pro, 36 GiB RAM, macOS
+Build: cargo build --release -p inbox-map-bench --offline
+No explicit target-dir; shared Cargo configuration.
+Production queue and MultiMap implementation have NOT been switched to this prototype.
+All experiment code is confined to inbox-map-bench. No commits.
+Source SHA-256:
+  12edd69d614bce79b35de50d24e018bec0b334665e5a81be28265d74d24d5b86  seek.rs
+  595a3c06c2c91582db70b2b78199e85b19407db673edc12fd310b4aaaf7f82c6  cursor_bench.rs
+
+Comparison:
+  indexed = current production Merkle QueueMap + OrderedSet + numeric cursors,
+            NOT the earlier std::collections::BTreeMap implementation.
+  keyed = raw persistent MultiMap roots, key cursors, cached leaf counts,
+          NO OrderedSet and NO array of keys.
+  Both layouts reference the same Inbox values and immutable L2 Merkle nodes.
+  Rebuilt L1 prototype has exactly the same Merkle root.
+  Fixed start positions: one third of the sorted DApps and of each DApp's accounts.
+  Synthetic Inbox metadata only, no message payload allocations.
+
+Prototype seek:
+  Lower-bound search returning the first key >= cursor, pruning whole subtrees.
+  DFS stack holds node references and fixed-size key prefixes.
+  Cyclic wrapper does at most one wrap and never emits an inbox twice.
+  Tests compare against the native MultiMap iterator for empty maps, deleted
+  and missing cursors, boundaries and prefix views at 0,1,4,7,8,129,255,256 bits.
+
+Measurement:
+  Five alternating-order rounds, median; warm read-only fixtures.
+  WALK = select inboxes only, no common MessagesRange cloning, DB, VM or producer HashMaps.
+  WALK sequences are verified with count + order-sensitive checksum for both variants.
+  SEEK = initialize both levels and fetch the first inbox at existing keys;
+         numeric/key cursor preparation is outside timing.
+  ADVANCE = compute new per-DApp cursor keys and global DApp cursor after 32
+            accounted consumptions; one DApp * 32 accounts or 32 DApps * 1 account.
+            Numeric version does arithmetic only. Key version seeks and walks K%len.
+            Persistence/new optimistic-state creation/Merkle updates are EXCLUDED.
+  MEMORY = live allocator bytes, NOT RSS. Prototype measured after dropping indexed
+           fixture; raw L2 nodes/inbox values remain shared, but all indexes are freed.
+  Large indexed DApp counts capped at 10000 to avoid 61+ GiB preallocation.
+  This is a feasibility prototype, not a full-block performance measurement.
+
+Commands:
+  cargo run --release -p inbox-map-bench -- cursor 1000000 1 5
+  cargo run --release -p inbox-map-bench -- cursor 1000000 1000 5
+  cargo run --release -p inbox-map-bench -- cursor 10000 10000 5
+  cargo test -p inbox-map-bench --offline
+
+
+CASE count=1000000 dapps=1
+CURSOR_FIXTURE count=1000000 dapps=1 accounts_per_dapp=1000000 rounds=5
+WALK inboxes=32 indexed_ms=0.005386 keyed_ms=0.002929
+WALK inboxes=4096 indexed_ms=0.826833 keyed_ms=0.354917
+WALK inboxes=1000000 indexed_ms=448.595792 keyed_ms=266.771542
+SEEK two_levels indexed_ns=386.7 keyed_ns=1022.8
+ADVANCE touched_dapps=1 accounts_per_dapp=32 indexed_us=0.0017 keyed_us=2.8618 metadata_persistence=excluded
+MEMORY indexed_mib=615.373 keyed_mib=534.596
+
+
+CASE count=1000000 dapps=1000
+CURSOR_FIXTURE count=1000000 dapps=1000 accounts_per_dapp=1000 rounds=5
+WALK inboxes=32 indexed_ms=0.005356 keyed_ms=0.003014
+WALK inboxes=4096 indexed_ms=0.685416 keyed_ms=0.299833
+WALK inboxes=1000000 indexed_ms=228.956125 keyed_ms=124.009292
+SEEK two_levels indexed_ns=554.4 keyed_ns=1169.1
+ADVANCE touched_dapps=32 accounts_per_dapp=1 indexed_us=0.0320 keyed_us=21.9332 metadata_persistence=excluded
+MEMORY indexed_mib=598.556 keyed_mib=535.934
+
+
+CASE count=10000 dapps=10000
+CURSOR_FIXTURE count=10000 dapps=10000 accounts_per_dapp=1 rounds=5
+WALK inboxes=32 indexed_ms=0.007405 keyed_ms=0.007996
+WALK inboxes=4096 indexed_ms=2.027250 keyed_ms=1.082792
+WALK inboxes=10000 indexed_ms=5.428458 keyed_ms=2.480833
+SEEK two_levels indexed_ns=383.5 keyed_ns=919.7
+ADVANCE touched_dapps=32 accounts_per_dapp=1 indexed_us=0.0310 keyed_us=5.4247 metadata_persistence=excluded
+MEMORY indexed_mib=635.207 keyed_mib=8.792
+
+KEYED-ONLY MILLION-DAPP FOLLOW-UP
+Direct single-key construction, no indexed fixture or OrderedSet allocation.
+Synthetic Inbox values as above; no message payloads, database, or VM execution.
+Retained chain: base plus 10 successors, 32 replacements per successor.
+Both L1 and L2 updates use map_update_single; cursor persistence is excluded.
+Checks: direct build matches indexed fixture roots/order on small datasets;
+full walk has expected count and stable checksum; changed leaves checked against
+inputs, original state remains unchanged. Four benchmark tests passed.
+
+Command: /usr/bin/time -l /Volumes/x5/cargo-target/release/inbox-map-bench cursor keyed 1000000 1000000 5
+KEYED_ONLY count=1000000 dapps=1000000 rounds=5 build_s=10.362 live_mib=870.556
+WALK inboxes=32 keyed_ms=0.010500
+WALK inboxes=4096 keyed_ms=1.952542
+WALK inboxes=1000000 keyed_ms=739.152709
+RETAINED successors=10 changes_per_state=32 update_median_ms=0.195500 extra_live_mib=0.647 l1_updates=single metadata_persistence=excluded
+15.87 real / 14.93 user / 0.22 sys seconds
+maximum resident set size: 922173440 bytes (879.453 MiB)
+swaps: 0
+peak memory footprint: 921322504 bytes
+
+Two preceding runs: build 9.972 / 9.759 seconds; live 870.556 MiB;
+full walk 881.499083 / 857.129042 ms; update median .211084 / .212291 ms;
+retained delta .647 MiB in both. The second run's time -l statistics failed
+under sandbox restrictions; benchmark itself completed successfully.

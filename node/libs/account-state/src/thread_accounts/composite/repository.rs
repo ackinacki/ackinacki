@@ -157,7 +157,7 @@ impl ThreadAccountsRepository {
         &'a self,
         state: &'a DurableThreadAccountsState,
     ) -> DurableThreadAccountsIter<'a> {
-        self.0.durable.map_repo().map_iter(state.map())
+        (state.map()).iter()
     }
 
     pub fn state_with_tvm_cell_and_empty_durable_state(
@@ -220,6 +220,19 @@ impl ThreadAccountsRepository {
         )
     }
 
+    pub fn export_snapshot_v1_to_writer_checked<W, F>(
+        &self,
+        state: &ThreadAccountsState,
+        writer: &mut W,
+        should_cancel: &F,
+    ) -> anyhow::Result<()>
+    where
+        W: Write + Seek + Send,
+        F: Fn() -> bool,
+    {
+        self.0.durable.export_snapshot_v1_to_writer_checked(&state.durable, writer, should_cancel)
+    }
+
     pub fn import_durable_snapshot_from_reader<R: Read>(
         &self,
         reader: &mut R,
@@ -252,6 +265,16 @@ impl ThreadAccountsRepository {
         block_id: &BlockIdentifier,
     ) -> anyhow::Result<()> {
         self.0.durable.commit_staged_import(staged, thread_id, block_id)
+    }
+
+    pub fn import_snapshot_v1_from_reader_staged<R: Read>(
+        &self,
+        reader: &mut R,
+        thread_id: &ThreadIdentifier,
+        block_id: &BlockIdentifier,
+        staged: StagedArchiveEpoch,
+    ) -> anyhow::Result<DurableThreadAccountsState> {
+        self.0.durable.import_snapshot_v1_from_reader_staged(reader, thread_id, block_id, staged)
     }
 
     pub fn abort_staged_import(&self, staged: StagedArchiveEpoch) {

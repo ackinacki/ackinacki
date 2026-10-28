@@ -35,8 +35,26 @@ use typed_builder::TypedBuilder;
 use crate::node::NodeIdentifier;
 use crate::types::BlockSeqNo;
 
-const DEFAULT_ENGINE_VERSION: &str = "1.0.7";
+const DEFAULT_ENGINE_VERSION: &str = "1.0.8";
 const DEFAULT_GOSSIP_VERSION: &str = "0";
+
+fn default_snapshot_partition_size_bytes() -> u64 {
+    1024 * 1024 * 1024
+}
+
+fn default_snapshot_download_cache_bytes() -> u64 {
+    crate::services::blob_sync::external_fileshares_based::download_cache::DEFAULT_DOWNLOAD_CACHE_BYTES
+}
+
+fn deserialize_snapshot_partition_size_bytes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u64, D::Error> {
+    let size = u64::deserialize(deserializer)?;
+    if size == 0 {
+        return Err(serde::de::Error::custom("snapshot_partition_size_bytes must be positive"));
+    }
+    Ok(size)
+}
 /// RootPN (DEX)
 const DEFAULT_TRACKED_ROOT_PN_ROUTING: &str =
     "0000000000000000000000000000000000000000000000000000000000000004::1010101010101010101010101010101010101010101010101010101010101010";
@@ -105,6 +123,15 @@ pub struct GlobalConfig {
     /// Minimal time between publishing state.
     /// Defaults to 600 seconds
     pub min_time_between_state_publish_directives: Duration,
+
+    /// Recommended partition capacity in canonical uncompressed bytes (1 GiB).
+    /// Protocol-wide, not a hard maximum for indivisible leaves. Committed by
+    /// CanonicalConfigHash starting with engine version 1.0.8.
+    #[serde(
+        default = "default_snapshot_partition_size_bytes",
+        deserialize_with = "deserialize_snapshot_partition_size_bytes"
+    )]
+    pub snapshot_partition_size_bytes: u64,
 
     /// Block gap size that causes block producer rotation.
     /// Defaults to 6
@@ -204,6 +231,12 @@ pub struct NodeConfig {
     #[builder(default = PathBuf::from("/tmp"))]
     pub external_state_share_local_base_dir: PathBuf,
 
+    /// Local on-disk snapshot download cache budget, including active downloads.
+    /// Not a protocol parameter. Changes take effect after node restart.
+    #[builder(default = default_snapshot_download_cache_bytes())]
+    #[serde(default = "default_snapshot_download_cache_bytes")]
+    pub snapshot_download_cache_bytes: u64,
+
     /// Level of block production parallelization.
     #[builder(default = 20)]
     pub parallelization_level: usize,
@@ -276,6 +309,7 @@ impl Default for GlobalConfig {
             time_to_verify_transaction_aborted_with_execution_timeout_millis: None,
             need_synchronization_block_diff: 20,
             min_time_between_state_publish_directives: Duration::from_secs(600),
+            snapshot_partition_size_bytes: default_snapshot_partition_size_bytes(),
             attestation_resend_timeout: Duration::from_secs(3),
             producer_change_gap_size: 6,
             node_joining_timeout: Duration::from_secs(300),
@@ -439,6 +473,7 @@ impl Default for NodeConfig {
             bk_set_update_path: None,
             bk_set_changes_blocks_path: None,
             external_state_share_local_base_dir: PathBuf::from("/tmp"),
+            snapshot_download_cache_bytes: default_snapshot_download_cache_bytes(),
             parallelization_level: 20,
             block_keeper_seed_path: "block_keeper.keys.json".to_string(),
             block_cache_size: 20,

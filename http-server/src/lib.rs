@@ -108,7 +108,8 @@ where
         // Returns selected shard state
         let storage_router = Router::with_path("storage/{*path}")
             .hoop(report_block_request)
-            .get(StaticDir::new([&self.local_storage_dir]).auto_list(true));
+            .get(api::storage::StorageHandler::new(self.local_storage_dir.clone()))
+            .head(api::storage::StorageHandler::new(self.local_storage_dir.clone()));
 
         let bk_set_router = Router::with_path("bk_set")
             .get(api::BkSetSummaryHandler::<TBPResolver, TSeqnoGetter>::new());

@@ -65,7 +65,7 @@ import "./InferenceOrderBook.sol";
 ///                             `releaseDispute()` / `resolveDisputeTimeout()`.
 ///         5. `withdrawShell`/`destroy` — seller pulls finalized SHELL (§3.5).
 contract TokenContract is AiRegistryModifiers {
-    string constant version = "4.0.35";
+    string constant version = "4.0.36";
 
     // `SUPER_ROOT_ADDR` used to live here. Its ONLY use was as the fixed sink for
     // `cleanupUnopened`'s residual-native sweep — a permissionless call, so the leftover gas went to
@@ -83,15 +83,17 @@ contract TokenContract is AiRegistryModifiers {
     // book hash is authoritative — the TC needs no RootPN round-trip. The note does
     // NOT pin the TC code (RootPN bakes it into the note at deploy), so this pin is
     // one-way (TC->note) and the build stays cycle-free. Re-pin when PrivateNote is rebuilt.
-    uint256 constant PRIVATE_NOTE_CODE_HASH  = 0x57e85fa67cc90284b907ea7e9d8c6d35830c02d14bd04d4be6ec884b5748ca0c;
+    uint256 constant PRIVATE_NOTE_CODE_HASH  = 0xacf19e140b58469a50165bcbda88cca952b2036678f1f5823b6a6bebd3fc32b1;
     uint16  constant PRIVATE_NOTE_CODE_DEPTH = 20;
 
-    // Native value attached to THIS contract's cross-dapp messages (register / stream-lock /
-    // payout). Tunable; recipients that live in a configured dapp self-fund via `accept` + their
-    // own mint, so this only needs to cover what a non-accepting hop requires. A DEAL cannot do
-    // that — it has no dapp config and no mint of its own — but it is never the recipient here;
-    // it is the sender, and its own gas came from `fundDeal`. (TC/RM-local — NOT the shared
-    // REGISTER_FORWARD_VALUE the IOB also uses for its SHELL handover.)
+    // Native value attached to THIS contract's messages (register / stream-lock / payout).
+    // Tunable; recipients that live in a configured dapp self-fund via `accept` + their own mint,
+    // so this only needs to cover what a non-accepting hop requires. Since 4.0.36 the deal itself
+    // is one of those: deployed by its seller's note, it lands in that note's dapp and mints its
+    // own native floor in `ensureBalance`. What it cannot mint is ECC[2], which is what every
+    // entry burns — that reserve comes from the deploy and from the two funding calls, one per
+    // party. (TC/RM-local — NOT the shared REGISTER_FORWARD_VALUE the IOB also uses for its
+    // SHELL handover.)
     /// @notice RootPN, the custodian a write-off is reported to.
     /// @dev    Declared here rather than inherited: a deal extends the airegistry modifiers, not
     ///         the dex ones where the dex-side literal lives. Used for one thing — telling the
@@ -282,16 +284,31 @@ contract TokenContract is AiRegistryModifiers {
         uint256 modelHash,
         uint128 pricePerTick,
         uint128 maxTicks,
-        address sellerNote
+        address sellerNote,
+        uint256 depositIdentifierHash
     ) {
-        // Deployer authentication: the deal TC is deployed off-chain by the seller as an EXTERNAL
-        // message signed with the seller key (`pubkey == _sellerPubkey` in the stateInit). Gate the
-        // constructor to that key BEFORE accept, so nobody else can occupy this canonical (sellerPubkey,
-        // nonce) address with foreign deal terms (price/model/maxTicks/sellerNote are ctor args, not part
-        // of the address). Without this, a third party could front-run the deploy and the seller's
-        // `postSellOffer` would then rest an offer carrying injected terms in the seller's name.
-        require(msg.pubkey() == _sellerPubkey, ERR_INVALID_SENDER);
+        // DEPLOYED BY THE SELLER'S CANONICAL PrivateNote (generation 4.0.36), as an INTERNAL
+        // message. It used to be an external message signed with the seller key, gated on
+        // `msg.pubkey() == _sellerPubkey` — a check that says nothing here, because an internal
+        // message carries no pubkey at all and would pass it with a zero.
+        //
+        // The replacement is the check `postFromNote` already made, moved to the only moment that
+        // settles the question: the sender must BE the canonical note for `depositIdentifierHash`,
+        // derived from the pinned PrivateNote code. Deal terms (price/model/maxTicks) are ctor
+        // arguments and not part of the address, so without this a third party could occupy this
+        // canonical (sellerPubkey, nonce) address with foreign terms and the seller's offer would
+        // then rest in his name carrying them.
+        //
+        // Note the ORDER: authenticate before `accept`, so a stranger's deploy attempt is refused
+        // at the door and paid for by whoever sent it.
+        require(msg.sender == sellerNote, ERR_INVALID_SENDER);
+        require(sellerNote == DexLib.computeCanonicalNoteAddressFromHash(
+            PRIVATE_NOTE_CODE_HASH, PRIVATE_NOTE_CODE_DEPTH, depositIdentifierHash), ERR_INVALID_SENDER);
         tvm.accept();
+        // The deal is in a configured dapp from its first block now, so it can hold its own floor
+        // instead of depending on the funder to have attached enough.
+        ensureBalance();
+        _chargeGas(GAS_DEPLOY);
         require(pricePerTick > 0, ERR_BAD_PARAM);
         require(maxTicks >= 2, ERR_BAD_PARAM);
         // maxTicks*(price + fee) must fit uint128 so every downstream unit×ticks total (the
@@ -352,23 +369,40 @@ contract TokenContract is AiRegistryModifiers {
         // canonical PrivateNote (`postFromNote`), so a TC nobody confirmed never activates.
     }
 
-    // A deal has NO self-top-up, and reads no native balance (generation 4.0.33).
+    // A DEAL FUNDS ITS OWN GAS AGAIN (generation 4.0.36), because it finally lives somewhere that
+    // lets it. The floor below is the same three lines every other contract in this tree carries.
     //
-    // There used to be an `ensureBalance()` here, called at the head of all eighteen entry points:
-    // `if (address(this).balance > MIN_BALANCE) return; gosh.mintshellq(MIN_BALANCE);`. It could
-    // never work. A mint draws on the DAPP CONFIG of the dapp the contract lives in; a
-    // TokenContract is deployed by an EXTERNAL message into its OWN dapp, and that dapp has no
-    // config, so there was nothing for it to draw on. Every other contract in this tree carries the
-    // same three lines and, living in a configured dapp, is genuinely self-sufficient — which is
-    // why the deal's copy read as ordinary boilerplate and survived this long. The check was also
-    // the last place this contract asked the ACCOUNT how much it had; everything the deal owns is
-    // now `_balance`, a number, and nothing here consults native balance at all.
+    // It was removed in 4.0.33 for a reason that has now expired. A mint draws on the DAPP CONFIG
+    // of the dapp the contract lives in; a TokenContract was deployed by an EXTERNAL message into
+    // its OWN dapp, and that dapp has no config, so there was nothing for it to draw on. The deal
+    // is deployed by the seller's PrivateNote now and lands in the note's dapp — configured, like
+    // everything else — so the mint has a config behind it and the floor holds.
     //
-    // A deal is GAS-FED BY ITS FUNDER instead: `fundDeal` arrives with ECC[2] attached under flag
-    // 17 (16 = convert the sent token, 1 = fees on the sender), which lands as vmshell. One call,
-    // two effects — gas on the account, money on `_balance`. That is also why the funding entries
-    // never read `msg.currencies`: by the time the body runs the ECC has already become native
-    // balance, and the money is the argument, not the currency.
+    // What this replaces is the funder's one-time deposit. `fundDeal` used to arrive with ECC[2]
+    // under flag 17 (16 = convert the sent token, 1 = fees on the sender), and the conversion WAS
+    // the deal's whole gas supply: one call, two effects — gas on the account, money on `_balance`.
+    // Undershoot it and the deal stopped forever, which is what made sizing it a published formula
+    // rather than a detail. Now the native side is self-served and the ECC stays ECC, held as the
+    // reserve every entry burns its charge from (see `_chargeGas`).
+    function ensureBalance() private pure {
+        if (address(this).balance > MIN_BALANCE) { return; }
+        gosh.mintshellq(MIN_BALANCE);
+    }
+
+    /// @notice Burn this entry's measured SHELL charge (#950 table, constants in modifiers).
+    /// @dev    The charge is a BURN, not a payment: nobody is credited, which is what makes calling
+    ///         a deal cost something rather than move something. It comes out of the ECC reserve the
+    ///         funder put in, so the caller of an external entry (`claimTokens` and the other
+    ///         key-signed ones) spends the deal's reserve rather than attaching currency — an
+    ///         external message cannot carry any. Internal callers attach theirs on the message.
+    ///
+    ///         Sized so the reserve covers a whole deal: ~0.215 constant + 0.013 per tick (#950).
+    ///         A reserve that runs dry does NOT strand the deal the way an empty native balance
+    ///         once did — `ensureBalance` keeps it answering — so an exhausted reserve is a refused
+    ///         burn on one entry, not a contract that stops existing.
+    function _chargeGas(uint64 amount) private pure {
+        gosh.burnecc(amount, SHELL_ECC_ID);
+    }
 
     // EVERY `selfdestruct` IN THIS FILE DISPOSES OF `_balance` ON ITS OWN LINE, in the function
     // that destructs. There was a `_sweepBalance(to)` helper here and it is gone on purpose: a
@@ -688,6 +722,13 @@ contract TokenContract is AiRegistryModifiers {
             return;
         }
         tvm.accept();
+        ensureBalance();
+        // NOT CHARGED, and it must stay that way. This is the BOOK telling the deal what
+        // happened to its offer, not a party doing something: nobody here chose to call, and
+        // the book attaches no ECC anywhere. A charge would make clearing `_offerPosted` depend
+        // on the reserve, and `burnecc` fails in the ACTION phase — the whole transaction
+        // reverts, the latch stays set, and the book has already removed the ask. Reordering
+        // the statements cannot help: a revert takes the clearing with it.
         // Credited BEFORE the non-fundable branch below, which refunds through `_payShell` and
         // therefore subtracts it again. Both halves go through the balance, so the pair with the
         // book conserves whichever way this call ends.
@@ -762,6 +803,8 @@ contract TokenContract is AiRegistryModifiers {
         require(_sellerNote == DexLib.computeCanonicalNoteAddressFromHash(
             PRIVATE_NOTE_CODE_HASH, PRIVATE_NOTE_CODE_DEPTH, depositIdentifierHash), ERR_BAD_PARAM);
         tvm.accept();
+        ensureBalance();
+        _chargeGas(GAS_POST_FROM_NOTE);
         _noteAuthorized = true;
         _iobHash  = iobHash;
         _iobDepth = iobDepth;
@@ -789,6 +832,10 @@ contract TokenContract is AiRegistryModifiers {
             return;
         }
         tvm.accept();
+        ensureBalance();
+        // NOT CHARGED — same reason as `fundFromOrderBook`, and worse here: the book sends this
+        // with `bounce: false`, so a reverted transaction is never retried and the latch would
+        // stay set for good, leaving the deal unable to re-list, close or be destroyed.
         if (_funded) { return; }        // a fill won the race → deal is live, keep the TC
         // Offer is off the book → re-list-able. AND THAT IS ALL THIS DOES NOW.
         //
@@ -840,6 +887,8 @@ contract TokenContract is AiRegistryModifiers {
     ///      the reason this contract carried a bounce handler, a `purpose` earmark and a stored
     ///      `_closePayout`. All three are gone with it. Model: `resolveDisputeTimeout`.
     function close() public onlyOwnerPubkey(_sellerPubkey) accept {
+        ensureBalance();
+        _chargeGas(GAS_TERMINAL);
         require(!_funded, ERR_ALREADY_FUNDED);   // unfunded ⟹ not opened, not disputed
         // Same condition and same code as `destroy()`. `_offerPosted` tracks the REAL offer state:
         // it is cleared by `onSellClosed`, which the book sends on every way an ask leaves it —
@@ -848,8 +897,8 @@ contract TokenContract is AiRegistryModifiers {
         // Return the bond through the canonical path before the sweep. A bond CAN exist here: it
         // is postable from the moment the deal is constructed, since `2P` is known from the
         // constructor and bonding before offering is the stronger order. Leaving it to
-        // `selfdestruct` would send it elsewhere than `_sellerNote`, and a cross-dapp sweep does
-        // not survive the trip.
+        // `selfdestruct` would send it elsewhere than `_sellerNote`, and a sweep is not a payment:
+        // it carries no figure, so the note would have nothing to credit the bond against.
         _returnBond();
         // Anything still on `_balance` goes the same way as everything else here.
         if (_balance > 0) { _payShell(_sellerNote, _balance); }
@@ -906,6 +955,8 @@ contract TokenContract is AiRegistryModifiers {
         uint128 need = _bondAmount();
         require(amount >= need, ERR_INSUFFICIENT_DEPOSIT);
         tvm.accept();
+        ensureBalance();
+        _chargeGas(GAS_FUND_DEAL);
 
         _sellerBond = need;
         _sellerBondFunded = true;
@@ -953,6 +1004,8 @@ contract TokenContract is AiRegistryModifiers {
         uint128 need = _bondAmount();
         require(amount >= need, ERR_INSUFFICIENT_DEPOSIT);
         tvm.accept();
+        ensureBalance();
+        _chargeGas(GAS_FUND_DEAL);
 
         _buyerBond = need;
         _buyerBondFunded = true;
@@ -976,6 +1029,8 @@ contract TokenContract is AiRegistryModifiers {
     ///         note below. No platform fee yet either: it is taken by-fact when the probe is
     ///         accepted (§5.1).
     function open(bytes endpointCipher) public onlyOwnerPubkey(_sellerPubkey) accept {
+        ensureBalance();
+        _chargeGas(GAS_OPEN);
         require(_funded, ERR_NOT_FUNDED);
         require(!_opened, ERR_ALREADY_OPEN);
         // BOTH bonds, and the order they arrived in does not matter. The seller's can be posted
@@ -1028,6 +1083,8 @@ contract TokenContract is AiRegistryModifiers {
     ///         and only now does the deal become claimable. The seller bond STAYS locked — from
     ///         here on it mirrors the claim pipeline, not the probe.
     function acceptProbe() public onlyOwnerPubkey(_sellerPubkey) accept {
+        ensureBalance();
+        _chargeGas(GAS_ACCEPT_PROBE);
         require(_opened, ERR_NOT_OPEN);
         require(!_disputed, ERR_DISPUTED);
         require(!_probeAccepted, ERR_ALREADY_REGISTERED);
@@ -1131,6 +1188,8 @@ contract TokenContract is AiRegistryModifiers {
     ///             minute, so no claim may assert one in less.
     ///         At the physical ceiling the three agree exactly — a tick a minute, one tick a claim.
     function claimTokens(uint128 cumulativeTokens) public onlyOwnerPubkey(_sellerPubkey) accept {
+        ensureBalance();
+        _chargeGas(GAS_CLAIM);
         require(_opened, ERR_NOT_OPEN);
         require(!_disputed, ERR_DISPUTED);
         // Nothing is claimable until the trial tick has been accepted: the buyer's first minutes
@@ -1214,6 +1273,8 @@ contract TokenContract is AiRegistryModifiers {
         require(_tokensPend > _tokensFinal
                 && block.timestamp >= _lastClaimTime + CLAIM_PROMOTE_WINDOW, ERR_SETTLE_WINDOW_OPEN);
         tvm.accept();
+        ensureBalance();
+        _chargeGas(GAS_SETTLE);
         _promoteDue();
         if (!_isSubscription() && _tokensFinal >= _fundedTokens) { _payFinalAndClose(); }
     }
@@ -1338,6 +1399,8 @@ contract TokenContract is AiRegistryModifiers {
         // is how the close below is retried once the last claim has stopped being contestable.
         require(due > _weekIndex || _weekIndex >= _subWeeks, ERR_SETTLE_WINDOW_OPEN);
         tvm.accept();
+        ensureBalance();
+        _chargeGas(GAS_SETTLE);
 
         // Past the end of the term the `require` above still admits this call — that is how the
         // deferred close is retried — and those retries must not each pay for another report, so
@@ -1523,6 +1586,8 @@ contract TokenContract is AiRegistryModifiers {
         require(msg.sender == _buyer, ERR_NOT_BUYER);
         require(!_disputed, ERR_DISPUTED);
         tvm.accept();
+        ensureBalance();
+        _chargeGas(GAS_TERMINAL);
 
         // Still on the probe: the buyer tried the service and is walking away from it. The trial
         // tick is destroyed together with a mirror tick of the seller's bond — neither side keeps
@@ -1572,6 +1637,8 @@ contract TokenContract is AiRegistryModifiers {
     ///         what he normally forgoes, and before the probe there is no started week to forgo, so
     ///         without this the earliest possible walk-out would be the only free one.
     function sellerStop() public onlyOwnerPubkey(_sellerPubkey) accept {
+        ensureBalance();
+        _chargeGas(GAS_TERMINAL);
         require(_opened, ERR_NOT_OPEN);
         require(!_disputed, ERR_DISPUTED);
         // The trial tick itself is untouched: it is the buyer's until acceptance, and he is not the
@@ -1619,6 +1686,8 @@ contract TokenContract is AiRegistryModifiers {
         require(msg.sender == _buyer, ERR_NOT_BUYER);
         require(!_disputed, ERR_DISPUTED);
         tvm.accept();
+        ensureBalance();
+        _chargeGas(GAS_TERMINAL);
         _disputed     = true;
         _everDisputed = true;
         _disputeTime  = uint64(block.timestamp);
@@ -1731,6 +1800,8 @@ contract TokenContract is AiRegistryModifiers {
     ///         was arguing for. That is what keeps the cheap resolution available and the expensive
     ///         one rare.
     function releaseDispute() public onlyOwnerPubkey(_sellerPubkey) accept {
+        ensureBalance();
+        _chargeGas(GAS_TERMINAL);
         require(_disputed, ERR_NOT_DISPUTED);
         // The SAME `D` the timeout would have used, taken from the buyer alone: whoever opened the
         // dispute pays for it either way, so it is never free to raise. The seller's bond comes
@@ -1775,6 +1846,8 @@ contract TokenContract is AiRegistryModifiers {
         require(_disputed, ERR_NOT_DISPUTED);
         require(block.timestamp >= _disputeTime + DISPUTE_WINDOW, ERR_DISPUTE_WINDOW_OPEN);
         tvm.accept();
+        ensureBalance();
+        _chargeGas(GAS_TERMINAL);
         // Nobody agreed, so nobody is believed: an EQUAL `D` is destroyed on each side (§4.2). The
         // seller's bond is not forfeited wholesale — whatever `D` does not consume returns to him
         // through the settlement below, which is what makes refusing to settle a bounded cost
@@ -1938,13 +2011,35 @@ contract TokenContract is AiRegistryModifiers {
         // to the never-opened case. A funded deal that genuinely never opened has
         // _everOpened=false.
         require(!_everOpened, ERR_ALREADY_OPEN);
-        require(uint64(block.timestamp) >= _fundedTime + MATCH_OPEN_TIMEOUT, ERR_STREAM_TIMEOUT_OPEN);
+        // Two ways in. The timeout is the no-show recovery this call was written for. The other is
+        // the buyer's note saying, at match time, that it CANNOT post the bond — there is nothing
+        // to wait for then: without the bond `open` can never succeed, so the deal is already dead
+        // and the timeout would only delay returning the seller's money.
+        require(msg.sender == _buyer
+                || uint64(block.timestamp) >= _fundedTime + MATCH_OPEN_TIMEOUT, ERR_STREAM_TIMEOUT_OPEN);
         tvm.accept();
+        ensureBalance();
+        // NOTHING IS TAKEN FROM THE RESERVE HERE. This exit delivers nothing and penalises nobody;
+        // charging it would take the last of a reserve the seller funded in order to hand his own
+        // money back to him. What IS burned is whatever the caller attached — the charge rides with
+        // the call, and a caller who attached nothing simply gets the deal wound down for free
+        // rather than not at all.
+        uint128 attached = uint128(msg.currencies[SHELL_ECC_ID]);
+        if (attached > 0) { gosh.burnecc(uint64(attached), SHELL_ECC_ID); }
 
         _releaseBuyerBond();        // never opened → no dispute was possible; the bond refunds whole
         uint128 refund = _deposit;
         uint128 bondBack = _sellerBond;
         _deposit = 0; _sellerBond = 0; _funded = false; _sellerBondFunded = false; _buyerBondFunded = false;
+        // The resting offer goes with the funding it was matched against: leaving it set would
+        // block both ways out of the state this call creates — `postFromNote` returns early on
+        // `_offerPosted`, and `destroy` refuses on it.
+        _offerPosted = false;
+        // The endpoint ciphertext goes with the cycle it belonged to. It was encrypted FOR THE
+        // BUYER being refunded here, so leaving it in storage means the next buyer of this same
+        // deal is handed a stream he cannot decrypt — and `open` emits it without complaint if
+        // the seller passes an empty value, because an empty optional means "unchanged".
+        delete _endpointCipher;
 
         _payShell(_buyer, refund);
         _payShell(_sellerNote, bondBack);   // return the seller's bond (no-show, not slashed)
@@ -1970,6 +2065,18 @@ contract TokenContract is AiRegistryModifiers {
         // In the ordinary flow this zeroes nothing: the two payouts above cleared the deposit and
         // the bond, so `_balance` is zero and only a bounced credit could leave a remainder.
         if (_balance > 0) { _burnShell(_balance); }
+        // BOTH NOTES MUST STOP COUNTING THIS DEAL AS LIVE. `onInferenceFilled` set
+        // `_liveDeals[deal]` on the buyer's note AND on the seller's — the book reports a fill
+        // to both — and `withdrawTokens` refuses while that map is non-empty. Until this call
+        // the clearing came free with `_die`; now that the deal survives, it has to be said out
+        // loud, or a fully refunded buyer and a seller who got his bond back both sit unable to
+        // withdraw until someone destroys a deal that is no longer in anyone's way.
+        if (_buyer.value != 0) {
+            IInferenceNoteMirror(_buyer).onDealClosed{value: DAPP_MSG_VALUE, flag: 1, bounce: false}();
+        }
+        if (_sellerNote.value != 0) {
+            IInferenceNoteMirror(_sellerNote).onDealClosed{value: DAPP_MSG_VALUE, flag: 1, bounce: false}();
+        }
         // Residual NATIVE gas goes to the seller's note, which is where the deal's gas came from in
         // the note-funded flow — `fundDeal` sends it from there. This used to be the fixed SuperRoot
         // sink, guarding against an aimable payee on a call anyone may make after the timeout; that
@@ -1978,7 +2085,14 @@ contract TokenContract is AiRegistryModifiers {
         // cleanup still cannot point it at himself.
         //
         // GAS ONLY. The money was zeroed above, and no figure is ever sent to a root.
-        _die(_sellerNote);
+        // THE DEAL SURVIVES THIS CALL. A no-show costs the seller the match, not the contract:
+        // the state above is back to what it was before funding, so the same deal can take a new
+        // offer through `postFromNote` without paying GAS_DEPLOY again — the largest single charge
+        // in the table — for a deploy that would change nothing but the address.
+        //
+        // Winding it up for good is a separate, deliberate call: `destroy`, made by the seller when
+        // the deal is idle and unfunded. Splitting the two also removes the path where one no-show
+        // paid two terminal charges, one here and one on the destroy that followed.
     }
 
     // ========================================================
@@ -1991,6 +2105,8 @@ contract TokenContract is AiRegistryModifiers {
     ///      static, the payout cannot miss, and the handler, the `purpose` earmark and the restore
     ///      logic all went with it.
     function withdrawShell(uint128 amount) public onlyOwnerPubkey(_sellerPubkey) accept {
+        ensureBalance();
+        _chargeGas(GAS_LIGHT);
         require(amount > 0, ERR_ZERO_AMOUNT);
         require(amount <= _finalizedOwed, ERR_INSUFFICIENT_TOKENS);
         // The deal's own record, not the account's currency (generation 4.0.33). The check still
@@ -2020,6 +2136,8 @@ contract TokenContract is AiRegistryModifiers {
 
     /// @dev NO PAYEE ARGUMENT — `_sellerNote`, like every other exit. See `close`.
     function destroy() public onlyOwnerPubkey(_sellerPubkey) accept {
+        ensureBalance();
+        _chargeGas(GAS_TERMINAL);
         require(!_opened, ERR_STILL_OPEN);
         require(!_disputed, ERR_DISPUTED);
         // Emergency manual close. Blocked while a LIVE sell offer still rests on the

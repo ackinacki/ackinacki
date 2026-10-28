@@ -3,6 +3,7 @@
 
 mod acki_nacki;
 pub mod associated_types;
+pub(crate) mod background_dropper;
 mod block_keeper_system;
 mod block_processing;
 pub mod block_state;
@@ -142,6 +143,9 @@ where
     producer_service: ProducerService,
     metrics: Option<BlockProductionMetrics>,
     is_state_sync_requested: Arc<Mutex<Option<BlockSeqNo>>>,
+    // Shared across execution-loop re-entries so repeated synchronization does
+    // not reset the state-publish throttle.
+    last_state_sync_executed: Arc<Mutex<Instant>>,
     // Channel (sender) for block requests
     blk_req_tx: Sender<BlockRequestParams>,
     ext_msg_receiver: JoinHandle<anyhow::Result<()>>, // TODO: Not used
@@ -247,6 +251,11 @@ where
         let received_nacks = Arc::new(Mutex::new(Vec::new()));
         let metrics_clone = metrics.clone();
         let is_state_sync_requested = Arc::new(Mutex::new(None));
+        let last_state_sync_executed = Arc::new(Mutex::new(
+            Instant::now()
+                .checked_sub(global_config.min_time_between_state_publish_directives)
+                .unwrap_or_else(Instant::now),
+        ));
         let unprocessed_blocks_cache_clone = unprocessed_blocks_cache.clone();
         let last_block_attestations_clone = last_block_attestations.clone();
         let aggregated_attestations_cache = new_aggregated_attestations_cache();
@@ -349,6 +358,7 @@ where
             .expect("Failed to start producer service"),
             metrics,
             is_state_sync_requested,
+            last_state_sync_executed,
             blk_req_tx,
             attestation_send_service,
             ext_msg_receiver,

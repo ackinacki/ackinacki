@@ -37,7 +37,8 @@ impl DurableStorageRead<MessageIdentifier, Arc<WrappedMessage>> for MessageDurab
             Ok(None) => Ok(None),
             Ok(Some((row_id, stored_message))) => {
                 let dest_account = &stored_message
-                    .message
+                    .tvm_message()
+                    .map_err(|_| Self::LoadError::DeserializationError)?
                     .int_dst_account_id()
                     .ok_or(Self::LoadError::DeserializationError)?
                     .to_hex_string();
@@ -49,7 +50,8 @@ impl DurableStorageRead<MessageIdentifier, Arc<WrappedMessage>> for MessageDurab
                     return Ok(None);
                 }
                 let next_message = messages[0]
-                    .message
+                    .tvm_message()
+                    .map_err(|_| Self::LoadError::DeserializationError)?
                     .hash()
                     .map_err(|_| Self::LoadError::DeserializationError)?
                     .to_hex_string();
@@ -76,7 +78,8 @@ impl DurableStorageRead<MessageIdentifier, Arc<WrappedMessage>> for MessageDurab
             Ok(None) => Ok(res),
             Ok(Some((mut row_id, stored_message))) => {
                 let dest_account = &stored_message
-                    .message
+                    .tvm_message()
+                    .map_err(|_| Self::LoadError::DeserializationError)?
                     .int_dst_account_id()
                     .ok_or(Self::LoadError::DeserializationError)?
                     .to_hex_string();

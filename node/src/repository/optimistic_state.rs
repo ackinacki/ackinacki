@@ -51,6 +51,7 @@ use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
 use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
+use crate::types::thread_message_queue::ThreadMessageQueueStateDiff;
 use crate::types::AckiNackiBlock;
 use crate::types::BlockInfo;
 use crate::types::BlockSeqNo;
@@ -277,6 +278,11 @@ impl OptimisticStateImpl {
             &trimmed_state.thread_id,
             shard_state,
         )?;
+        tracing::info!(
+            block_id = ?trimmed_state.block_id,
+            path = %path.display(),
+            "Loaded optimistic state checkpoint"
+        );
         Ok(state_from_trimmed(trimmed_state, thread_accounts))
     }
 
@@ -371,7 +377,7 @@ impl OptimisticState for OptimisticStateImpl {
                 let epoch_nack_data =
                     BlockKeeperSlashData { node_id: id, bls_pubkey: bls_key, addr, slash_type: 0 };
                 let msg = create_wallet_slash_message(&epoch_nack_data)?;
-                let wrapped_message = WrappedMessage { message: msg.clone() };
+                let wrapped_message = WrappedMessage::from_tvm(&msg);
                 wrapped_slash_messages.push(Arc::new(wrapped_message));
             }
         }
@@ -480,8 +486,11 @@ impl OptimisticState for OptimisticStateImpl {
         tracing::trace!(target: "node", "apply_block: New state hash: {:?}", new_state_hash);
 
         let block_info = prepare_prev_block_info(block_candidate);
+        let mut high_priority_messages = self.high_priority_messages.clone();
+        high_priority_messages.append_messages(&preprocessing_result.added_high_priority_messages);
         let (
             consumed_internal_messages,
+            consumed_high_priority_messages,
             produced_internal_messages_to_the_current_thread,
             accounts_that_changed_their_dapp_id,
             produced_internal_messages_to_other_threads,
@@ -489,9 +498,11 @@ impl OptimisticState for OptimisticStateImpl {
             self,
             transition.new_state.clone(),
             thread_accounts_repository,
+            &message_db,
+            &high_priority_messages,
         )?;
 
-        let mut all_added_messages = preprocessing_result.settled_messages;
+        let mut all_added_messages = preprocessing_result.settled_messages.clone();
         all_added_messages.extend(produced_internal_messages_to_the_current_thread.clone());
         all_added_messages.extend(produced_internal_messages_to_other_threads.clone());
 
@@ -508,6 +519,9 @@ impl OptimisticState for OptimisticStateImpl {
         let (new_state, mut cross_thread_ref_data, _durable_diff) = postprocess(
             self.clone(),
             consumed_internal_messages,
+            consumed_high_priority_messages,
+            preprocessing_result.settled_messages,
+            preprocessing_result.added_high_priority_messages,
             produced_internal_messages_to_the_current_thread,
             accounts_that_changed_their_dapp_id,
             block_candidate.identifier(),
@@ -589,6 +603,9 @@ impl OptimisticState for OptimisticStateImpl {
         let mut removed_tvm_accounts = vec![];
         // Get all message destinations
         let mut message_tvm_destinations_that_do_not_exist = self.messages.destinations();
+        for routing in self.high_priority_messages.destinations() {
+            message_tvm_destinations_that_do_not_exist.insert(routing);
+        }
         // crop_shard_state_based_on_threads_table will remove all existing account from message_destinations_that_do_not_exist
         let filtered_state = crop_shard_state_based_on_threads_table(
             thread_accounts_repository,
@@ -616,14 +633,14 @@ impl OptimisticState for OptimisticStateImpl {
         );
 
         self.shard_state = OptimisticShardState(filtered_state);
-        self.messages = ThreadMessageQueueState::build_next()
-            .with_initial_state(self.messages.clone())
+        self.high_priority_messages.remove_accounts(removed_tvm_accounts.iter().copied());
+        self.messages = ThreadMessageQueueStateDiff::builder()
             .with_consumed_messages(HashMap::new())
             .with_removed_accounts(removed_tvm_accounts)
             .with_added_accounts(BTreeMap::new())
             .with_produced_messages(HashMap::new())
-            .with_db(message_db.clone())
-            .build()?;
+            .build()
+            .apply(self.messages.clone(), &message_db)?;
 
         self.cropped = crop_state;
         self.threads_table = threads_table.clone();

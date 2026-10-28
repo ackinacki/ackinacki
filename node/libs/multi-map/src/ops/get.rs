@@ -1,14 +1,29 @@
-use crate::node::Node;
+use crate::node::LeafDataAug;
+use crate::node::NodeAug;
 use crate::ops::boundary_mask;
 use crate::ops::nibble_at;
 use crate::ops::nibble_from_key;
 use crate::ops::prefix_bits_match;
 use crate::MapKey;
 use crate::MapKeyPath;
+use crate::MultiMapAugmentation;
 use crate::MultiMapValue;
 
 /// Look up a key in the trie. Returns `Some(value)` if found, `None` otherwise.
-pub fn get<V: MultiMapValue>(root: &Node<V>, root_path: &MapKeyPath, key: &MapKey) -> Option<V> {
+pub fn get<V: MultiMapValue, A: MultiMapAugmentation>(
+    root: &NodeAug<V, A>,
+    root_path: &MapKeyPath,
+    key: &MapKey,
+) -> Option<V> {
+    get_leaf(root, root_path, key).map(|leaf| leaf.value.clone())
+}
+
+/// Look up the leaf, including its derived augmentation, without cloning it.
+pub fn get_leaf<'a, V: MultiMapValue, A: MultiMapAugmentation>(
+    root: &'a NodeAug<V, A>,
+    root_path: &MapKeyPath,
+    key: &MapKey,
+) -> Option<&'a LeafDataAug<V, A>> {
     if root_path.len > 0 && !prefix_bits_match(&root_path.prefix.0, &key.0, root_path.len) {
         return None;
     }
@@ -25,7 +40,7 @@ pub fn get<V: MultiMapValue>(root: &Node<V>, root_path: &MapKeyPath, key: &MapKe
         }
     }
 
-    let mut current: &Node<V> = root;
+    let mut current: &NodeAug<V, A> = root;
     if current.is_empty() {
         return None;
     }
@@ -33,8 +48,8 @@ pub fn get<V: MultiMapValue>(root: &Node<V>, root_path: &MapKeyPath, key: &MapKe
 
     while depth < 64 {
         match current {
-            Node::Empty => return None,
-            Node::Branch(data) => {
+            NodeAug::Empty => return None,
+            NodeAug::Branch(data) => {
                 let nib = nibble_at(&key.0, depth);
                 let child = &data.children[nib as usize];
                 if child.is_empty() {
@@ -43,7 +58,7 @@ pub fn get<V: MultiMapValue>(root: &Node<V>, root_path: &MapKeyPath, key: &MapKe
                 current = child;
                 depth += 1;
             }
-            Node::Ext(data) => {
+            NodeAug::Ext(data) => {
                 let count = data.nibble_count as usize;
                 if depth + count > 64 {
                     return None;
@@ -56,12 +71,12 @@ pub fn get<V: MultiMapValue>(root: &Node<V>, root_path: &MapKeyPath, key: &MapKe
                 depth += count;
                 current = &data.child;
             }
-            Node::Leaf(_) => return None,
+            NodeAug::Leaf(_) => return None,
         }
     }
 
     match current {
-        Node::Leaf(data) => Some(data.value.clone()),
+        NodeAug::Leaf(data) => Some(data),
         _ => None,
     }
 }

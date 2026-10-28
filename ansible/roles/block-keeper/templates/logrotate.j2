@@ -32,7 +32,8 @@ echo "{{ LOG_ROTATE_SPEC | default('0 *') }} * * * /bin/chmod 755 /logsdir; /usr
 echo "{{ OPT_STATE_CLEANUP_SPEC | default('0 *') }} * * * cd /workdir/optimistic_state && ls -tp | grep -v '/$' | tail -n +{{ (OPT_STATE_KEEP_AMOUNT | default(10)) + 1 }} | tr '\n' '\0' | xargs -r -0 rm --" >> /etc/crontabs/root
 echo "{{ OPT_STATE_ARCH_CLEANUP_SPEC | default('0 *') }} * * * cd /workdir/archive/_optimistic_state && ls -tp | grep -v '/$' | tail -n +{{ (OPT_STATE_ARCH_KEEP_AMOUNT | default(10)) + 1 }} | tr '\n' '\0' | xargs -r -0 rm --" >> /etc/crontabs/root
 echo "{{ BLK_STATE_CLEANUP_SPEC | default('0 *') }} * * * cd /workdir/blocks-states && ls -tp | grep -v '/$' | tail -n +{{ (BLK_STATE_KEEP_AMOUNT | default(100000)) + 1 }} | tr '\n' '\0' | xargs -r -0 rm --" >> /etc/crontabs/root
-echo "{{ SHARE_CLEANUP_SPEC | default('0 *') }} * * * cd /share && ls -tp | grep -v '/$' | tail -n +{{ (SHARE_KEEP_AMOUNT | default(3)) + 1 }} | tr '\n' '\0' | xargs -r -0 rm --" >> /etc/crontabs/root
+# Snapshot retention is owned by the node. File-count cleanup can remove a
+# primary or shared partition while its snapshot is still being published.
 
 echo "Starting crond"
 

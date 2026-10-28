@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -10,6 +11,7 @@ use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::storage::MessageDurableStorage;
 use crate::types::thread_message_queue::ThreadMessageQueueState;
+use crate::types::AccountInbox;
 
 const MAX_MESSAGES: usize = 100;
 
@@ -22,6 +24,7 @@ impl ThreadMessageQueueState {
         >,
     ) -> anyhow::Result<Self> {
         let mut state = ThreadMessageQueueState::empty();
+        let mut inboxes = HashMap::new();
         for (routing, range) in state_messages {
             let mut tail = VecDeque::new();
             let mut it = MessagesRangeIterator::new(db, range.clone());
@@ -44,7 +47,7 @@ impl ThreadMessageQueueState {
             let mut db_iter =
                 db.next_simple(&routing.to_hex_string(), db_cursor, MAX_MESSAGES)?.0.into_iter();
             for db_message in db_iter.by_ref() {
-                let message_id = MessageIdentifier::from(&db_message);
+                let message_id = db_message.identifier();
                 if let Some(Ok((_, key))) = it.next() {
                     if key == message_id {
                         continue;
@@ -64,18 +67,18 @@ impl ThreadMessageQueueState {
                 }
                 db_iter = new_messages.into_iter();
                 for db_message in db_iter.by_ref() {
-                    let message_id = MessageIdentifier::from(&db_message);
+                    let message_id = db_message.identifier();
                     tail.push_back((message_id, Arc::new(db_message)));
                 }
                 db_cursor += MAX_MESSAGES as i64;
             }
-            let mut new_range = range.clone();
-            new_range.set_tail_sequence(tail);
-            state
-                .dapp_queue_mut_or_insert_empty(*routing.dapp_id())
-                .insert_inbox(*routing, new_range);
+            let mut inbox = AccountInbox::empty();
+            inbox.messages = range.clone();
+            inbox.messages.set_tail_sequence(tail);
+            inbox.rebase(db)?;
+            inboxes.insert(*routing, Some(Arc::new(inbox)));
         }
-
+        state.update_inboxes(inboxes, &HashMap::new());
         Ok(state)
     }
 }

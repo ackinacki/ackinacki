@@ -10,7 +10,8 @@
 				{"name":"modelHash","type":"uint256"},
 				{"name":"pricePerTick","type":"uint128"},
 				{"name":"maxTicks","type":"uint128"},
-				{"name":"sellerNote","type":"address"}
+				{"name":"sellerNote","type":"address"},
+				{"name":"depositIdentifierHash","type":"uint256"}
 			],
 			"outputs": [
 			]

@@ -9,8 +9,8 @@ use serde::Serialize;
 use trie_map::MapKey;
 use trie_map::MapKeyPath;
 
+use crate::repo::MultiMap;
 use crate::repo::MultiMapRef;
-use crate::repo::MultiMapRepository;
 use crate::MultiMapValue;
 
 /// Per-entry index metadata stored on disk.
@@ -37,7 +37,6 @@ where
     Value: MultiMapValue,
     IndexKey: Eq + Hash,
 {
-    repo: MultiMapRepository<Value>,
     index: HashMap<IndexKey, IndexEntry<Value, IndexValue>>,
 }
 
@@ -49,7 +48,6 @@ where
 {
     /// Load from disk. Reads the index and eagerly loads all map snapshots.
     pub fn load(root_path: PathBuf) -> anyhow::Result<Self> {
-        let repo = MultiMapRepository::new();
         let mut index = HashMap::new();
 
         let index_path = root_path.join("index.bin");
@@ -63,7 +61,7 @@ where
                     root_path.join("snapshots").join(format!("{}.bin", hex::encode(rec.root_hash)));
                 let map = if snap_path.exists() {
                     let f = File::open(&snap_path)?;
-                    repo.read_map(&mut BufReader::new(f))?
+                    MultiMap::read(&mut BufReader::new(f))?
                 } else {
                     MultiMapRef { root: crate::node::Node::Empty, root_path: rec.root_path }
                 };
@@ -71,7 +69,7 @@ where
             }
         }
 
-        Ok(Self { repo, index })
+        Ok(Self { index })
     }
 
     /// Get a map and its index value by key.
@@ -81,7 +79,7 @@ where
 
     /// Collect all key-value pairs from the given map.
     pub fn collect_values(&self, map: &MultiMapRef<V>) -> Vec<(MapKey, V)> {
-        self.repo.collect_values(map)
+        map.collect_values()
     }
 }
 
@@ -117,15 +115,14 @@ mod tests {
 
     /// Helper: write old-format durable data (index.bin + snapshots/) for testing load.
     fn write_old_format(dir: &std::path::Path, entries: &[(u32, Vec<(MapKey, TV)>)]) {
-        let repo = MultiMapRepository::<TV>::new();
         let snap_dir = dir.join("snapshots");
         fs::create_dir_all(&snap_dir).unwrap();
 
         let mut records = Vec::new();
         for (index_key, kvs) in entries {
-            let mut map = MultiMapRepository::<TV>::new_map();
+            let mut map = MultiMap::<TV>::new();
             let updates: Vec<_> = kvs.iter().map(|(k, v)| (*k, Some(*v))).collect();
-            map = repo.map_update(&map, &updates);
+            map = map.update(&updates);
             let root_hash = map.root.hash();
 
             // Write snapshot
@@ -133,7 +130,7 @@ mod tests {
             if !snap_path.exists() {
                 let f = File::create(&snap_path).unwrap();
                 let mut w = BufWriter::new(f);
-                repo.write_map(&map, &mut w).unwrap();
+                map.write(&mut w).unwrap();
                 w.flush().unwrap();
             }
 

@@ -1,5 +1,6 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
+#[cfg(not(feature = "deadlock-detection"))]
 use std::any::Any;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -137,7 +138,6 @@ use node_types::BlockIdentifier;
 use node_types::DAppIdentifier;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
-use parking_lot::RwLock;
 use rand::prelude::SeedableRng;
 use rand::prelude::SmallRng;
 use serde_json::json;
@@ -183,6 +183,10 @@ struct Args {
     check_zerostate_validity: bool,
     #[arg(long)]
     print_node_protocol_version_support: bool,
+    /// Start finalized-state synchronization immediately instead of waiting
+    /// `time_to_enable_sync_finalized` after process startup.
+    #[arg(long, default_value = "false")]
+    sync_without_finalization_wait: bool,
 }
 
 #[cfg(feature = "rayon_affinity")]
@@ -275,7 +279,7 @@ fn verify_zerostate(
             for msg in account_messages {
                 let (message, _) =
                     msg.map_err(|e| anyhow::format_err!("Failed to unpack message: {e:?}"))?;
-                let tvm_message = message.message.clone();
+                let tvm_message = message.tvm_message().map_err(anyhow::Error::msg)?;
                 if !messages.insert(
                     tvm_message
                         .hash()
@@ -757,10 +761,12 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         config.local.rate_limit_on_incoming_block_req,
         global_config.thread_count_soft_limit,
         crossref_db,
+        args.sync_without_finalization_wait,
     );
     let blob_sync_service =
         blob_sync::external_fileshares_based::ExternalFileSharesBased::builder()
             .local_storage_share_base_path(config.local.external_state_share_local_base_dir.clone())
+            .download_cache_bytes(config.local.snapshot_download_cache_bytes)
             .build()
             .start(metrics.as_ref().map(|m| m.node.clone()))
             .expect("Blob sync service start");
@@ -1184,8 +1190,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let stop_result_rx_vec_clone = stop_result_rx_vec.clone();
     let bk_set_update_async_rx_clone = bk_set_update_async_rx.clone();
     let net_topology_rx_clone = net_topology_rx.clone();
-    let blk_req_join_handles = Arc::new(RwLock::new(vec![]));
-    let blk_req_join_handles_clone = blk_req_join_handles.clone();
     let optimistic_save_tx_clone = optimistic_save_tx.clone();
     let state_sync_services = Arc::new(Mutex::new(Vec::<ExternalFileSharesBased>::new()));
     let state_sync_services_clone = state_sync_services.clone();
@@ -1272,6 +1276,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 })?;
 
             let file_saving_service = FileSavingService::builder()
+                .publisher(config.local.node_id.clone())
                 .root_path(config.local.external_state_share_local_base_dir.clone())
                 .repository(repository.clone())
                 .block_state_repository(block_state_repo.clone())
@@ -1291,11 +1296,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 config.network.shared_state_retry_download_timeout_millis,
             );
             sync_state_service.download_deadline_timeout = std::time::Duration::from_millis(
-                config
-                    .network
-                    .shared_state_retry_download_timeout_millis
-                    .checked_mul(config.network.shared_state_max_download_tries as u64)
-                    .unwrap_or(10 * 60 * 1000),
+                config.network.shared_state_download_deadline_millis,
             );
             state_sync_services_clone.lock().push(sync_state_service.clone());
             let production_process = {
@@ -1399,7 +1400,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             );
 
             // TODO: save blk_req_join_handle
-            let (blk_req_tx, blk_req_join_handle) = BlockRequestService::start(
+            let (blk_req_tx, _blk_req_join_handle) = BlockRequestService::start(
                 config.clone(),
                 global_config.clone(),
                 node_shared_services.clone(),
@@ -1409,9 +1410,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 node_metrics.clone(),
                 block_collection.clone(),
             )?;
-            let mut guard = blk_req_join_handles.write();
-            guard.push(blk_req_join_handle);
-            drop(guard);
 
             let (stop_result_tx, stop_result_rx) = std::sync::mpsc::channel();
             {
@@ -1586,28 +1584,12 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let wrapped_heartbeat_thread_join_handle =
         tokio::task::spawn_blocking(move || heartbeat_thread_join_handle.join());
 
-    let wrapped_blk_req_join_handle = tokio::task::spawn_blocking(move || loop {
-        let guard = blk_req_join_handles_clone.read();
-        let mut finished_index = None;
-        for (index, handle) in guard.iter().enumerate() {
-            if handle.is_finished() {
-                finished_index = Some(index);
-            }
-        }
-        drop(guard);
-        if let Some(index) = finished_index {
-            let mut guard = blk_req_join_handles_clone.write();
-            return guard.remove(index).join();
-        }
-        std::thread::sleep(Duration::from_secs(1));
-    });
-
-    let wrapped_deadlock_detector = tokio::task::spawn_blocking(move || {
-        #[cfg(feature = "deadlock-detection")]
-        deadlock_detection_handle.join()?;
-        #[cfg(not(feature = "deadlock-detection"))]
-        std::thread::park();
-        Ok::<(), Box<dyn Any + Send + 'static>>(())
+    #[cfg(feature = "deadlock-detection")]
+    let wrapped_deadlock_detector =
+        tokio::task::spawn_blocking(move || deadlock_detection_handle.join());
+    #[cfg(not(feature = "deadlock-detection"))]
+    let wrapped_deadlock_detector = tokio::spawn(async {
+        std::future::pending::<Result<(), Box<dyn Any + Send + 'static>>>().await
     });
     let state_save_service_join_handle =
         tokio::task::spawn_blocking(move || state_save_service.join());
@@ -1680,20 +1662,6 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 Ok(_) =>{ unreachable!("heartbeat never returns") }
                 Err(error) => {
                     anyhow::bail!("heartbeat handler thread failed with error: {error}");
-                }
-            }
-        },
-        res = wrapped_blk_req_join_handle => {
-            match res {
-                Ok(Ok(_)) =>{
-                    // Note: seems to be reachable on self shutdown
-                    unreachable!("Block request service never returns")
-                }
-                Ok(Err(error)) =>{
-                    anyhow::bail!("Block request service failed with error: {:?}", error);
-                 }
-                Err(error) => {
-                    anyhow::bail!("Block request service thread failed with error: {error}");
                 }
             }
         },
@@ -2351,10 +2319,12 @@ async fn test_execute() -> anyhow::Result<()> {
         config.local.rate_limit_on_incoming_block_req,
         global_config.thread_count_soft_limit,
         crossref_db,
+        false,
     );
     let blob_sync_service =
         blob_sync::external_fileshares_based::ExternalFileSharesBased::builder()
             .local_storage_share_base_path(config.local.external_state_share_local_base_dir.clone())
+            .download_cache_bytes(config.local.snapshot_download_cache_bytes)
             .build()
             .start(metrics.as_ref().map(|m| m.node.clone()))
             .expect("Blob sync service start");
@@ -2647,6 +2617,7 @@ async fn test_execute() -> anyhow::Result<()> {
         })?;
 
     let file_saving_service = FileSavingService::builder()
+        .publisher(config.local.node_id.clone())
         .root_path(config.local.external_state_share_local_base_dir.clone())
         .repository(repository.clone())
         .block_state_repository(block_state_repo.clone())
@@ -2664,7 +2635,8 @@ async fn test_execute() -> anyhow::Result<()> {
     sync_state_service.max_download_tries = config.network.shared_state_max_download_tries;
     sync_state_service.retry_download_timeout =
         std::time::Duration::from_millis(config.network.shared_state_retry_download_timeout_millis);
-    sync_state_service.download_deadline_timeout = global_config.node_joining_timeout;
+    sync_state_service.download_deadline_timeout =
+        std::time::Duration::from_millis(config.network.shared_state_download_deadline_millis);
     let production_process = {
         let builder = TVMBlockProducerProcess::builder()
             .metrics(node_metrics.clone())

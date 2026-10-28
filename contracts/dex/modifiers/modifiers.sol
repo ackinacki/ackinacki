@@ -220,6 +220,38 @@ abstract contract Modifiers is Errors {
     ///         privacy of this scheme rests on NOT being possible.
     uint128 constant GAS_DEPOSIT = 250_000_000_000;   // 250 SHELL
 
+    /// @notice What a note attaches to a deal call to pay for that call — a mirror of the deal's
+    ///         own `GAS_*` table (airegistry/modifiers), which a note cannot import.
+    /// @dev    A deal burns ECC[2] on every entry and can mint none of it, so somebody has to put
+    ///         that ECC there. Until now nobody did per call: the reserve was seeded at deploy and
+    ///         topped up only by the SELLER (`fundDeployShell` is `onlyOwnerPubkey`), which meant
+    ///         the seller paid for the calls his counterparty makes, and a dry reserve locked both
+    ///         bonds and the deposit inside — `burnecc` does not skip a charge it cannot afford,
+    ///         it fails the action phase (RESULT_CODE_NOT_ENOUGH_EXTRA).
+    ///
+    ///         So the charge rides WITH the call that incurs it: exact amount, `flag: 1` so it
+    ///         arrives as ECC[2] rather than converting to native, burned by `_chargeGas` in the
+    ///         same transaction. Nothing has to be parked in advance, and each side pays its own
+    ///         entries. Keep these in step with the deal's table.
+    uint128 constant DEAL_GAS_FUND     = 10_000_000;  // GAS_FUND_DEAL — fundBuyerBond
+    uint128 constant DEAL_GAS_TERMINAL = 45_000_000;  // GAS_TERMINAL  — stop / dispute / cleanupUnopened
+
+    /// @notice What a buy order costs the buyer, in ECC[2] — the mirror of what a SELL offer costs
+    ///         the seller (`GAS_POST_FROM_NOTE`).
+    /// @dev    Posting a sell offer goes through the deal and burns GAS_POST_FROM_NOTE there, so
+    ///         the seller pays to put a side of the book up. A buy order put nothing up: the buyer
+    ///         rested in the same book for free, and every charge his side caused later fell on a
+    ///         reserve the seller funded. This is the symmetric charge, same amount, taken where
+    ///         the order is placed.
+    ///
+    ///         At PLACEMENT, not at match: the book takes the order there and then, and an order
+    ///         that rests unfilled still occupied the book. Burned outright, like its mirror —
+    ///         there is no deal yet to hold it for, and an order may match against several.
+    ///
+    ///         Taken from this note's OWN ECC[2]: the recorded balance is money owed to the owner,
+    ///         gas is not.
+    uint128 constant BUY_ORDER_GAS = 25_000_000;     // GAS_POST_FROM_NOTE — mirrored from airegistry
+
     /// @notice Fixed network fee to burn on approval
     uint64 constant NETWORK_FEE_AMOUNT = 1_000_000_000; // 1 shell tokens
 

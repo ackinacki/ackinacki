@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -32,7 +32,13 @@ pub struct SharedServices {
     pub metrics: Option<BlockProductionMetrics>,
     limiter: Arc<DefaultKeyedRateLimiter<NodeIdentifier>>,
     pub last_finalization_timestamp: Arc<AtomicU64>,
-    catch_up_threads: Arc<Mutex<HashSet<ThreadIdentifier>>>,
+    // Membership controls processing mode throughout sync. The optional guard
+    // measures only post-import catch-up, not snapshot waiting/import itself.
+    catch_up_threads: Arc<
+        Mutex<
+            HashMap<ThreadIdentifier, Option<crate::helper::metrics::ActivityMetricGuard<'static>>>,
+        >,
+    >,
 }
 
 #[allow(dead_code, non_snake_case)]
@@ -71,6 +77,7 @@ impl SharedServices {
             rate,
             1,
             CrossRefStorage::mem(),
+            false,
         )
     }
 
@@ -84,6 +91,7 @@ impl SharedServices {
         rate_limit_on_incoming_block_req: u32,
         thread_cnt_soft_limit: usize,
         crossref_db: CrossRefStorage,
+        sync_without_finalization_wait: bool,
     ) -> Self {
         let res = Self {
             container: Arc::new(Mutex::new(Container {
@@ -112,9 +120,11 @@ impl SharedServices {
                     .expect("Rate limit is non-zero"),
             ))),
             last_finalization_timestamp: Arc::new(AtomicU64::new(0)),
-            catch_up_threads: Arc::new(Mutex::new(HashSet::new())),
+            catch_up_threads: Arc::new(Mutex::new(HashMap::new())),
         };
-        res.update_last_finalization_timestamp();
+        if !sync_without_finalization_wait {
+            res.update_last_finalization_timestamp();
+        }
         res
     }
 
@@ -144,7 +154,33 @@ impl SharedServices {
     }
 
     pub fn is_thread_catching_up(&self, thread_id: &ThreadIdentifier) -> bool {
-        self.catch_up_threads.lock().expect("Can not be poisoned").contains(thread_id)
+        self.catch_up_threads.lock().expect("Can not be poisoned").contains_key(thread_id)
+    }
+
+    /// Track the leaf phase when the applier starts replaying installed state,
+    /// even if consensus has not accepted its snapshot notification yet.
+    /// This is independent of the broader catch-up mode used to keep block
+    /// processing safe during import.
+    /// The guard is shared by all service clones and is dropped on resync,
+    /// normal catch-up completion or destruction of the shared services.
+    pub(crate) fn set_thread_catch_up_activity(&self, thread_id: &ThreadIdentifier, active: bool) {
+        let mut threads = self.catch_up_threads.lock().expect("Can not be poisoned");
+        if let Some(activity) = threads.get_mut(thread_id) {
+            if active {
+                if activity.is_none() {
+                    *activity = Some(
+                        crate::helper::metrics::ActivityMetric::parallel(
+                            "snapshot_import",
+                            "4_catchup",
+                            thread_id.to_string(),
+                        )
+                        .enter(),
+                    );
+                }
+            } else {
+                activity.take();
+            }
+        }
     }
 
     pub fn set_thread_catch_up_status(
@@ -157,9 +193,16 @@ impl SharedServices {
     ) {
         let mut catch_up_threads = self.catch_up_threads.lock().expect("Can not be poisoned");
         let changed = if is_catching_up {
-            catch_up_threads.insert(*thread_id)
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                catch_up_threads.entry(*thread_id)
+            {
+                entry.insert(None);
+                true
+            } else {
+                false
+            }
         } else {
-            catch_up_threads.remove(thread_id)
+            catch_up_threads.remove(thread_id).is_some()
         };
         let node_is_catching_up = !catch_up_threads.is_empty();
         drop(catch_up_threads);
@@ -300,6 +343,72 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         Ok(())
+    }
+
+    #[test]
+    fn catch_up_activity_tracks_replay_without_changing_processing_mode() {
+        let services = SharedServices::test_start(RoutingService::stub().0, u32::MAX);
+        let other = services.clone();
+        let thread = ThreadIdentifier::default();
+        let active =
+            || services.catch_up_threads.lock().unwrap().get(&thread).is_some_and(Option::is_some);
+
+        // An activity alone must not put a thread into catch-up mode.
+        services.set_thread_catch_up_activity(&thread, true);
+        assert!(!services.is_thread_catching_up(&thread));
+        services.set_thread_catch_up_status(&thread, true, "sync_started", None, None);
+        assert!(!active());
+
+        other.set_thread_catch_up_activity(&thread, true);
+        assert!(active());
+        services.set_thread_catch_up_status(&thread, true, "snapshot_loaded_again", None, None);
+        other.set_thread_catch_up_activity(&thread, true);
+        assert!(active());
+
+        // Returning to snapshot waiting closes replay, not processing mode.
+        other.set_thread_catch_up_activity(&thread, false);
+        assert!(!active());
+        assert!(services.is_thread_catching_up(&thread));
+        services.set_thread_catch_up_activity(&thread, true);
+        assert!(active());
+
+        // Completion from any clone drops the shared activity guard.
+        other.set_thread_catch_up_status(&thread, false, "caught_up", Some(0), Some(0));
+        assert!(!active());
+        assert!(!services.is_node_catching_up());
+    }
+
+    #[test]
+    fn catch_up_activity_can_restart_from_applier_without_snapshot_notification() {
+        let services = SharedServices::test_start(RoutingService::stub().0, u32::MAX);
+        let applier = services.clone();
+        let thread = ThreadIdentifier::default();
+        let active =
+            || services.catch_up_threads.lock().unwrap().get(&thread).is_some_and(Option::is_some);
+
+        services.set_thread_catch_up_status(&thread, true, "synchronization_started", None, None);
+        assert!(!active()); // Waiting/downloading alone is not block replay.
+
+        // The installed state is already usable, but consensus has not received
+        // or accepted SyncSnapshotLoaded. Only the applier starts the activity.
+        applier.set_thread_catch_up_activity(&thread, true);
+        assert!(active());
+        services.set_thread_catch_up_activity(&thread, false);
+        assert!(!active());
+        assert!(services.is_thread_catching_up(&thread));
+
+        // A newer sync attempt can reset the activity while replay of the
+        // installed snapshot continues. The next apply must reactivate it.
+        applier.set_thread_catch_up_activity(&thread, true);
+        applier.set_thread_catch_up_activity(&thread, true);
+        assert!(active());
+        applier.set_thread_catch_up_status(&thread, false, "caught_up", Some(0), Some(0));
+        assert!(!active());
+
+        // A stale per-iteration catch-up flag cannot resurrect a completed sync.
+        applier.set_thread_catch_up_activity(&thread, true);
+        assert!(!active());
+        assert!(!services.is_thread_catching_up(&thread));
     }
 
     #[test]

@@ -190,6 +190,10 @@ impl BlockKeeperSet {
         self.by_signer.values()
     }
 
+    pub(crate) fn iter_by_signer(&self) -> impl Iterator<Item = (&SignerIndex, &BlockKeeperData)> {
+        self.by_signer.iter()
+    }
+
     pub fn remove_signer(&mut self, signer_index: &SignerIndex) -> Option<BlockKeeperData> {
         let removed = self.by_signer.remove(signer_index);
         self.signer_to_pubkey.remove(signer_index);

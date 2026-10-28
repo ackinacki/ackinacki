@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.19.5"
+version = "0.19.6"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -39,6 +39,7 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
+snapshot-storage.workspace = true
 telemetry_utils.workspace = true
 tokio.workspace = true
 tracing.workspace = true

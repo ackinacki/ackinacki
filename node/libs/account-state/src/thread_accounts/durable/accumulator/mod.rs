@@ -516,10 +516,8 @@ impl ArchiveUpdateAccumulator {
                 let ArchiveOperation::UpdateOrInsert(account) = operation else {
                     return None;
                 };
-                let Ok(vm_account) = account.vm_account() else {
-                    return None;
-                };
-                Some((vm_account.hash(), account.clone()))
+                let hash = account.account_hash();
+                Some((hash, account.clone()))
             }),
         );
         tracing::info!(
@@ -563,12 +561,9 @@ impl ArchiveUpdateAccumulator {
         expected_hash: &AccountHash,
     ) -> Option<ArchiveOperation> {
         match operations.get(routing) {
-            Some(ArchiveOperation::UpdateOrInsert(account)) => match account.vm_account() {
-                Ok(vm_account) if vm_account.hash() == *expected_hash => {
-                    Some(ArchiveOperation::UpdateOrInsert(account.clone()))
-                }
-                _ => None,
-            },
+            Some(ArchiveOperation::UpdateOrInsert(account)) => (account.account_hash()
+                == *expected_hash)
+                .then(|| ArchiveOperation::UpdateOrInsert(account.clone())),
             Some(ArchiveOperation::Remove) => Some(ArchiveOperation::Remove),
             None => None,
         }
@@ -587,6 +582,9 @@ impl ArchiveUpdateAccumulator {
     pub fn reset(&self, control_states: &[ThreadControlState]) {
         let mut pending = self.pending.lock();
         *pending = PendingUpdate::new(control_states);
+        // Reset follows archive publication/import, so both boundary trackers
+        // must describe the newly installed epoch, not the previous one.
+        *self.applied_per_thread.lock() = pending.expected_thread_blocks.clone();
         self.report_queue_size(pending.blocks_accumulated);
         drop(pending);
 
@@ -640,10 +638,7 @@ impl ArchiveUpdateAccumulator {
         let ops_data_bytes: usize = operations
             .values()
             .map(|op| match op {
-                ArchiveOperation::UpdateOrInsert(acc) => acc
-                    .vm_account()
-                    .map(|v| v.write_bytes().map(|b| b.len()).unwrap_or(0))
-                    .unwrap_or(0),
+                ArchiveOperation::UpdateOrInsert(acc) => acc.canonical_bytes().len(),
                 ArchiveOperation::Remove => 0,
             })
             .sum();
@@ -1199,17 +1194,39 @@ impl ArchiveUpdateAccumulator {
 
     /// Called by the update loop after draining all deferred batches.
     /// Transitions Releasing → Idle, or → Requested(next) if a fresh
-    /// request landed during the snapshot. Always promotes the next
-    /// anchor unconditionally; if it's no longer alignable, the next
+    /// request landed during the snapshot. An already-applied boundary with
+    /// no pending transition becomes BoundaryReached immediately. Otherwise
+    /// promotes the next anchor to Requested; if it's no longer alignable, the next
     /// `acquire_snapshot_pin` call will time out and skip the snapshot
     /// atomically (per the no-up-front-rejection policy in
     /// `request_snapshot_pin`).
     pub(crate) fn finish_release(&self) {
+        // A request queued while the previous pin was held bypassed the
+        // request-side stale-network shortcut. After draining, it may already
+        // be at its boundary with no future batch available to signal it.
+        // Keep the established pending -> pin_state lock order so a producer
+        // cannot advance the boundary between checking and promoting it.
+        // Never block the update loop on pending: its owner may be waiting
+        // to send into our full bounded channel. Leave Releasing in place so
+        // the loop can receive/defer that batch and retry on its next turn.
+        let Some(pending) = self.pending.try_lock() else {
+            return;
+        };
+        let applied = self.applied_per_thread.lock();
         let mut state = self.pin_state.lock();
         if let SnapshotPinState::Releasing { next: Some(next_anchor) } =
             std::mem::replace(&mut *state, SnapshotPinState::Idle)
         {
-            *state = SnapshotPinState::Requested(next_anchor);
+            let thread = &next_anchor.anchor_thread_id;
+            let block = &next_anchor.anchor_block_id;
+            let already_at_boundary = pending.expected_thread_blocks.get(thread) == Some(block)
+                && !pending.archive_update.thread_transitions.contains_key(thread)
+                && applied.get(thread) == Some(block);
+            *state = if already_at_boundary {
+                SnapshotPinState::BoundaryReached { active: next_anchor, next: None }
+            } else {
+                SnapshotPinState::Requested(next_anchor)
+            };
             self.pin_acquirable.notify_all();
         }
     }
@@ -1985,6 +2002,44 @@ mod tests {
         pool.drain_finalized(thread_id, 10);
 
         assert!(!pool.threads.contains_key(&thread_id));
+    }
+
+    #[test]
+    fn reset_refreshes_applied_boundary_for_immediate_snapshot_pin() {
+        let accumulator = Arc::new(ArchiveUpdateAccumulator::new(1, &[], None));
+        let anchor = anchor(9);
+        accumulator.reset(&[ThreadControlState::new_idle(
+            anchor.anchor_thread_id,
+            anchor.anchor_block_id,
+        )]);
+        let _request = accumulator.request_snapshot_pin(anchor);
+        assert!(matches!(*accumulator.pin_state.lock(), SnapshotPinState::BoundaryReached { .. }));
+    }
+
+    #[test]
+    fn queued_pin_for_already_applied_boundary_is_ready_after_release() {
+        let accumulator = Arc::new(ArchiveUpdateAccumulator::new(1, &[], None));
+        let anchor = anchor(9);
+        accumulator
+            .pending
+            .lock()
+            .expected_thread_blocks
+            .insert(anchor.anchor_thread_id, anchor.anchor_block_id);
+        accumulator
+            .applied_per_thread
+            .lock()
+            .insert(anchor.anchor_thread_id, anchor.anchor_block_id);
+        *accumulator.pin_state.lock() =
+            SnapshotPinState::Pinned { active: anchor.clone(), next: None };
+        let mut request = accumulator.request_snapshot_pin(anchor.clone());
+        accumulator.release_pin();
+        let pending = accumulator.pending.lock();
+        accumulator.finish_release();
+        assert!(matches!(*accumulator.pin_state.lock(), SnapshotPinState::Releasing { .. }));
+        drop(pending);
+        accumulator.finish_release();
+        assert!(matches!(*accumulator.pin_state.lock(), SnapshotPinState::BoundaryReached { .. }));
+        request.disarm();
     }
 
     #[test]

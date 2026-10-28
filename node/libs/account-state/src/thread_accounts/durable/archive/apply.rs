@@ -214,15 +214,14 @@ fn set_all_phases(
             last_block_id: vt.state.last_block_id,
         };
         let cas_gen = if use_cas { Some(vt.generation) } else { None };
-        write_thread_control(kv, meta_set, &state, cas_gen)
-            .map_err(ArchiveStateError::from)
-            .map_err(|err| {
-                if matches!(err, ArchiveStateError::EpochChanged { .. }) {
-                    err
-                } else {
-                    ArchiveStateError::ConcurrentModification(*thread_id)
-                }
-            })?;
+        // Storage pressure, timeouts and generation mismatches must retain
+        // their original cause. A failed non-CAS phase write is not evidence
+        // of a concurrent modification either.
+        write_thread_control(kv, meta_set, &state, cas_gen).map_err(|error| {
+            ArchiveStateError::Store(error.context(format!(
+                "Failed to write {phase:?} control record for thread {thread_id} (CAS={use_cas})"
+            )))
+        })?;
     }
     for thread_id in update.emerging_threads.keys() {
         let state =
@@ -433,20 +432,18 @@ fn prepare_data_records(
         match operation {
             ArchiveOperation::UpdateOrInsert(account) => {
                 let data = bincode::serialize(account).expect("Failed to serialize account");
-                if let Ok(vm_account) = account.vm_account() {
-                    let hash = vm_account.hash();
-                    if let Some(level) =
-                        account_written_cache.insert_by_serialized_len(hash, account, data.len())
-                    {
-                        tracing::trace!(
-                            target: "mem",
-                            routing = %routing,
-                            hash = %hash.to_hex_string(),
-                            level = ?level,
-                            serialized_size = data.len(),
-                            "account written cache insert",
-                        );
-                    }
+                let hash = account.account_hash();
+                if let Some(level) =
+                    account_written_cache.insert_by_serialized_len(hash, account, data.len())
+                {
+                    tracing::trace!(
+                        target: "mem",
+                        routing = %routing,
+                        hash = %hash.to_hex_string(),
+                        level = ?level,
+                        serialized_size = data.len(),
+                        "account written cache insert",
+                    );
                 }
                 tracing::trace!(
                     target: "account_state",
@@ -505,6 +502,72 @@ mod tests {
 
     fn test_config() -> ArchiveStoreConfig {
         ArchiveStoreConfig { aerospike_address: None, node_id: String::new(), write_parallelism: 0 }
+    }
+
+    #[test]
+    fn phase_write_preserves_storage_failures_with_and_without_cas() {
+        for use_cas in [false, true] {
+            let backend = InMemoryKVStore::new();
+            let kv = KVStore::InMemory(backend.clone());
+            let thread_id = ThreadIdentifier::default();
+            let state = ThreadControlState::new_idle(thread_id, BlockIdentifier::default());
+            write_thread_control(&kv, META_SET, &state, None).unwrap();
+            let (_, generation) = read_thread_control(&kv, META_SET, &thread_id).unwrap().unwrap();
+            let validated = HashMap::from([(thread_id, ValidatedThread { state, generation })]);
+            let mut update = AccumulatedUpdate::new();
+            update.transition_thread(thread_id, BlockIdentifier::default(), make_block(1));
+            backend.fail_next_put(
+                anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    "Aerospike ServerMemError: stop-writes",
+                ))
+                .context("control-record write exhausted retries"),
+            );
+            let error = set_all_phases(
+                &kv,
+                META_SET,
+                &update,
+                &validated,
+                UpdatePhase::WritingCopyA,
+                use_cas,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("ServerMemError"));
+            assert!(error.to_string().contains("control-record write exhausted retries"));
+            assert!(error.to_string().contains(&format!("CAS={use_cas}")));
+            let ArchiveStateError::Store(cause) = error else {
+                panic!("storage failure was misclassified: {error:?}");
+            };
+            assert!(format!("{cause:#}").contains("ServerMemError"));
+            assert!(format!("{cause:#}").contains("exhausted retries"));
+            assert_eq!(
+                cause.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::OutOfMemory
+            );
+            let (after, _) = read_thread_control(&kv, META_SET, &thread_id).unwrap().unwrap();
+            assert_eq!(after.update_phase, UpdatePhase::Idle);
+        }
+    }
+
+    #[test]
+    fn phase_write_stale_generation_is_rejected_without_losing_cas_details() {
+        let kv = test_kv();
+        let thread_id = ThreadIdentifier::default();
+        let state = ThreadControlState::new_idle(thread_id, BlockIdentifier::default());
+        write_thread_control(&kv, META_SET, &state, None).unwrap();
+        let (_, generation) = read_thread_control(&kv, META_SET, &thread_id).unwrap().unwrap();
+        let validated =
+            HashMap::from([(thread_id, ValidatedThread { state: state.clone(), generation })]);
+        write_thread_control(&kv, META_SET, &state, None).unwrap();
+        let mut update = AccumulatedUpdate::new();
+        update.transition_thread(thread_id, BlockIdentifier::default(), make_block(1));
+        let error =
+            set_all_phases(&kv, META_SET, &update, &validated, UpdatePhase::WritingCopyA, true)
+                .unwrap_err();
+        assert!(matches!(error, ArchiveStateError::Store(_)));
+        assert!(error.to_string().contains("CAS mismatch: expected generation"));
+        let (after, _) = read_thread_control(&kv, META_SET, &thread_id).unwrap().unwrap();
+        assert_eq!(after.update_phase, UpdatePhase::Idle);
     }
 
     fn setup_single_thread() -> (ArchiveStateStore, ThreadIdentifier, BlockIdentifier) {

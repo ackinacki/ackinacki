@@ -78,13 +78,17 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
         );
 
         step_started_at = Instant::now();
-        let (common_section_len_data, rest) = raw_data.split_at(8);
+        let (common_section_len_data, rest) = raw_data
+            .split_at_checked(8)
+            .ok_or_else(|| D::Error::custom("Truncated common section length"))?;
         let common_section_len = usize::from_be_bytes(
             common_section_len_data
                 .try_into()
                 .map_err(|_| D::Error::custom("Failed to deserialize common section len"))?,
         );
-        let (common_section_data, rest) = rest.split_at(common_section_len);
+        let (common_section_data, rest) = rest
+            .split_at_checked(common_section_len)
+            .ok_or_else(|| D::Error::custom("Truncated common section"))?;
         let common_section: CommonSection = bincode::deserialize(common_section_data)
             .map_err(|_| D::Error::custom("Failed to deserialize common section"))?;
         tracing::trace!(
@@ -96,13 +100,17 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
         );
 
         step_started_at = Instant::now();
-        let (block_len_data, rest) = rest.split_at(8);
+        let (block_len_data, rest) = rest
+            .split_at_checked(8)
+            .ok_or_else(|| D::Error::custom("Truncated TVM block length"))?;
         let block_len = usize::from_be_bytes(
             block_len_data
                 .try_into()
                 .map_err(|_| D::Error::custom("Failed to decode block len"))?,
         );
-        let (block_data, rest) = rest.split_at(block_len);
+        let (block_data, rest) = rest
+            .split_at_checked(block_len)
+            .ok_or_else(|| D::Error::custom("Truncated TVM block"))?;
         let block_cell = read_single_root_boc(block_data)
             .map_err(|_| D::Error::custom("Failed to deserialize tvm block cell"))?;
         tracing::trace!(
@@ -116,6 +124,10 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
         step_started_at = Instant::now();
         let block = tvm_block::Block::construct_from_cell(block_cell.clone())
             .map_err(|_| D::Error::custom("Failed to deserialize tvm block"))?;
+        block
+            .info
+            .read_struct()
+            .map_err(|_| D::Error::custom("Failed to deserialize tvm block info"))?;
         tracing::trace!(
             target: "node_execution_detailed",
             "ackinacki_block_deserialize timing: step=construct_tvm_block elapsed_ms={} block_bytes={} raw_bytes={}",
@@ -125,7 +137,9 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
         );
 
         step_started_at = Instant::now();
-        let (tx_cnt_data, rest) = rest.split_at(8);
+        let (tx_cnt_data, rest) = rest
+            .split_at_checked(8)
+            .ok_or_else(|| D::Error::custom("Truncated transaction count"))?;
         let tx_cnt = usize::from_be_bytes(
             tx_cnt_data
                 .try_into()
@@ -133,13 +147,17 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
         );
 
         let (durable_diff, rest) = if rest.len() != 32 {
-            let (durable_diff_len_data, rest) = rest.split_at(8);
+            let (durable_diff_len_data, rest) = rest
+                .split_at_checked(8)
+                .ok_or_else(|| D::Error::custom("Truncated durable diff length"))?;
             let durable_diff_len = usize::from_be_bytes(
                 durable_diff_len_data
                     .try_into()
                     .map_err(|_| D::Error::custom("Failed to deserialize common section len"))?,
             );
-            let (durable_diff_data, rest) = rest.split_at(durable_diff_len);
+            let (durable_diff_data, rest) = rest
+                .split_at_checked(durable_diff_len)
+                .ok_or_else(|| D::Error::custom("Truncated durable diff"))?;
             let durable_diff: DurableThreadAccountsStateDiff =
                 bincode::deserialize(durable_diff_data)
                     .map_err(|_| D::Error::custom("Failed to deserialize durable diff"))?;
@@ -156,7 +174,6 @@ impl<'de> Deserialize<'de> for AckiNackiBlock {
         );
 
         step_started_at = Instant::now();
-        assert_eq!(rest.len(), 32);
         let hash =
             rest.try_into().map_err(|_| D::Error::custom("Failed to deserialize block hash"))?;
         let raw_data_len = raw_data.len();

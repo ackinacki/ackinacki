@@ -128,7 +128,7 @@ impl BlockVerifier for TVMBlockVerifier {
                 let epoch_nack_data =
                     BlockKeeperSlashData { node_id: id, bls_pubkey: bls_key, addr, slash_type: 0 };
                 let msg = create_wallet_slash_message(&epoch_nack_data)?;
-                let wrapped_message = WrappedMessage { message: msg.clone() };
+                let wrapped_message = WrappedMessage::from_tvm(&msg);
                 wrapped_slash_messages.push(Arc::new(wrapped_message));
                 white_list_of_slashing_messages_hashes.insert(msg.hash().unwrap());
             }
@@ -235,26 +235,34 @@ impl BlockVerifier for TVMBlockVerifier {
 
         tracing::debug!(target: "node", "PARENT block: {:?}", preprocessing_result.state.get_block_info());
 
-        let producer = BlockBuilder::with_params(
-            thread_identifier,
-            *block.common_section().block_height().height(),
-            preprocessing_result.state,
-            time,
-            block_gas_limit,
-            Some(rand_seed),
-            None,
-            self.thread_accounts_repository.clone(),
-            self.node_global_config.block_keeper_epoch_code_hash.clone(),
-            self.node_global_config.block_keeper_preepoch_code_hash.clone(),
-            self.node_config.local.parallelization_level,
-            preprocessing_result.redirected_messages,
-            self.node_global_config.tracked_ext_out_account_routings.clone(),
-            self.metrics,
-            self.wasm_cache,
-            true,
-            self.check_history_proof_hash.clone(),
-        )
-        .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
+        let producer = BlockBuilder::builder()
+            .thread_id(thread_identifier)
+            .block_height(*block.common_section().block_height().height())
+            .initial_optimistic_state(preprocessing_result.state)
+            .gen_utime_ms(time)
+            .block_gas_limit(block_gas_limit)
+            .rand_seed(Some(rand_seed))
+            .control_rx_stop(None)
+            .thread_accounts_repository(self.thread_accounts_repository.clone())
+            .block_keeper_epoch_code_hash(
+                self.node_global_config.block_keeper_epoch_code_hash.clone(),
+            )
+            .block_keeper_preepoch_code_hash(
+                self.node_global_config.block_keeper_preepoch_code_hash.clone(),
+            )
+            .parallelization_level(self.node_config.local.parallelization_level)
+            .produced_internal_messages_to_other_threads(preprocessing_result.redirected_messages)
+            .added_high_priority_messages(preprocessing_result.added_high_priority_messages)
+            .settled_messages(preprocessing_result.settled_messages)
+            .tracked_ext_out_account_routings(
+                self.node_global_config.tracked_ext_out_account_routings.clone(),
+            )
+            .metrics(self.metrics)
+            .wasm_cache(self.wasm_cache.for_engine_version(&self.node_global_config.engine_version))
+            .is_verifier(true)
+            .check_history_proof_hash(self.check_history_proof_hash.clone())
+            .build()
+            .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (verify_block, _, _) = producer.build_block(
             inbound_external_messages::grouped_scheduler(grouped_ext_messages),
             &blockchain_config,

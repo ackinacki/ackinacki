@@ -78,9 +78,9 @@ pub fn find_last_prefinalized(
         let Some(next) = find_next_prefinalized(&cursor, thread_identifier, block_state_repository)
         else {
             tracing::trace!(
-                "find_last_prefinalized: result: {} {}",
+                "find_last_prefinalized: result: {} {:?}",
                 cursor.block_identifier(),
-                cursor.guarded(|e| (*e.block_seq_no()).expect("Must be set"))
+                cursor.guarded(|e| *e.block_seq_no())
             );
             return Ok(cursor);
         };

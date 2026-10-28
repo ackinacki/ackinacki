@@ -24,6 +24,7 @@ use crate::node::network_message::Command;
 use crate::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
 use crate::node::unprocessed_blocks_collection::UnfinalizedCandidateBlockCollection;
 use crate::node::AuthoritySwitch;
+use crate::node::NetBlock;
 use crate::node::NetworkMessage;
 use crate::node::NetworkMessage::BlockRequest;
 use crate::node::NodeIdentifier;
@@ -60,6 +61,22 @@ pub struct AuthoritySwitchService {
 }
 
 static RANGE_REQUEST_TIME_DELTA: Duration = std::time::Duration::from_secs(5);
+
+fn forward_proposed_block(
+    tx: &XInstrumentedSender<(NetworkMessage, SocketAddr)>,
+    self_addr: SocketAddr,
+    block: &Envelope<AckiNackiBlock>,
+) -> anyhow::Result<()> {
+    // Availability is independent of the outer round certificate. The ordinary
+    // Candidate path retains all block checks, including those awaiting a BK set.
+    // Rebuild routing metadata from the block, not the unverified NetBlock wrapper.
+    let candidate = NetBlock::with_envelope(block)?;
+    let _ = tx.send(WrappedItem {
+        label: candidate.thread_id.to_string(),
+        payload: (NetworkMessage::Candidate(candidate), self_addr),
+    });
+    Ok(())
+}
 
 impl AuthoritySwitchService {
     pub fn run(&mut self) -> anyhow::Result<()> {
@@ -127,6 +144,12 @@ impl AuthoritySwitchService {
                                                 }
                                             }
                                         }
+                                        let block = e.data().proposed_block().get_envelope()?;
+                                        forward_proposed_block(
+                                            &self.self_node_tx,
+                                            self.self_addr,
+                                            &block,
+                                        )?;
                                         self.on_authority_switch_success(e)?;
                                     }
                                     OnNextRoundIncomingRequestResult::Reject((e, source)) => {
@@ -176,6 +199,11 @@ impl AuthoritySwitchService {
                                     tracing::trace!("Failed to parse a proposed block");
                                     continue;
                                 };
+                                forward_proposed_block(
+                                    &self.self_node_tx,
+                                    self.self_addr,
+                                    &proposed_block,
+                                )?;
                                 let parent_block_identifier = proposed_block.data().parent();
                                 let parent_block_state = self
                                     .block_state_repository
@@ -461,8 +489,8 @@ impl AuthoritySwitchService {
         };
         let parent_id = block.data().parent();
         let parent_state = self.block_state_repository.get(&parent_id)?;
-        // Validate the round certificate before forwarding the proposed block
-        // or applying any authority-switch side effects.
+        // The candidate was forwarded independently. Validate the round certificate
+        // before using its attestations or applying authority-switch side effects.
         let Some(bk_set) = parent_state.guarded(|state| state.descendant_bk_set().clone()) else {
             tracing::warn!(
                 target: "monit",
@@ -482,12 +510,6 @@ impl AuthoritySwitchService {
             return Ok(());
         }
 
-        // let resend_node_id = Some(next_round_success.node_identifier().clone());
-        // self.on_incoming_candidate_block(&proposed_block, resend_node_id)?;
-        let _ = self.self_node_tx.send(WrappedItem {
-            payload: (NetworkMessage::Candidate(proposed_block.clone()), self.self_addr),
-            label: self.thread_id.to_string(),
-        });
         let attestation = next_round_success.attestations_aggregated().clone();
         if let Some(attestation) = attestation.clone() {
             let block_state = self.block_state_repository.get(attestation.data().block_id())?;
@@ -662,6 +684,167 @@ impl AuthoritySwitchService {
                 self.last_requested_block_range = Some(new_range);
             }
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use account_state::DurableThreadAccountsStateDiff;
+    use node_types::BlockIdentifier;
+    use telemetry_utils::instrumented_channel_ext::instrumented_channel;
+    use tvm_block::Block;
+    use tvm_block::BlockExtra;
+    use tvm_block::BlockInfo;
+    use tvm_block::MerkleUpdate;
+    use tvm_block::ValueFlow;
+
+    use super::*;
+    use crate::block_keeper_system::BlockKeeperSet;
+    use crate::helper::metrics::BlockProductionMetrics;
+    use crate::node::services::block_processor::service::verify_all_block_signatures;
+    use crate::types::bp_selector::ProducerSelector;
+    use crate::types::BlockHeight;
+    use crate::types::BlockRound;
+
+    fn proposed_block() -> Envelope<AckiNackiBlock> {
+        let parent = BlockIdentifier::new([1; 32]);
+        let mut info = BlockInfo::new();
+        info.set_seq_no(2).unwrap();
+        info.set_gen_utime_ms(1_770_201_296_000);
+        let tvm = Block::with_params(
+            0,
+            info,
+            ValueFlow::default(),
+            MerkleUpdate::default(),
+            BlockExtra::default(),
+        )
+        .unwrap();
+        let mut block = AckiNackiBlock::new(
+            parent,
+            ThreadIdentifier::default(),
+            tvm,
+            NodeIdentifier::some_id(),
+            0,
+            vec![],
+            Default::default(),
+            vec![],
+            None,
+            BlockRound::default(),
+            BlockHeight::builder().thread_identifier(ThreadIdentifier::default()).height(2).build(),
+            #[cfg(feature = "monitor-accounts-number")]
+            0,
+            #[cfg(feature = "protocol_version_hash_in_block")]
+            Default::default(),
+            DurableThreadAccountsStateDiff::default(),
+            Default::default(),
+            Default::default(),
+        );
+        let mut common = block.common_section().clone();
+        common.set_descendant_producer_selector(Some(
+            ProducerSelector::builder().rng_seed_block_id(parent).index(0).build(),
+        ));
+        block.set_common_section(common, true).unwrap();
+        Envelope::create(Default::default(), HashMap::new(), block)
+    }
+
+    #[test]
+    fn switched_candidate_is_available_without_parent_bk_set_but_not_verified() -> anyhow::Result<()>
+    {
+        let block = proposed_block();
+        let dir = tempfile::tempdir()?;
+        let repository = BlockStateRepository::test(dir.path().to_owned());
+        let state = repository.get(&block.data().identifier())?;
+        let parent = repository.get(&block.data().parent())?;
+        assert!(parent.guarded(|s| s.descendant_bk_set().is_none()));
+        let (tx, rx) = instrumented_channel(None::<BlockProductionMetrics>, "test_switched");
+        let addr = "127.0.0.1:1234".parse()?;
+
+        forward_proposed_block(&tx, addr, &block)?;
+        let (NetworkMessage::Candidate(candidate), source) = rx.try_recv()? else {
+            panic!("only the candidate may be forwarded without a checked certificate");
+        };
+        assert_eq!(source, addr);
+        assert_eq!(candidate.identifier, block.data().identifier());
+        assert_eq!(candidate.envelope_data, bincode::serialize(&block)?);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(verify_all_block_signatures(&repository, &block, &state), None);
+        // Once a validator set is available, the unsigned candidate is rejected
+        // by the ordinary verifier rather than gaining trust from Switched.
+        state.guarded_mut(|s| s.set_bk_set(Arc::new(BlockKeeperSet::new())))?;
+        assert_eq!(verify_all_block_signatures(&repository, &block, &state), Some(false));
+        assert!(!state.guarded(|s| s.is_signatures_verified()
+            || s.is_prefinalized()
+            || s.is_finalized()
+            || s.is_block_already_applied()));
+        Ok(())
+    }
+
+    #[test]
+    fn switched_candidate_ignores_outer_metadata_and_does_not_supply_quorum() -> anyhow::Result<()>
+    {
+        let block = proposed_block();
+        let mut wrapper = NetBlock::with_envelope(&block)?;
+        wrapper.identifier = BlockIdentifier::new([9; 32]);
+        wrapper.seq_no = 999.into();
+        wrapper.producer_id = NodeIdentifier::test(42);
+        wrapper.thread_id = ThreadIdentifier::new(&BlockIdentifier::new([8; 32]), 7);
+        wrapper.descendant_producer_selector = None;
+        let success = NextRoundSuccess::builder()
+            .node_identifier(wrapper.producer_id.clone())
+            .round(BlockRound::default())
+            .block_height(*block.data().common_section().block_height())
+            .proposed_block(wrapper)
+            .attestations_aggregated(None)
+            .requests_aggregated(vec![])
+            .build();
+        let (tx, rx) = instrumented_channel(None::<BlockProductionMetrics>, "test_switched");
+        forward_proposed_block(
+            &tx,
+            "127.0.0.1:1234".parse()?,
+            &success.proposed_block().get_envelope()?,
+        )?;
+        let (NetworkMessage::Candidate(candidate), _) = rx.try_recv()? else {
+            panic!("expected an ordinary candidate");
+        };
+        assert_eq!(candidate.identifier, block.data().identifier());
+        assert_eq!(candidate.seq_no, block.data().seq_no());
+        assert_eq!(candidate.thread_id, *block.data().common_section().thread_id());
+        assert_eq!(&candidate.producer_id, block.data().common_section().producer_id());
+        assert!(candidate.descendant_producer_selector.is_some());
+        assert!(validate_next_round_quorum(
+            success.requests_aggregated(),
+            &block.data().parent(),
+            success.block_height(),
+            success.round(),
+            success.node_identifier(),
+            &BlockKeeperSet::new(),
+        )
+        .is_err());
+        assert!(rx.try_recv().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_switched_candidates_use_the_same_cache_entry() -> anyhow::Result<()> {
+        let block = proposed_block();
+        let dir = tempfile::tempdir()?;
+        let repository = BlockStateRepository::test(dir.path().to_owned());
+        let cache = UnfinalizedCandidateBlockCollection::new(std::iter::empty());
+        let (tx, rx) = instrumented_channel(None::<BlockProductionMetrics>, "test_switched");
+        for _ in 0..2 {
+            forward_proposed_block(&tx, "127.0.0.1:1234".parse()?, &block)?;
+            let (NetworkMessage::Candidate(candidate), _) = rx.try_recv()? else {
+                panic!("expected an ordinary candidate");
+            };
+            let state = repository.get(&candidate.identifier)?;
+            state.guarded_mut(|s| s.set_block_seq_no(candidate.seq_no))?;
+            cache.insert(state, candidate.get_envelope()?);
+        }
+        assert_eq!(cache.clone_queue().0.blocks().len(), 1);
+        assert!(cache.get_block_by_id(&block.data().identifier()).is_some());
         Ok(())
     }
 }

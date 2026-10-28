@@ -1,30 +1,33 @@
 use super::boundary_mask;
 use super::ensure_branch_at_depth;
 use super::make_branch;
+use super::merge_ext_if_possible;
 use super::nibble_at;
 use super::nibble_from_key;
 use super::node_ptr_eq;
 use super::prefix_bits_match;
 use super::rebuild_branch_with_child;
 use crate::node::Node;
+use crate::node::NodeAug;
 use crate::MapKey;
 use crate::MapKeyPath;
+use crate::MultiMapAugmentation;
 use crate::MultiMapValue;
 
-struct Update<V> {
+struct Update<V, A> {
     key: MapKey,
-    val: Option<V>,
+    val: Option<(V, A)>,
     seq: u32,
 }
 
-fn normalize_updates<V: MultiMapValue>(
+fn normalize_updates<V: MultiMapValue, A: MultiMapAugmentation>(
     root_path: &MapKeyPath,
-    updates: &[(MapKey, Option<V>)],
-) -> Vec<Update<V>> {
+    updates: &[(MapKey, Option<(V, A)>)],
+) -> Vec<Update<V, A>> {
     let start = (root_path.len as usize) / 4;
     let r = (root_path.len as usize) % 4;
 
-    let mut out: Vec<Update<V>> = Vec::with_capacity(updates.len());
+    let mut out: Vec<Update<V, A>> = Vec::with_capacity(updates.len());
 
     for (seq, (k, v)) in updates.iter().enumerate() {
         if root_path.len > 0 && !prefix_bits_match(&root_path.prefix.0, &k.0, root_path.len) {
@@ -74,7 +77,7 @@ fn normalize_updates<V: MultiMapValue>(
     out
 }
 
-fn split_by_nibble<V>(items: &[Update<V>], depth: usize) -> [(usize, usize); 16] {
+fn split_by_nibble<V, A>(items: &[Update<V, A>], depth: usize) -> [(usize, usize); 16] {
     let mut ranges = [(0usize, 0usize); 16];
     let mut i = 0usize;
 
@@ -91,18 +94,23 @@ fn split_by_nibble<V>(items: &[Update<V>], depth: usize) -> [(usize, usize); 16]
 }
 
 /// Build a fresh trie from sorted, deduped updates.
-fn build_from_updates<V: MultiMapValue>(depth: usize, items: &mut [Update<V>]) -> Node<V> {
+fn build_from_updates<V: MultiMapValue, A: MultiMapAugmentation>(
+    depth: usize,
+    items: &mut [Update<V, A>],
+) -> NodeAug<V, A> {
     if items.is_empty() {
-        return Node::Empty;
+        return NodeAug::Empty;
     }
     if depth == 64 {
         debug_assert_eq!(items.len(), 1);
-        return items[0].val.take().map_or(Node::Empty, Node::new_leaf);
+        return items[0].val.take().map_or(NodeAug::Empty, |(value, augmentation)| {
+            NodeAug::new_leaf_aug(value, augmentation)
+        });
     }
 
     let ranges = split_by_nibble(items, depth);
 
-    let mut children: [Node<V>; 16] = Default::default();
+    let mut children: [NodeAug<V, A>; 16] = Default::default();
     let mut bitmap: u16 = 0;
 
     for nib in 0..16usize {
@@ -118,20 +126,26 @@ fn build_from_updates<V: MultiMapValue>(depth: usize, items: &mut [Update<V>]) -
     }
 
     if bitmap == 0 {
-        Node::Empty
+        NodeAug::Empty
     } else {
         make_branch(bitmap, children)
     }
 }
 
 /// COW merge: apply updates to existing trie.
-fn apply_range<V: MultiMapValue>(old: &Node<V>, depth: usize, items: &mut [Update<V>]) -> Node<V> {
+fn apply_range<V: MultiMapValue, A: MultiMapAugmentation>(
+    old: &NodeAug<V, A>,
+    depth: usize,
+    items: &mut [Update<V, A>],
+) -> NodeAug<V, A> {
     if items.is_empty() {
         return old.clone();
     }
     if depth == 64 {
         debug_assert_eq!(items.len(), 1);
-        return items[0].val.take().map_or(Node::Empty, Node::new_leaf);
+        return items[0].val.take().map_or(NodeAug::Empty, |(value, augmentation)| {
+            NodeAug::new_leaf_aug(value, augmentation)
+        });
     }
 
     if old.is_empty() {
@@ -140,7 +154,7 @@ fn apply_range<V: MultiMapValue>(old: &Node<V>, depth: usize, items: &mut [Updat
 
     let br_ref = ensure_branch_at_depth(old);
     let br_data = match &br_ref {
-        Node::Branch(data) => data,
+        NodeAug::Branch(data) => data,
         _ => return build_from_updates(depth, items),
     };
 
@@ -165,13 +179,15 @@ fn apply_range<V: MultiMapValue>(old: &Node<V>, depth: usize, items: &mut [Updat
         let (a, b) = ranges[nib as usize];
         let new_c = apply_range(&br_data.children[nib as usize], depth + 1, &mut items[a..b]);
         if node_ptr_eq(&br_data.children[nib as usize], &new_c) {
-            return br_ref;
+            // Preserve the canonical source, not a temporary unhashed branch
+            // materialized from an extension for this walk.
+            return old.clone();
         }
         return rebuild_branch_with_child(br_data, nib, new_c);
     }
 
     // Multi-nibble path: clone all children
-    let mut nib_to_child: [Node<V>; 16] = br_data.children.clone();
+    let mut nib_to_child: [NodeAug<V, A>; 16] = br_data.children.clone();
     let mut changed = false;
 
     for nib in 0..16usize {
@@ -187,7 +203,7 @@ fn apply_range<V: MultiMapValue>(old: &Node<V>, depth: usize, items: &mut [Updat
     }
 
     if !changed {
-        return br_ref;
+        return old.clone();
     }
 
     let mut bitmap: u16 = 0;
@@ -198,18 +214,18 @@ fn apply_range<V: MultiMapValue>(old: &Node<V>, depth: usize, items: &mut [Updat
     }
 
     if bitmap == 0 {
-        Node::Empty
+        NodeAug::Empty
     } else {
         make_branch(bitmap, nib_to_child)
     }
 }
 
-/// Public entry point: apply a batch of inserts/deletes to a trie.
-pub fn update<V: MultiMapValue>(
-    root: &Node<V>,
+/// Public entry point: apply a batch of augmented inserts/deletes to a trie.
+pub fn update_aug<V: MultiMapValue, A: MultiMapAugmentation>(
+    root: &NodeAug<V, A>,
     root_path: &MapKeyPath,
-    updates: &[(MapKey, Option<V>)],
-) -> Node<V> {
+    updates: &[(MapKey, Option<(V, A)>)],
+) -> NodeAug<V, A> {
     let mut items = normalize_updates(root_path, updates);
     if items.is_empty() {
         return root.clone();
@@ -219,43 +235,69 @@ pub fn update<V: MultiMapValue>(
     apply_range(root, start, &mut items)
 }
 
+/// Backward-compatible unaugmented batch update.
+pub fn update<V: MultiMapValue>(
+    root: &Node<V>,
+    root_path: &MapKeyPath,
+    updates: &[(MapKey, Option<V>)],
+) -> Node<V> {
+    let updates: Vec<_> =
+        updates.iter().map(|(key, value)| (*key, value.clone().map(|value| (value, ())))).collect();
+    update_aug(root, root_path, &updates)
+}
+
 /// Fast path for inserting or replacing a single key-value pair.
 /// Skips normalize_updates, sort, dedup, split_by_nibble — just walks the trie directly.
+pub fn update_single_aug<V: MultiMapValue, A: MultiMapAugmentation>(
+    root: &NodeAug<V, A>,
+    root_path: &MapKeyPath,
+    key: &MapKey,
+    value: Option<(V, A)>,
+) -> NodeAug<V, A> {
+    if root_path.len > 0 && !prefix_bits_match(&root_path.prefix.0, &key.0, root_path.len) {
+        return root.clone();
+    }
+    let start = (root_path.len as usize) / 4;
+    apply_single(root, start, key, value)
+}
+
+/// Backward-compatible unaugmented single-key update.
 pub fn update_single<V: MultiMapValue>(
     root: &Node<V>,
     root_path: &MapKeyPath,
     key: &MapKey,
     value: Option<V>,
 ) -> Node<V> {
-    let start = (root_path.len as usize) / 4;
-    apply_single(root, start, key, value)
+    update_single_aug(root, root_path, key, value.map(|value| (value, ())))
 }
 
 /// COW single-key update: walk directly by nibble, no sorting or range splitting.
-fn apply_single<V: MultiMapValue>(
-    old: &Node<V>,
+fn apply_single<V: MultiMapValue, A: MultiMapAugmentation>(
+    old: &NodeAug<V, A>,
     depth: usize,
     key: &MapKey,
-    value: Option<V>,
-) -> Node<V> {
+    value: Option<(V, A)>,
+) -> NodeAug<V, A> {
     if depth == 64 {
-        return value.map_or(Node::Empty, Node::new_leaf);
+        return value.map_or(NodeAug::Empty, |(value, augmentation)| {
+            NodeAug::new_leaf_aug(value, augmentation)
+        });
     }
 
     let nib = nibble_at(&key.0, depth);
 
     match old {
-        Node::Empty => {
+        NodeAug::Empty => {
             // Insert into empty: build a path of ext + leaf
             match value {
-                None => Node::Empty,
-                Some(v) => {
-                    let leaf = Node::new_leaf(v);
+                None => NodeAug::Empty,
+                Some((v, augmentation)) => {
+                    let leaf = NodeAug::new_leaf_aug(v, augmentation);
                     // Remaining nibbles after consuming `nib` at `depth`: depth+1 .. 63
                     let remaining = 63 - depth; // number of nibbles for the ext
                     if remaining == 0 {
                         // We're at depth 63, just one nibble branches to the leaf
-                        let mut children: [Node<V>; 16] = Default::default();
+                        let mut children: [NodeAug<V, A>; 16] = Default::default();
                         children[nib as usize] = leaf;
                         make_branch(1u16 << nib, children)
                     } else {
@@ -265,8 +307,8 @@ fn apply_single<V: MultiMapValue>(
                         for i in 0..remaining {
                             nibbles[i] = nibble_at(&key.0, depth + 1 + i);
                         }
-                        let ext_child = Node::new_ext(&nibbles[..remaining], leaf);
-                        let mut children: [Node<V>; 16] = Default::default();
+                        let ext_child = NodeAug::new_ext(&nibbles[..remaining], leaf);
+                        let mut children: [NodeAug<V, A>; 16] = Default::default();
                         children[nib as usize] = ext_child;
                         make_branch(1u16 << nib, children)
                     }
@@ -274,7 +316,7 @@ fn apply_single<V: MultiMapValue>(
             }
         }
 
-        Node::Leaf(_) => {
+        NodeAug::Leaf(_) => {
             // Leaf at non-max depth shouldn't happen in a well-formed trie
             // Fall back to batch update
             let updates = [(*key, value)];
@@ -283,7 +325,7 @@ fn apply_single<V: MultiMapValue>(
             apply_range(old, depth, &mut items)
         }
 
-        Node::Ext(data) => {
+        NodeAug::Ext(data) => {
             let ext_count = data.nibble_count as usize;
             // Check if our key matches the ext prefix
             let mut match_len = 0;
@@ -301,9 +343,15 @@ fn apply_single<V: MultiMapValue>(
                     return old.clone();
                 }
                 if new_child.is_empty() {
-                    return Node::Empty;
+                    return NodeAug::Empty;
                 }
-                return Node::new_ext(&data.nibbles[..ext_count], new_child);
+                // Deletion can collapse a child branch into an extension.
+                // Fuse it with this prefix so the root depends only on leaves,
+                // not on the sequence of insertions and removals.
+                return merge_ext_if_possible(NodeAug::new_ext(
+                    &data.nibbles[..ext_count],
+                    new_child,
+                ));
             }
 
             // Partial match: need to split the ext
@@ -314,7 +362,7 @@ fn apply_single<V: MultiMapValue>(
             apply_range(old, depth, &mut items)
         }
 
-        Node::Branch(br_data) => {
+        NodeAug::Branch(br_data) => {
             let old_child = &br_data.children[nib as usize];
             let new_child = apply_single(old_child, depth + 1, key, value);
             if node_ptr_eq(old_child, &new_child) {

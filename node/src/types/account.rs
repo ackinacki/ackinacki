@@ -37,7 +37,7 @@ impl WrappedAccount {
     fn wrap_deserialize(data: WrappedAccountData) -> Self {
         Self {
             account_id: data.account_id,
-            account: ThreadAccount::read_bytes(&data.data).unwrap(),
+            account: ThreadAccount::read_owned_bytes(data.data).unwrap(),
         }
     }
 }

@@ -171,7 +171,7 @@ mod tests {
     use trie_map::MapKey;
 
     use super::*;
-    use crate::repo::MultiMapRepository;
+    use crate::repo::MultiMap;
 
     #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
     struct TV(pub u64);
@@ -191,43 +191,40 @@ mod tests {
 
     #[test]
     fn roundtrip_empty() {
-        let repo = MultiMapRepository::<TV>::new();
-        let m = MultiMapRepository::<TV>::new_map();
+        let m = MultiMap::<TV>::new();
         let snap = to_trie_snapshot(&m);
         let m2 = from_trie_snapshot(snap);
-        assert_eq!(repo.map_hash(&m), repo.map_hash(&m2));
+        assert_eq!(m.hash(), m2.hash());
     }
 
     #[test]
     fn roundtrip_with_data() {
-        let repo = MultiMapRepository::<TV>::new();
-        let m = MultiMapRepository::<TV>::new_map();
+        let m = MultiMap::<TV>::new();
         let updates: Vec<_> = (0..200).map(|i| (key(i), Some(TV(i as u64)))).collect();
-        let m = repo.map_update(&m, &updates);
-        let orig_hash = repo.map_hash(&m);
+        let m = m.update(&updates);
+        let orig_hash = m.hash();
 
         let snap = to_trie_snapshot(&m);
         let m2 = from_trie_snapshot(snap);
 
-        assert_eq!(repo.map_hash(&m2), orig_hash);
+        assert_eq!(m2.hash(), orig_hash);
         for i in 0..200 {
-            assert_eq!(repo.map_get(&m2, &key(i)), Some(TV(i as u64)));
+            assert_eq!(m2.get(&key(i)), Some(TV(i as u64)));
         }
     }
 
     #[test]
     fn roundtrip_after_deletes() {
-        let repo = MultiMapRepository::<TV>::new();
-        let m = MultiMapRepository::<TV>::new_map();
+        let m = MultiMap::<TV>::new();
         let inserts: Vec<_> = (0..100).map(|i| (key(i), Some(TV(i as u64)))).collect();
-        let m = repo.map_update(&m, &inserts);
+        let m = m.update(&inserts);
         let deletes: Vec<_> = (0..100).step_by(3).map(|i| (key(i), None)).collect();
-        let m = repo.map_update(&m, &deletes);
-        let orig_hash = repo.map_hash(&m);
+        let m = m.update(&deletes);
+        let orig_hash = m.hash();
 
         let snap = to_trie_snapshot(&m);
         let m2 = from_trie_snapshot(snap);
 
-        assert_eq!(repo.map_hash(&m2), orig_hash);
+        assert_eq!(m2.hash(), orig_hash);
     }
 }

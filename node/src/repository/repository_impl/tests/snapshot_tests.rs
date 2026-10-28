@@ -21,12 +21,12 @@ use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
 
+use super::super::snapshot_v1;
 use super::super::AncestorBlockData;
 use super::super::BlockStateRepository;
 use super::super::RepositoryImpl;
 use super::super::ThreadSnapshot;
 use super::super::ThreadSnapshotHeader;
-use super::super::STREAMED_THREAD_SNAPSHOT_MAGIC;
 use super::finalized_blocks_storage;
 use super::mock_bk_set_updates_tx;
 use super::ZEROSTATE;
@@ -450,14 +450,14 @@ fn detect_snapshot_format(path: &Path) -> anyhow::Result<BenchSnapshotFormat> {
     }
 
     let mut probe = magic.to_vec();
-    while probe.len() < STREAMED_THREAD_SNAPSHOT_MAGIC.len() {
+    while probe.len() < snapshot_v1::MAGIC.len() {
         let mut byte = [0u8; 1];
         if file.read(&mut byte)? == 0 {
             break;
         }
         probe.push(byte[0]);
     }
-    if probe.as_slice() == STREAMED_THREAD_SNAPSHOT_MAGIC {
+    if probe.as_slice() == snapshot_v1::MAGIC {
         Ok(BenchSnapshotFormat::Node)
     } else {
         Ok(BenchSnapshotFormat::Raw)
@@ -503,21 +503,21 @@ fn open_node_snapshot_reader(path: &Path) -> anyhow::Result<Box<dyn Read>> {
 fn read_snapshot_finalized_block(
     reader: &mut dyn Read,
 ) -> anyhow::Result<Option<<RepositoryImpl as Repository>::CandidateBlock>> {
-    let mut probe = Vec::with_capacity(STREAMED_THREAD_SNAPSHOT_MAGIC.len());
+    let mut probe = Vec::with_capacity(snapshot_v1::MAGIC.len());
     let mut byte = [0u8; 1];
-    while probe.len() < STREAMED_THREAD_SNAPSHOT_MAGIC.len() {
+    while probe.len() < snapshot_v1::MAGIC.len() {
         match reader.read(&mut byte)? {
             0 => break,
             _ => probe.push(byte[0]),
         }
     }
 
-    if probe.as_slice() == STREAMED_THREAD_SNAPSHOT_MAGIC {
+    if probe.as_slice() == snapshot_v1::MAGIC {
         let header: super::super::StreamedThreadSnapshotHeader =
             bincode::deserialize_from(&mut *reader)?;
         let mut prefix_bytes = vec![0u8; header.prefix_len as usize];
         reader.read_exact(&mut prefix_bytes)?;
-        let snapshot = super::super::deserialize_streamed_thread_snapshot_prefix(&prefix_bytes)?;
+        let snapshot = snapshot_v1::decode_prefix(&prefix_bytes)?;
         return Ok(Some(snapshot.finalized_block));
     }
 
@@ -554,7 +554,6 @@ fn load_bench_snapshot_finalized_block(
 
 fn write_archive_map_file(
     env: &DurableBenchEnv,
-    repository: &RepositoryImpl,
     state: &ThreadAccountsState,
     thread_id: &ThreadIdentifier,
     block_id: &BlockIdentifier,
@@ -566,11 +565,7 @@ fn write_archive_map_file(
     {
         let file = File::create(&tmp)?;
         let mut writer = std::io::BufWriter::with_capacity(512 * 1024, file);
-        repository
-            .thread_accounts_repository
-            .durable_map_repo()
-            .map_repo()
-            .map_write(state.durable.map(), &mut writer)?;
+        (state.durable.map()).write(&mut writer)?;
         writer.flush()?;
         writer.into_inner()?.sync_all()?;
     }
@@ -586,7 +581,7 @@ fn count_durable_map_entries(
     let mut redirects = 0usize;
     for (_, info) in repository.thread_accounts_repository.durable_map_iter(&state.durable) {
         match info {
-            AccountInfo::VmAccountHash(_) => vm += 1,
+            AccountInfo::AccountHash(_) => vm += 1,
             AccountInfo::Redirect(_) => redirects += 1,
         }
     }
@@ -653,7 +648,7 @@ fn test_repository_impl_import_durable_snapshot_archive() -> anyhow::Result<()> 
     };
 
     let started = Instant::now();
-    write_archive_map_file(&env, &repository, &restored_state, &thread_id, &block_id)?;
+    write_archive_map_file(&env, &restored_state, &thread_id, &block_id)?;
     println!("import: archive_map_write elapsed={:?}", started.elapsed());
 
     let optimistic_map = env
@@ -734,9 +729,10 @@ fn test_repository_impl_export_durable_snapshot_archive() -> anyhow::Result<()> 
 
     let durable_started = Instant::now();
     let mut durable_state_snapshot = tempfile::NamedTempFile::new_in(parent_dir)?;
-    repository.thread_accounts_repository().export_durable_snapshot_to_writer(
+    repository.thread_accounts_repository().export_snapshot_v1_to_writer_checked(
         &state.shard_state.0,
         durable_state_snapshot.as_file_mut(),
+        &|| false,
     )?;
     durable_state_snapshot.as_file_mut().sync_all()?;
     let durable_bytes = durable_state_snapshot.as_file().metadata()?.len();
@@ -747,7 +743,7 @@ fn test_repository_impl_export_durable_snapshot_archive() -> anyhow::Result<()> 
     );
 
     let snapshot_started = Instant::now();
-    let serialized_state = bincode::serialize(&state)?;
+    let serialized_state = snapshot_v1::encode_state(state.clone())?;
     let ancestor_blocks_data = bench_ancestor_blocks_data(&block_id, &repository)?;
     let finalized_block = match repository.get_finalized_block(&block_id)? {
         Some(block) => block,
@@ -851,7 +847,7 @@ fn test_repository_impl_export_durable_snapshot_archive() -> anyhow::Result<()> 
     let mut tmp_file = File::create(&tmp_file_path)?;
     tmp_file.write_all(COMPRESSED_SNAPSHOT_MAGIC)?;
     let mut encoder = zstd::Encoder::new(tmp_file, ZSTD_COMPRESSION_LEVEL)?;
-    super::super::write_streamed_thread_snapshot_to_writer(
+    super::super::write_legacy_thread_snapshot(
         &shared_thread_state,
         Some(durable_state_snapshot.path()),
         &mut encoder,

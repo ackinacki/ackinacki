@@ -8,17 +8,12 @@ use node_types::AccountRouting;
 use node_types::BlockIdentifier;
 use node_types::DAppIdentifier;
 use node_types::ThreadIdentifier;
-use node_types::TransactionHash;
 use once_cell::sync::OnceCell;
 use tracing_subscriber::EnvFilter;
 use tvm_block::MsgAddressInt;
 use tvm_block::ShardAccount;
 use tvm_types::AccountId;
 
-use crate::account::avm::AvmAccount;
-use crate::account::avm::AvmAccountData;
-use crate::account::avm::AvmAccountMetadata;
-use crate::account::avm::AvmThreadAccount;
 use crate::AccountHashMismatchError;
 use crate::ArchiveOperation;
 use crate::BlockAccountOperation;
@@ -107,7 +102,7 @@ fn test_fs_accounts_repo() -> anyhow::Result<()> {
         for (routing, acc) in accounts {
             let acc1 = repo.state_account(&transition.new_state, &routing)?.unwrap();
             assert_eq!(acc.get_dapp_id(), acc1.get_dapp_id());
-            assert_eq!(acc.vm_account()?.hash(), acc1.vm_account()?.hash());
+            assert_eq!(acc.account_hash(), acc1.account_hash());
         }
         prev_state = transition.new_state;
         if block_index % 10 == 0 {
@@ -237,24 +232,18 @@ fn set_acc_dapp_id(acc: &ThreadAccount, dapp_id: DAppIdentifier) -> ThreadAccoun
     .unwrap()
 }
 
-/// Creates an AVM account for testing the AVM-skip guard.
+/// Creates a synthetic non-TVM account to test that TVM Merkle updates are skipped.
 fn new_avm_acc(seed: usize) -> (AccountRouting, ThreadAccount) {
     use node_types::AccountHash;
 
     let id = AccountIdentifier::new(new_u256("avm_acc", seed));
     let routing = id.redirect();
-    let avm_account = AvmAccount::new(
-        AccountHash::new(new_u256("avm_hash", seed)),
-        AvmAccountMetadata { id, storage_used_bytes: 1024, ..Default::default() },
-        None,
-        None,
-        Some(AvmAccountData { data: vec![0u8; 512] }),
-    );
-    let state_account = ThreadAccount::from_avm(AvmThreadAccount {
-        vm_account: avm_account,
-        last_trans_hash: TransactionHash::new(new_u256("avm_trans", seed)),
-        last_trans_lt: seed as u64,
-    });
+    let account_hash = AccountHash::new(new_u256("avm_hash", seed));
+    let mut canonical = vec![0x41, 0x56, 0x4d, 0x01];
+    canonical.extend_from_slice(id.as_slice());
+    canonical.resize(512, seed as u8);
+    canonical.extend_from_slice(account_hash.as_slice());
+    let state_account = ThreadAccount::from_synthetic_canonical(canonical.into()).unwrap();
     (routing, state_account)
 }
 
@@ -1284,8 +1273,8 @@ fn test_durable_snapshot_with_accounts() -> anyhow::Result<()> {
         );
         let imported_acc = imported_acc.unwrap();
         assert_eq!(
-            imported_acc.vm_account()?.hash(),
-            orig_acc.vm_account()?.hash(),
+            imported_acc.account_hash(),
+            orig_acc.account_hash(),
             "Account hash should match for {}",
             routing.account_id().to_hex_string()
         );
@@ -1343,7 +1332,7 @@ fn test_durable_snapshot_preserves_dapp_structure() -> anyhow::Result<()> {
             routing.account_id().to_hex_string(),
             routing.dapp_id().to_hex_string()
         );
-        assert_eq!(imported_acc.unwrap().vm_account()?.hash(), orig_acc.vm_account()?.hash(),);
+        assert_eq!(imported_acc.unwrap().account_hash(), orig_acc.account_hash(),);
     }
 
     Ok(())
@@ -1391,8 +1380,8 @@ fn test_durable_snapshot_bincode_roundtrip() -> anyhow::Result<()> {
     for (routing, orig_acc) in &accounts {
         let imported_acc = repo2.state_account(&imported_state, routing)?.unwrap();
         assert_eq!(
-            imported_acc.vm_account()?.hash(),
-            orig_acc.vm_account()?.hash(),
+            imported_acc.account_hash(),
+            orig_acc.account_hash(),
             "Account {} should match after bincode roundtrip",
             routing.account_id().to_hex_string()
         );
@@ -1477,8 +1466,8 @@ fn test_durable_snapshot_after_updates() -> anyhow::Result<()> {
     for (routing, expected_acc) in &updated_accounts {
         let imported = repo2.state_account(&imported_state, routing)?.unwrap();
         assert_eq!(
-            imported.vm_account()?.hash(),
-            expected_acc.vm_account()?.hash(),
+            imported.account_hash(),
+            expected_acc.account_hash(),
             "Updated account should match"
         );
     }
@@ -1495,8 +1484,8 @@ fn test_durable_snapshot_after_updates() -> anyhow::Result<()> {
     for (routing, expected_acc) in &new_accounts {
         let imported = repo2.state_account(&imported_state, routing)?.unwrap();
         assert_eq!(
-            imported.vm_account()?.hash(),
-            expected_acc.vm_account()?.hash(),
+            imported.account_hash(),
+            expected_acc.account_hash(),
             "New account should match"
         );
     }
@@ -1506,8 +1495,8 @@ fn test_durable_snapshot_after_updates() -> anyhow::Result<()> {
         let routing = &account.0;
         let imported = repo2.state_account(&imported_state, routing)?.unwrap();
         assert_eq!(
-            imported.vm_account()?.hash(),
-            account.1.vm_account()?.hash(),
+            imported.account_hash(),
+            account.1.account_hash(),
             "Unchanged account {} should match",
             i + 1
         );
@@ -1604,7 +1593,7 @@ fn test_durable_snapshot_cross_repo_import() -> anyhow::Result<()> {
             "Imported account {} should exist",
             routing.account_id().to_hex_string()
         );
-        assert_eq!(acc.unwrap().vm_account()?.hash(), orig_acc.vm_account()?.hash());
+        assert_eq!(acc.unwrap().account_hash(), orig_acc.account_hash());
     }
 
     // After `reset_archive`, repo2's PRE-RESET accounts are intentionally
@@ -1626,7 +1615,7 @@ fn test_durable_snapshot_cross_repo_import() -> anyhow::Result<()> {
             )
         });
         assert_eq!(mismatch.routing, *routing);
-        assert_eq!(mismatch.expected_hash, orig_acc.vm_account().unwrap().hash());
+        assert_eq!(mismatch.expected_hash, orig_acc.account_hash());
 
         let msg = err.to_string();
         assert!(
@@ -1686,7 +1675,7 @@ fn test_durable_snapshot_with_large_accounts() -> anyhow::Result<()> {
 
     for (routing, orig_acc) in &accounts {
         let imported = repo2.state_account(&imported_state, routing)?.unwrap();
-        assert_eq!(imported.vm_account()?.hash(), orig_acc.vm_account()?.hash());
+        assert_eq!(imported.account_hash(), orig_acc.account_hash());
     }
 
     Ok(())
@@ -1725,11 +1714,7 @@ fn test_redirect_stub_created_for_dapp_account() -> anyhow::Result<()> {
     assert!(real.is_some(), "Real account should exist at (dapp_id, account_id)");
     let real = real.unwrap();
     assert!(!real.is_redirect(), "Real account should not be a redirect");
-    assert_eq!(
-        real.vm_account()?.hash(),
-        acc.vm_account()?.hash(),
-        "Real account data should match"
-    );
+    assert_eq!(real.account_hash(), acc.account_hash(), "Real account data should match");
 
     // Lookup at default routing (account_id, account_id) follows the redirect
     // and returns the real account
@@ -1744,8 +1729,8 @@ fn test_redirect_stub_created_for_dapp_account() -> anyhow::Result<()> {
         "Followed account should have the actual dapp_id"
     );
     assert_eq!(
-        followed.vm_account()?.hash(),
-        acc.vm_account()?.hash(),
+        followed.account_hash(),
+        acc.account_hash(),
         "Followed account data should match original"
     );
 
@@ -1811,7 +1796,7 @@ fn test_redirect_account_without_body_dapp_id_uses_routing_dapp_id() -> anyhow::
     assert!(followed.is_some(), "redirect routing should resolve to the real account");
     let followed = followed.unwrap();
     assert!(!followed.is_redirect(), "resolved account should be the real account");
-    assert_eq!(followed.vm_account()?.hash(), account_without_dapp.vm_account()?.hash());
+    assert_eq!(followed.account_hash(), account_without_dapp.account_hash());
 
     Ok(())
 }
@@ -1849,8 +1834,8 @@ fn test_redirect_stub_lookup_returns_redirect() -> anyhow::Result<()> {
         "Default routing should return the real account (via redirect)"
     );
     assert_eq!(
-        followed.vm_account()?.hash(),
-        acc.vm_account()?.hash(),
+        followed.account_hash(),
+        acc.account_hash(),
         "Account data via default routing should match original"
     );
 
@@ -1895,7 +1880,7 @@ fn test_redirect_stub_is_materialized_in_archive() -> anyhow::Result<()> {
 
     let archived_real = repo.durable_map_repo().archive_account_for_test(&routing)?.unwrap();
     assert!(!archived_real.is_redirect(), "Real route must keep the real account body");
-    assert_eq!(archived_real.vm_account()?.hash(), acc.vm_account()?.hash());
+    assert_eq!(archived_real.account_hash(), acc.account_hash());
 
     Ok(())
 }
@@ -2359,8 +2344,8 @@ fn test_redirect_stub_diff_applied_correctly() -> anyhow::Result<()> {
     let real_from_applied = repo.state_account(&applied.new_state, &routing)?;
     assert!(real_from_applied.is_some(), "Real account should exist in applied state");
     assert_eq!(
-        real_from_applied.unwrap().vm_account()?.hash(),
-        acc.vm_account()?.hash(),
+        real_from_applied.unwrap().account_hash(),
+        acc.account_hash(),
         "Applied state should have correct account data"
     );
 
@@ -2370,8 +2355,8 @@ fn test_redirect_stub_diff_applied_correctly() -> anyhow::Result<()> {
     let followed_from_applied = followed_from_applied.unwrap();
     assert!(!followed_from_applied.is_redirect(), "Followed redirect should return real account");
     assert_eq!(
-        followed_from_applied.vm_account()?.hash(),
-        acc.vm_account()?.hash(),
+        followed_from_applied.account_hash(),
+        acc.account_hash(),
         "Followed account data should match original"
     );
 
@@ -2380,61 +2365,37 @@ fn test_redirect_stub_diff_applied_correctly() -> anyhow::Result<()> {
 
 // ==================== Routing Lookup Stress Tests ====================
 
-/// Lightweight AVM account with originator routing (dapp_id == account_id)
+/// Lightweight synthetic account with originator routing (dapp_id == account_id)
 fn small_acc(seed: usize) -> (AccountRouting, ThreadAccount) {
     use node_types::AccountHash;
     let id = AccountIdentifier::new(new_u256("sm_acc", seed));
     let routing = id.redirect();
-    let acc = ThreadAccount::from_avm(AvmThreadAccount {
-        vm_account: AvmAccount::new(
-            AccountHash::new(new_u256("sm_hash", seed)),
-            AvmAccountMetadata { id, ..Default::default() },
-            None,
-            None,
-            None,
-        ),
-        last_trans_hash: TransactionHash::new(new_u256("sm_tx", seed)),
-        last_trans_lt: seed as u64,
-    });
+    let hash = AccountHash::new(new_u256("sm_hash", seed));
+    let canonical: Box<[u8]> = [b"AVM1".as_slice(), id.as_slice(), hash.as_slice()].concat().into();
+    let acc = ThreadAccount::from_synthetic_canonical(canonical).unwrap();
     (routing, acc)
 }
 
-/// Lightweight AVM account with separate dapp_id
+/// Lightweight synthetic account with separate dapp_id
 fn small_acc_dapp(acc_seed: usize, dapp_seed: usize) -> (AccountRouting, ThreadAccount) {
     use node_types::AccountHash;
     let id = AccountIdentifier::new(new_u256("sm_acc", acc_seed));
     let dapp_id = DAppIdentifier::new(new_u256("sm_dapp", dapp_seed));
     let routing = id.routing(dapp_id);
-    let acc = ThreadAccount::from_avm(AvmThreadAccount {
-        vm_account: AvmAccount::new(
-            AccountHash::new(new_u256("sm_hash", acc_seed)),
-            AvmAccountMetadata { id, ..Default::default() },
-            None,
-            None,
-            None,
-        ),
-        last_trans_hash: TransactionHash::new(new_u256("sm_tx", acc_seed)),
-        last_trans_lt: acc_seed as u64,
-    });
+    let hash = AccountHash::new(new_u256("sm_hash", acc_seed));
+    let canonical: Box<[u8]> = [b"AVM1".as_slice(), id.as_slice(), hash.as_slice()].concat().into();
+    let acc = ThreadAccount::from_synthetic_canonical(canonical).unwrap();
     (routing, acc)
 }
 
-/// Lightweight AVM account with explicit 32-byte key
+/// Lightweight synthetic account with explicit 32-byte key
 fn small_acc_key(key: [u8; 32], seed: usize) -> (AccountRouting, ThreadAccount) {
     use node_types::AccountHash;
     let id = AccountIdentifier::new(key);
     let routing = id.redirect();
-    let acc = ThreadAccount::from_avm(AvmThreadAccount {
-        vm_account: AvmAccount::new(
-            AccountHash::new(new_u256("sm_hash_k", seed)),
-            AvmAccountMetadata { id, ..Default::default() },
-            None,
-            None,
-            None,
-        ),
-        last_trans_hash: TransactionHash::new(new_u256("sm_tx_k", seed)),
-        last_trans_lt: seed as u64,
-    });
+    let hash = AccountHash::new(new_u256("sm_hash_k", seed));
+    let canonical: Box<[u8]> = [b"AVM1".as_slice(), id.as_slice(), hash.as_slice()].concat().into();
+    let acc = ThreadAccount::from_synthetic_canonical(canonical).unwrap();
     (routing, acc)
 }
 
@@ -2865,7 +2826,7 @@ fn test_push_transition_does_not_preserve_imported_archive_only_version() -> any
         import_repo.state_account(&transition2.new_state, &routing)?.ok_or_else(|| {
             anyhow::anyhow!("updated account must remain readable after archive update")
         })?;
-    assert_eq!(current.vm_account()?.hash(), acc_v2.vm_account()?.hash());
+    assert_eq!(current.account_hash(), acc_v2.account_hash());
 
     let mut old_snapshot = std::io::Cursor::new(Vec::new());
     let err = import_repo

@@ -4,7 +4,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -52,6 +51,8 @@ pub use engine_version::get_engine_version;
 
 use crate::external_messages::ExtMessageDst;
 
+#[cfg(test)]
+mod inbox_replay_tests;
 pub mod special_messages;
 mod test;
 pub mod trace;
@@ -116,8 +117,44 @@ pub struct EngineTraceInfoData {
 
 type MessageIndex = u128;
 
-/// BlockBuilder structure
+/// Named inputs; derived runtime fields are prepared only by build().
 #[derive(TypedBuilder)]
+#[builder(build_method(into=anyhow::Result<BlockBuilder>))]
+pub struct BlockBuilderParams {
+    thread_id: ThreadIdentifier,
+    block_height: u64,
+    initial_optimistic_state: OptimisticStateImpl,
+    gen_utime_ms: u64,
+    block_gas_limit: u64,
+    #[builder(default)]
+    rand_seed: Option<UInt256>,
+    #[builder(default)]
+    control_rx_stop: Option<InstrumentedReceiver<()>>,
+    thread_accounts_repository: ThreadAccountsRepository,
+    block_keeper_epoch_code_hash: String,
+    block_keeper_preepoch_code_hash: String,
+    parallelization_level: usize,
+    produced_internal_messages_to_other_threads:
+        HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    added_high_priority_messages:
+        HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    settled_messages: HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    tracked_ext_out_account_routings: BTreeSet<AccountRouting>,
+    #[builder(default)]
+    metrics: Option<BlockProductionMetrics>,
+    wasm_cache: WasmNodeCache,
+    is_verifier: bool,
+    #[builder(default)]
+    check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
+}
+
+impl From<BlockBuilderParams> for anyhow::Result<BlockBuilder> {
+    fn from(params: BlockBuilderParams) -> Self {
+        BlockBuilder::from_params(params)
+    }
+}
+
+/// BlockBuilder structure
 pub struct BlockBuilder {
     pub(crate) thread_id: ThreadIdentifier,
     pub(crate) block_height: u64,
@@ -126,49 +163,41 @@ pub struct BlockBuilder {
     pub(crate) block_info: BlockInfo,
     pub(crate) rand_seed: UInt256,
     // Mapping of messages generated while execution
-    #[builder(default)]
     pub(crate) new_messages: BTreeMap<MessageIndex, (Message, Option<Cell>)>,
-    #[builder(default)]
     pub(crate) in_msg_descr: InMsgDescr,
-    #[builder(default)]
     pub(crate) out_msg_descr: OutMsgDescr,
     // pub(crate) out_queue_info: OutMsgQueueInfo,
     pub(crate) block_gas_limit: u64,
-    #[builder(default)]
     pub(crate) account_blocks: ShardAccountBlocks,
-    #[builder(default)]
     pub(crate) total_gas_used: u64,
     pub(crate) start_lt: u64,
     pub(crate) end_lt: u64, // biggest logical time of all messages
-    #[builder(default)]
     pub(crate) copyleft_rewards: CopyleftRewards,
     // pub(crate) transaction_traces: HashMap<UInt256, Vec<EngineTraceInfoData>>,
     control_rx_stop: Option<InstrumentedReceiver<()>>,
     is_stop_requested: bool,
 
     pub(crate) parallelization_level: usize,
-    #[builder(default)]
     pub(crate) tx_cnt: usize,
-    #[builder(default)]
     pub(crate) tx_count_per_routing: BTreeMap<AccountRouting, u32>,
 
     pub(crate) usage_tree: UsageTree,
     pub(crate) initial_optimistic_state: OptimisticStateImpl,
     pub(crate) block_keeper_epoch_code_hash: String,
     pub(crate) block_keeper_preepoch_code_hash: String,
-    #[builder(default)]
     pub(crate) block_keeper_set_changes: Vec<BlockKeeperSetChange>,
     pub(crate) base_config_stateinit: StateInit,
-    #[builder(default)]
     pub(crate) dapp_credit_map: HashMap<DAppIdentifier, DappConfig>,
-    #[builder(default)]
     pub(crate) dapp_minted_map: HashMap<DAppIdentifier, i128>,
     pub(crate) thread_accounts_repository: ThreadAccountsRepository,
 
     // part used to update local state
-    #[builder(default)]
-    pub(crate) consumed_internal_messages: HashMap<AccountRouting, HashSet<MessageIdentifier>>,
-    #[builder(default)]
+    pub(crate) consumed_internal_messages: HashMap<AccountRouting, Vec<MessageIdentifier>>,
+    pub(crate) consumed_high_priority_messages: HashMap<AccountRouting, Vec<MessageIdentifier>>,
+    pub(crate) settled_messages:
+        HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
+    pub(crate) added_high_priority_messages:
+        HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     pub(crate) produced_internal_messages_to_the_current_thread:
         HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
 
@@ -176,7 +205,6 @@ pub struct BlockBuilder {
     pub(crate) produced_internal_messages_to_other_threads:
         HashMap<AccountRouting, Vec<(MessageIdentifier, Arc<WrappedMessage>)>>,
     pub(crate) tracked_ext_out_account_routings: BTreeSet<AccountRouting>,
-    #[builder(default)]
     pub(crate) accounts_that_changed_their_dapp_id:
         HashMap<AccountIdentifier, Vec<(AccountRouting, Option<WrappedAccount>)>>,
     metrics: Option<BlockProductionMetrics>,
@@ -187,15 +215,17 @@ pub struct BlockBuilder {
     #[cfg(feature = "monitor-accounts-number")]
     pub(crate) accounts_number_diff: i64,
 
-    #[builder(default)]
     pub(crate) tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
 
     is_verifier: bool,
-    #[builder(default)]
     pub(crate) check_history_proof_hash: Option<Arc<dyn Send + Sync + Fn(u8, [u8; 32]) -> bool>>,
 }
 
 impl BlockBuilder {
+    pub fn builder() -> BlockBuilderParamsBuilder {
+        BlockBuilderParams::builder()
+    }
+
     fn should_stop_production(&mut self) -> bool {
         if self.is_stop_requested {
             return true;

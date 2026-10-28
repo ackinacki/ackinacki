@@ -111,10 +111,8 @@ impl ZeroState {
             for msg in account_messages {
                 let (message, _) =
                     msg.map_err(|e| anyhow::format_err!("Failed to unpack message: {e:?}"))?;
-                let message = message.message.clone();
-                let message_cell = message.serialize().map_err(|e| anyhow::format_err!("{e}"))?;
-                let bytes = write_boc(&message_cell).map_err(|e| anyhow::format_err!("{e}"))?;
-                let boc = base64_encode(&bytes);
+                let boc = base64_encode(message.canonical_bytes());
+                let message = message.tvm_message().map_err(anyhow::Error::msg)?;
                 let state_init = message
                     .state_init()
                     .map(|state: &StateInit| {

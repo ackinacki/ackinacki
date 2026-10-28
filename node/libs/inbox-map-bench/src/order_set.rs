@@ -1,16 +1,10 @@
 use std::fmt;
 use std::fmt::Debug;
-use std::ops::Deref;
 use std::sync::Arc;
 
-use node_types::AccountRouting;
-use node_types::DAppIdentifier;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
-
-pub type OrderSet = OrderedSet<AccountRouting>;
-pub type OrderSetDappIdentifier = OrderedSet<DAppIdentifier>;
 
 #[derive(Clone)]
 pub struct OrderedSet<T>(Arc<indexset::BTreeSet<T>>)
@@ -46,6 +40,10 @@ where
         self.0.get_index(index)
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.0.iter()
+    }
+
     pub fn contains(&self, item: &T) -> bool {
         self.0.contains(item)
     }
@@ -56,10 +54,6 @@ where
 
     pub fn remove(&mut self, item: &T) {
         Arc::make_mut(&mut self.0).remove(item);
-    }
-
-    pub fn to_set(&self) -> indexset::BTreeSet<T> {
-        self.0.deref().clone()
     }
 }
 

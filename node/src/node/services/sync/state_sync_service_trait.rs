@@ -71,6 +71,8 @@ pub trait StateSyncService {
     //   from there.
     // - use data storage to snapshot state and then publish it on ipfs.
     /// Spawn a worker that writes a snapshot file for the given block.
+    /// Publication is skipped while the node is catching up, before reserving
+    /// worker capacity or requesting an archive pin.
     /// The implementation must reserve worker capacity first and only then
     /// call `request_snapshot_pin(anchor)` to avoid pin leaks when a save is
     /// skipped due to concurrency limits. The returned guard must stay armed

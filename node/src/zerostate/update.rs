@@ -37,11 +37,10 @@ use tvm_types::UInt256;
 use crate::block_keeper_system::BlockKeeperData;
 use crate::block_keeper_system::BlockKeeperStatus;
 use crate::bls::gosh_bls::PubKey;
-use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::node::SignerIndex;
 use crate::storage::MessageDurableStorage;
-use crate::types::thread_message_queue::ThreadMessageQueueState;
+use crate::types::thread_message_queue::ThreadMessageQueueStateDiff;
 use crate::zerostate::ZeroState;
 
 const ZERO_ACCOUNT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -219,11 +218,10 @@ impl ZeroState {
                 header.dest_dapp_id.as_ref().map(DAppIdentifier::from).unwrap_or_else(|| {
                     header.src_dapp_id().clone().map(DAppIdentifier::from).unwrap()
                 });
-            let message = WrappedMessage { message };
-            let message_key = MessageIdentifier::from(&message);
+            let message = WrappedMessage::from_tvm(&message);
+            let message_key = message.identifier();
             let message_db = MessageDurableStorage::mem();
-            optimistic_state.messages = ThreadMessageQueueState::build_next()
-                .with_initial_state(optimistic_state.messages.clone())
+            optimistic_state.messages = ThreadMessageQueueStateDiff::builder()
                 .with_consumed_messages(HashMap::new())
                 .with_produced_messages(HashMap::from([(
                     dest.routing(dest_dapp_id),
@@ -231,8 +229,8 @@ impl ZeroState {
                 )]))
                 .with_removed_accounts(vec![])
                 .with_added_accounts(BTreeMap::new())
-                .with_db(message_db.clone())
                 .build()
+                .apply(optimistic_state.messages.clone(), &message_db)
                 .unwrap();
         }
 

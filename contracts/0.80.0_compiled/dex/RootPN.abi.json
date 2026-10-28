@@ -70,6 +70,14 @@
 			]
 		},
 		{
+			"name": "setTokenContractCode",
+			"inputs": [
+				{"name":"tokenContractCode","type":"cell"}
+			],
+			"outputs": [
+			]
+		},
+		{
 			"name": "setPrivateNoteCode",
 			"inputs": [
 				{"name":"privateNoteCode","type":"cell"}
@@ -113,6 +121,24 @@
 				{"name":"isFee","type":"bool"}
 			],
 			"outputs": [
+			]
+		},
+		{
+			"name": "setPrevPrivateNoteCode",
+			"inputs": [
+				{"name":"codeHash","type":"uint256"},
+				{"name":"codeDepth","type":"uint16"}
+			],
+			"outputs": [
+			]
+		},
+		{
+			"name": "getPrevPrivateNoteCode",
+			"inputs": [
+			],
+			"outputs": [
+				{"name":"codeHash","type":"uint256"},
+				{"name":"codeDepth","type":"uint16"}
 			]
 		},
 		{
@@ -264,12 +290,15 @@
 		{"init":false,"name":"_timestamp","type":"uint64"},
 		{"init":false,"name":"_constructorFlag","type":"bool"},
 		{"init":false,"name":"_privateNoteCode","type":"cell"},
+		{"init":false,"name":"_prevPrivateNoteCodeHash","type":"uint256"},
+		{"init":false,"name":"_prevPrivateNoteCodeDepth","type":"uint16"},
 		{"init":false,"name":"_pmpCode","type":"cell"},
 		{"init":false,"name":"_nullifierCode","type":"cell"},
 		{"init":false,"name":"_oracleCode","type":"cell"},
 		{"init":false,"name":"_oracleEventListCode","type":"cell"},
 		{"init":false,"name":"_orderBookCode","type":"cell"},
 		{"init":false,"name":"_inferenceOrderBookCode","type":"cell"},
+		{"init":false,"name":"_tokenContractCode","type":"cell"},
 		{"init":false,"name":"_ownerPubkey","type":"uint256"},
 		{"init":false,"name":"_deployedValues","type":"map(uint32,uint128)"},
 		{"init":false,"name":"_protocolFees","type":"map(uint32,uint128)"},

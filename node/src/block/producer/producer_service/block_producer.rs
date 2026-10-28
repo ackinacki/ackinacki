@@ -365,6 +365,16 @@ impl BlockProducer {
         let mut memento = None;
         let mut next_bp_command = None;
         loop {
+            if SHUTDOWN_FLAG.get() == Some(&true) {
+                tracing::info!(
+                    target: "monit",
+                    "BlockProducer main_loop: shutdown requested for thread {:?}; exiting",
+                    self.thread_id,
+                );
+                let _ = self.stop_and_cleanup();
+                return Ok(());
+            }
+
             if let Ok(bp_command) = self.control_rx.try_recv() {
                 in_flight_productions = None;
                 memento = None;

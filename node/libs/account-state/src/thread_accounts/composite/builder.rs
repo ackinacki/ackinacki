@@ -495,7 +495,7 @@ fn _try_create_merkle_update(
         return None;
     }
 
-    let new_shard_acc = new_account.as_tvm()?;
+    let new_shard_acc = new_account.tvm_shard_account().ok()?;
 
     // Look up the old account from a durable state first, then TVM
     let old_account =
@@ -508,11 +508,11 @@ fn _try_create_merkle_update(
         })?;
 
     // Only optimize TVM old accounts
-    let old_shard_acc = old_account.as_tvm()?;
+    let old_shard_acc = old_account.tvm_shard_account().ok()?;
 
     let new_shard_acc_cell = new_shard_acc.serialize().ok()?;
 
-    let new_shard_acc_serialized_size = new_shard_acc.write_to_bytes().ok()?.len();
+    let new_shard_acc_serialized_size = usize::try_from(new_account.canonical_size()).ok()?;
     if new_shard_acc_serialized_size < MERKLE_UPDATE_MIN_ACCOUNT_SIZE {
         return None;
     }

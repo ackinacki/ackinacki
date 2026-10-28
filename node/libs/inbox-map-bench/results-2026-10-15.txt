@@ -1,0 +1,429 @@
+INBOX MAP STORAGE BENCHMARK - INITIAL COMPARISON BEFORE PRODUCTION SINGLE-KEY SWITCH
+Date: 2026-10-15
+Host: Apple M3 Pro, 36 GiB RAM, macOS
+Base HEAD: d1051d523; current uncommitted Merkle queue implementation.
+Build: cargo build --release -p inbox-map-bench --offline
+Shared Cargo target configuration was used; target-dir was not supplied.
+No production code was changed for these measurements. No commits were made.
+
+Workload:
+  One DApp, 1,000,000 inboxes, 10 transitions (base + 10 successors retained).
+  Random-looking deterministic full AccountRouting keys; 32-byte account IDs.
+  Synthetic Inbox size: 200 bytes, same field shapes as AccountInbox.
+  One compacted message-range reference per inbox, no message bodies allocated.
+  Hash input: added[32] || consumed[32], like production AccountInbox.
+  Actual production QueueMap and OrderedSet source files are compiled by path.
+  Legacy storage reconstructs BTreeMap<DApp, Arc<DAppQueue>>,
+  BTreeMap<Routing, Arc<Inbox>>, Arc<indexset::BTreeSet> and cursors.
+  This measures storage mutation, NOT complete block processing, VM, DB or codec work.
+  New inbox allocation and key generation are outside mutation timings.
+  Timings include state clone, DApp COW, L2 mutation, and L1 update.
+  Each run checks sizes and values of every retained version and the untouched base.
+  No benchmark processes were run concurrently.
+  Three rounds for 32 changes/block, five rounds for one change/block.
+  First-round cold allocation effects are included; summaries report medians.
+  step_ms = median individual transition; chain_ms = median sum of 10 transitions.
+  retained_delta_mib = live allocator bytes with all successors retained minus
+  live bytes before creating the chain; preallocated input inboxes excluded.
+  base_live_mib = live allocator bytes used by the initial fixture.
+  RSS = whole-process peak from /usr/bin/time -l, includes fixture construction.
+  RSS is NOT an incremental-chain measurement and may include freed allocator pages.
+  1 MiB = 1,048,576 bytes.
+
+Source SHA-256:
+  65baca1088c78fc2030b57508f0c0a8fda1a0511a534b9e96c5251f7340277a8  maps.rs
+  900ae9a3cc2f13ed4b545b185a1147a3ada7008ae1425752b9f92bf5f717ea76  order_set.rs
+  5fbace99f1bcac72482d1f645d0f62a8cb6720c3caa0c4ace209e36a8d2e5b75  multi-map/ops/update.rs
+
+Original reproduction commands (using the source hashes above):
+  cargo run --release -p inbox-map-bench -- legacy update 1000000 32 10 3
+  Substitute legacy|merkle and update|insert|delete.
+  For the single changed-inbox case: update 1000000 1 10 5.
+  Experimental L2 strategy, benchmark only:
+  cargo run --release -p inbox-map-bench -- merkle update 1000000 32 10 3 --single-l2
+  Prefix the built executable with /usr/bin/time -l for process peak RSS.
+
+After the production single-key switch, the benchmark default follows production.
+Use --batch-l2 to reproduce the former L2 batch strategy.
+The original experimental --single-l2 option has been removed: omit it now.
+
+
+CASE legacy-update
+fixture count=1000000 inbox_size=200 build_s=1.652 base_live_mib=410.397
+clone_drop_ns=25.7
+round=1 chain_ms=298.102 retained_delta_mib=1159.969
+round=2 chain_ms=240.078 retained_delta_mib=1159.969
+round=3 chain_ms=245.787 retained_delta_mib=1159.969
+RESULT mode=update n=1000000 changed=32 depth=10 rounds=3 step_ms=23.809042 chain_ms=245.787 drop_ms=335.741 retained_delta_mib=1159.969
+        3.53 real         3.17 user         0.32 sys
+          1672003584  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              102248  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                1014  involuntary context switches
+         17292558859  instructions retired
+         13148886132  cycles elapsed
+          1670399536  peak memory footprint
+
+
+CASE merkle-update
+fixture count=1000000 inbox_size=200 build_s=12.703 base_live_mib=615.373
+clone_drop_ns=4.4
+round=1 chain_ms=17.396 retained_delta_mib=0.463
+round=2 chain_ms=8.887 retained_delta_mib=0.463
+round=3 chain_ms=10.206 retained_delta_mib=0.463
+RESULT mode=update n=1000000 changed=32 depth=10 rounds=3 step_ms=0.904833 chain_ms=10.206 drop_ms=0.257 retained_delta_mib=0.463
+RSS_peak_bytes=764706816
+
+CASE legacy-insert
+fixture count=1000000 inbox_size=200 build_s=1.609 base_live_mib=410.397
+clone_drop_ns=26.9
+round=1 chain_ms=382.829 retained_delta_mib=1898.222
+round=2 chain_ms=307.847 retained_delta_mib=1898.222
+round=3 chain_ms=305.028 retained_delta_mib=1898.222
+RESULT mode=insert n=1000000 changed=32 depth=10 rounds=3 step_ms=30.625875 chain_ms=307.847 drop_ms=340.843 retained_delta_mib=1898.222
+        3.75 real         3.29 user         0.44 sys
+          2453667840  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              149961  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                 704  involuntary context switches
+         18552292485  instructions retired
+         14133260228  cycles elapsed
+          2433534088  peak memory footprint
+
+
+CASE merkle-insert
+fixture count=1000000 inbox_size=200 build_s=11.419 base_live_mib=615.373
+clone_drop_ns=4.3
+round=1 chain_ms=68.056 retained_delta_mib=738.518
+round=2 chain_ms=25.147 retained_delta_mib=738.518
+round=3 chain_ms=23.340 retained_delta_mib=738.517
+RESULT mode=insert n=1000000 changed=32 depth=10 rounds=3 step_ms=2.580833 chain_ms=25.147 drop_ms=0.827 retained_delta_mib=738.518
+       11.76 real        11.55 user         0.18 sys
+          1589739520  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               97240  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                 919  involuntary context switches
+        181609329441  instructions retired
+         43615189360  cycles elapsed
+          1589757464  peak memory footprint
+
+
+CASE legacy-delete
+fixture count=1000000 inbox_size=200 build_s=1.551 base_live_mib=410.397
+clone_drop_ns=27.0
+round=1 chain_ms=391.761 retained_delta_mib=1881.407
+round=2 chain_ms=277.508 retained_delta_mib=1881.407
+round=3 chain_ms=314.957 retained_delta_mib=1881.407
+RESULT mode=delete n=1000000 changed=32 depth=10 rounds=3 step_ms=30.214292 chain_ms=314.957 drop_ms=331.841 retained_delta_mib=1881.407
+        3.68 real         3.18 user         0.46 sys
+          2463629312  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              150568  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                 596  involuntary context switches
+         18664967245  instructions retired
+         13825327039  cycles elapsed
+          2429995096  peak memory footprint
+
+
+CASE merkle-delete
+fixture count=1000000 inbox_size=200 build_s=11.409 base_live_mib=615.373
+clone_drop_ns=4.8
+round=1 chain_ms=69.199 retained_delta_mib=721.917
+round=2 chain_ms=24.453 retained_delta_mib=721.917
+round=3 chain_ms=22.391 retained_delta_mib=721.917
+RESULT mode=delete n=1000000 changed=32 depth=10 rounds=3 step_ms=2.487875 chain_ms=24.453 drop_ms=0.754 retained_delta_mib=721.917
+       11.75 real        11.51 user         0.18 sys
+          1572765696  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               96204  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                 924  involuntary context switches
+        181632016359  instructions retired
+         43555190161  cycles elapsed
+          1572767232  peak memory footprint
+
+
+CASE legacy-update-one
+fixture count=1000000 inbox_size=200 build_s=1.697 base_live_mib=410.397
+clone_drop_ns=27.1
+round=1 chain_ms=284.841 retained_delta_mib=1159.969
+round=2 chain_ms=241.568 retained_delta_mib=1159.969
+round=3 chain_ms=240.189 retained_delta_mib=1159.969
+round=4 chain_ms=215.686 retained_delta_mib=1159.969
+round=5 chain_ms=229.785 retained_delta_mib=1159.969
+RESULT mode=update n=1000000 changed=1 depth=10 rounds=5 step_ms=22.716916 chain_ms=240.189 drop_ms=291.264 retained_delta_mib=1159.969
+        4.56 real         4.21 user         0.30 sys
+          1672429568  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              102274  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                 868  involuntary context switches
+         20321994485  instructions retired
+         17256054765  cycles elapsed
+          1670268464  peak memory footprint
+
+
+CASE merkle-update-one
+fixture count=1000000 inbox_size=200 build_s=11.365 base_live_mib=615.373
+clone_drop_ns=4.2
+round=1 chain_ms=0.173 retained_delta_mib=0.023
+round=2 chain_ms=0.066 retained_delta_mib=0.023
+round=3 chain_ms=0.055 retained_delta_mib=0.022
+round=4 chain_ms=0.051 retained_delta_mib=0.023
+round=5 chain_ms=0.053 retained_delta_mib=0.022
+RESULT mode=update n=1000000 changed=1 depth=10 rounds=5 step_ms=0.005833 chain_ms=0.055 drop_ms=0.004 retained_delta_mib=0.023
+       11.56 real        11.42 user         0.12 sys
+           807796736  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               49514  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                 527  involuntary context switches
+        180513229150  instructions retired
+         43048634348  cycles elapsed
+           807404480  peak memory footprint
+
+
+CASE merkle-update-single
+fixture count=1000000 inbox_size=200 build_s=11.278 base_live_mib=615.373
+clone_drop_ns=4.3
+round=1 chain_ms=3.120 retained_delta_mib=0.463
+round=2 chain_ms=1.548 retained_delta_mib=0.463
+round=3 chain_ms=1.521 retained_delta_mib=0.463
+RESULT mode=update single_l2=true n=1000000 changed=32 depth=10 rounds=3 step_ms=0.154416 chain_ms=1.548 drop_ms=0.103 retained_delta_mib=0.463
+RSS_peak_bytes=808353792
+
+PRODUCTION SINGLE-KEY SWITCH (same host and workload)
+QueueMap source SHA-256:
+  f51bc56d5b588f9c3213b4c0a2c472470081de3a003133f176be9e06eff64db9  maps.rs
+Production now uses update_single for L2 mutations, with one DApp COW and
+one L1 update. Bulk snapshot construction/deserialization still uses batches.
+These runs use the benchmark default, matching the production L2 strategy.
+Run directly without /usr/bin/time; no new RSS measurement in this section.
+Node tests: 237 default and 244 with message DB passed; 16 ignored in each.
+A regression test compares single and batch roots, keys and inbox contents
+after replacement, deletion, insertion and duplicate-key updates.
+
+CASE production-single-update
+fixture count=1000000 inbox_size=200 build_s=11.430 base_live_mib=615.373
+clone_drop_ns=4.4
+round=1 chain_ms=3.652 retained_delta_mib=0.463
+round=2 chain_ms=1.844 retained_delta_mib=0.463
+round=3 chain_ms=1.628 retained_delta_mib=0.463
+RESULT mode=update batch_l2=false n=1000000 changed=32 depth=10 rounds=3 step_ms=0.186917 chain_ms=1.844 drop_ms=0.130 retained_delta_mib=0.463
+
+
+CASE production-single-insert
+fixture count=1000000 inbox_size=200 build_s=11.325 base_live_mib=615.373
+clone_drop_ns=4.3
+round=1 chain_ms=62.203 retained_delta_mib=738.518
+round=2 chain_ms=22.708 retained_delta_mib=738.518
+round=3 chain_ms=23.506 retained_delta_mib=738.517
+RESULT mode=insert batch_l2=false n=1000000 changed=32 depth=10 rounds=3 step_ms=2.629834 chain_ms=23.506 drop_ms=0.784 retained_delta_mib=738.518
+
+
+CASE production-single-delete
+fixture count=1000000 inbox_size=200 build_s=11.307 base_live_mib=615.373
+clone_drop_ns=4.1
+round=1 chain_ms=58.114 retained_delta_mib=721.918
+round=2 chain_ms=20.263 retained_delta_mib=721.918
+round=3 chain_ms=19.085 retained_delta_mib=721.918
+RESULT mode=delete batch_l2=false n=1000000 changed=32 depth=10 rounds=3 step_ms=2.028125 chain_ms=20.263 drop_ms=0.769 retained_delta_mib=721.918
+
+INITIAL BUILD SINGLE-KEY SWITCH
+QueueMap source SHA-256:
+  a57013700a5bfaba279e00ea37f5217fc674cacbd476d36a903e09acf0dd10eb  maps.rs
+Initial benchmark fixture construction and QueueMap deserialization now use
+update_single for every entry. Snapshot duplicate/scope checks remain in place.
+The snapshot byte format and resulting Merkle roots are unchanged.
+The previous section's bulk-initialization statement describes the earlier code.
+Node tests: 238 default and 245 with message DB passed; 16 ignored in each.
+A new test compares a single-key build from empty against bulk construction,
+and checks the root and inbox contents after snapshot serialization/rebuilding.
+Command:
+  /usr/bin/time -l /Volumes/x5/cargo-target/release/inbox-map-bench merkle update 1000000 32 10 3
+CASE production-single-build
+fixture count=1000000 inbox_size=200 build_s=10.437 base_live_mib=615.373
+clone_drop_ns=4.3
+round=1 chain_ms=1.952 retained_delta_mib=0.463
+round=2 chain_ms=1.565 retained_delta_mib=0.463
+round=3 chain_ms=1.618 retained_delta_mib=0.463
+RESULT mode=update batch_l2=false n=1000000 changed=32 depth=10 rounds=3 step_ms=0.163500 chain_ms=1.618 drop_ms=0.106 retained_delta_mib=0.463
+       11.04 real        10.69 user         0.12 sys
+           648593408  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               39779  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                 713  involuntary context switches
+        145740509649  instructions retired
+         40112852959  cycles elapsed
+           647840632  peak memory footprint
+
+BALANCED LAYOUT: 1000 DAPPS x 1000 ACCOUNTS, RETAINED HISTORY
+Benchmark source SHA-256:
+  cdc39616eccc660fd01f2626ab0633782fad4609530be5ee0d1303c3307ee35e  src/main.rs
+Same host, release build, no production-code changes for this experiment.
+Total inbox count remains 1,000,000. DApp 0 uses zero ID; other DApps
+use deterministic Blake3 IDs. Account IDs use Blake3(global index).
+DApps are populated one at a time; account insertion order is not hash-sorted.
+Routing options are explicit: --dapps=1000, default remains --dapps=1.
+Each block changes 32 inboxes in 32 distinct DApps.
+The original state and 10 consecutive successor versions stay alive together;
+no old state is dropped while the chain is built.
+Memory checkpoints show extra live allocator bytes for retained successors.
+Memory excludes the preallocated update inputs/new inbox values, like earlier runs.
+Totals quoted as base + retained delta describe the storage comparison, not full node RSS.
+The benchmark still verifies all historical versions against their own expected contents.
+A small unit test also checks balanced placement and 11 retained versions against legacy.
+
+Commands:
+  cargo run --release -p inbox-map-bench -- merkle update 1000000 32 10 3 --dapps=1000
+  Substitute legacy|merkle and update|insert|delete.
+  cargo test -p inbox-map-bench --offline
+
+
+CASE 1000-legacy-update
+fixture count=1000000 dapps=1000 accounts_per_dapp=1000 inbox_size=200 build_s=0.566 base_live_mib=393.555
+clone_drop_ns=8540.4
+round=1 chain_ms=14.986 retained_delta_mib=38.275
+round=2 chain_ms=8.529 retained_delta_mib=38.275
+retained_successors=1 extra_live_mib=3.861
+retained_successors=5 extra_live_mib=19.204
+retained_successors=10 extra_live_mib=38.275
+round=3 chain_ms=9.186 retained_delta_mib=38.275
+RESULT mode=update batch_l2=false dapps=1000 n=1000000 changed=32 depth=10 rounds=3 step_ms=0.919833 chain_ms=9.186 drop_ms=9.114 retained_delta_mib=38.275
+
+
+CASE 1000-legacy-insert
+fixture count=1000000 dapps=1000 accounts_per_dapp=1000 inbox_size=200 build_s=0.581 base_live_mib=393.555
+clone_drop_ns=8471.1
+round=1 chain_ms=13.222 retained_delta_mib=78.276
+round=2 chain_ms=10.963 retained_delta_mib=78.276
+retained_successors=1 extra_live_mib=7.885
+retained_successors=5 extra_live_mib=39.175
+retained_successors=10 extra_live_mib=78.276
+round=3 chain_ms=13.648 retained_delta_mib=78.276
+RESULT mode=insert batch_l2=false dapps=1000 n=1000000 changed=32 depth=10 rounds=3 step_ms=1.195875 chain_ms=13.222 drop_ms=9.371 retained_delta_mib=78.276
+
+
+CASE 1000-legacy-delete
+fixture count=1000000 dapps=1000 accounts_per_dapp=1000 inbox_size=200 build_s=0.563 base_live_mib=393.555
+clone_drop_ns=8841.3
+round=1 chain_ms=14.377 retained_delta_mib=58.298
+round=2 chain_ms=10.349 retained_delta_mib=58.298
+retained_successors=1 extra_live_mib=5.865
+retained_successors=5 extra_live_mib=29.217
+retained_successors=10 extra_live_mib=58.298
+round=3 chain_ms=11.585 retained_delta_mib=58.298
+RESULT mode=delete batch_l2=false dapps=1000 n=1000000 changed=32 depth=10 rounds=3 step_ms=1.171667 chain_ms=11.585 drop_ms=8.961 retained_delta_mib=58.298
+
+
+CASE 1000-merkle-update
+fixture count=1000000 dapps=1000 accounts_per_dapp=1000 inbox_size=200 build_s=6.548 base_live_mib=598.556
+clone_drop_ns=4.3
+round=1 chain_ms=10.968 retained_delta_mib=0.636
+round=2 chain_ms=8.791 retained_delta_mib=0.636
+retained_successors=1 extra_live_mib=0.064
+retained_successors=5 extra_live_mib=0.318
+retained_successors=10 extra_live_mib=0.636
+round=3 chain_ms=9.001 retained_delta_mib=0.636
+RESULT mode=update batch_l2=false dapps=1000 n=1000000 changed=32 depth=10 rounds=3 step_ms=0.903166 chain_ms=9.001 drop_ms=0.230 retained_delta_mib=0.636
+
+
+CASE 1000-merkle-insert
+fixture count=1000000 dapps=1000 accounts_per_dapp=1000 inbox_size=200 build_s=6.568 base_live_mib=598.556
+clone_drop_ns=4.3
+round=1 chain_ms=14.438 retained_delta_mib=40.689
+round=2 chain_ms=11.111 retained_delta_mib=40.689
+retained_successors=1 extra_live_mib=4.070
+retained_successors=5 extra_live_mib=20.344
+retained_successors=10 extra_live_mib=40.689
+round=3 chain_ms=11.204 retained_delta_mib=40.689
+RESULT mode=insert batch_l2=false dapps=1000 n=1000000 changed=32 depth=10 rounds=3 step_ms=1.141625 chain_ms=11.204 drop_ms=0.282 retained_delta_mib=40.689
+
+
+CASE 1000-merkle-delete
+fixture count=1000000 dapps=1000 accounts_per_dapp=1000 inbox_size=200 build_s=6.573 base_live_mib=598.556
+clone_drop_ns=4.4
+round=1 chain_ms=13.483 retained_delta_mib=20.592
+round=2 chain_ms=10.516 retained_delta_mib=20.592
+retained_successors=1 extra_live_mib=2.059
+retained_successors=5 extra_live_mib=10.296
+retained_successors=10 extra_live_mib=20.592
+round=3 chain_ms=10.234 retained_delta_mib=20.591
+RESULT mode=delete batch_l2=false dapps=1000 n=1000000 changed=32 depth=10 rounds=3 step_ms=1.056791 chain_ms=10.516 drop_ms=0.273 retained_delta_mib=20.592

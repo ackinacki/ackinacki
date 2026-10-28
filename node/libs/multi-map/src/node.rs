@@ -5,47 +5,57 @@ use crate::ops::hash_branch_empty;
 use crate::ops::hash_branch_sparse;
 use crate::ops::hash_ext;
 use crate::ops::hash_leaf_value;
+use crate::MultiMapAugmentation;
 use crate::MultiMapValue;
 
 /// Per-variant Arc node layout. Each variant holds its own Arc to a tightly sized struct.
 /// `Node::Empty` replaces `Option<Arc<Node>>` / `None`.
 /// `sizeof(Node<V>)` = 16 bytes (discriminant and pointer).
 #[derive(Clone)]
-pub enum Node<V: MultiMapValue> {
+pub enum NodeAug<V: MultiMapValue, A: MultiMapAugmentation> {
     Empty,
-    Leaf(Arc<LeafData<V>>),
-    Branch(Arc<BranchData<V>>),
-    Ext(Arc<ExtData<V>>),
+    Leaf(Arc<LeafDataAug<V, A>>),
+    Branch(Arc<BranchDataAug<V, A>>),
+    Ext(Arc<ExtDataAug<V, A>>),
 }
 
-pub struct LeafData<V: MultiMapValue> {
+pub type Node<V> = NodeAug<V, ()>;
+pub type LeafData<V> = LeafDataAug<V, ()>;
+pub type BranchData<V> = BranchDataAug<V, ()>;
+pub type ExtData<V> = ExtDataAug<V, ()>;
+
+pub struct LeafDataAug<V: MultiMapValue, A: MultiMapAugmentation> {
     pub hash: [u8; 32],
     pub value: V,
+    pub augmentation: A,
     pub(crate) _live_counter: LiveMultiMapNodeCounter,
 }
 
-pub struct BranchData<V: MultiMapValue> {
+pub struct BranchDataAug<V: MultiMapValue, A: MultiMapAugmentation> {
     pub hash: [u8; 32],
     pub bitmap: u16,
-    pub children: [Node<V>; 16],
+    pub children: [NodeAug<V, A>; 16],
+    pub augmentation: A,
     pub(crate) _live_counter: LiveMultiMapNodeCounter,
 }
 
-pub struct ExtData<V: MultiMapValue> {
+pub struct ExtDataAug<V: MultiMapValue, A: MultiMapAugmentation> {
     pub hash: [u8; 32],
     pub nibble_count: u8,
     pub nibbles: [u8; 64],
-    pub child: Node<V>,
+    pub child: NodeAug<V, A>,
+    pub augmentation: A,
     pub(crate) _live_counter: LiveMultiMapNodeCounter,
 }
 
-impl<V: MultiMapValue> Node<V> {
+impl<V: MultiMapValue, A: MultiMapAugmentation> NodeAug<V, A> {
     /// Create a leaf node. Hash = H(0x01 || value).
-    pub fn new_leaf(value: V) -> Self {
+    pub fn new_leaf_aug(value: V, augmentation: A) -> Self {
         let hash = hash_leaf_value(&value);
-        Node::Leaf(Arc::new(LeafData {
+        NodeAug::Leaf(Arc::new(LeafDataAug {
             hash,
             value,
+            augmentation,
             _live_counter: LiveMultiMapNodeCounter::new(),
         }))
     }
@@ -54,11 +64,42 @@ impl<V: MultiMapValue> Node<V> {
     ///
     /// IMPORTANT: this does NOT perform Patricia's compression.
     /// Use `make_branch()` from the ops module for the compressing variant.
-    pub fn new_branch(bitmap: u16, children: [Node<V>; 16]) -> Self {
+    pub fn new_branch(bitmap: u16, children: [NodeAug<V, A>; 16]) -> Self {
         let mut nibs = [0u8; 16];
         let mut hashes = [[0u8; 32]; 16];
         let mut out_len = 0usize;
 
+        for nib in 0..16u8 {
+            let child = &children[nib as usize];
+            if bitmap & (1u16 << nib) != 0 {
+                nibs[out_len] = nib;
+                hashes[out_len] = child.hash();
+                out_len += 1;
+            }
+        }
+
+        let hash = hash_branch_sparse(bitmap, &nibs[..out_len], &hashes[..out_len]);
+        let augmentation = children
+            .iter()
+            .filter_map(NodeAug::augmentation_ref)
+            .fold(A::identity(), |acc, child| A::combine(&acc, child));
+        NodeAug::Branch(Arc::new(BranchDataAug {
+            hash,
+            bitmap,
+            children,
+            augmentation,
+            _live_counter: LiveMultiMapNodeCounter::new(),
+        }))
+    }
+
+    pub(crate) fn new_branch_with_augmentation(
+        bitmap: u16,
+        children: [NodeAug<V, A>; 16],
+        augmentation: A,
+    ) -> Self {
+        let mut nibs = [0u8; 16];
+        let mut hashes = [[0u8; 32]; 16];
+        let mut out_len = 0usize;
         for nib in 0..16u8 {
             if bitmap & (1u16 << nib) != 0 {
                 nibs[out_len] = nib;
@@ -66,19 +107,19 @@ impl<V: MultiMapValue> Node<V> {
                 out_len += 1;
             }
         }
-
         let hash = hash_branch_sparse(bitmap, &nibs[..out_len], &hashes[..out_len]);
-        Node::Branch(Arc::new(BranchData {
+        NodeAug::Branch(Arc::new(BranchDataAug {
             hash,
             bitmap,
             children,
+            augmentation,
             _live_counter: LiveMultiMapNodeCounter::new(),
         }))
     }
 
     /// Create an extension node. `nibbles` are unpacked (one nibble per byte).
     /// Hash = H(0x03 || len || packed_nibbles || child_hash).
-    pub fn new_ext(nibbles: &[u8], child: Node<V>) -> Self {
+    pub fn new_ext(nibbles: &[u8], child: NodeAug<V, A>) -> Self {
         debug_assert!(!nibbles.is_empty());
         debug_assert!(nibbles.len() <= 64);
 
@@ -96,45 +137,67 @@ impl<V: MultiMapValue> Node<V> {
         }
 
         let hash = hash_ext(nibble_count, &packed[..packed_len], &child.hash());
-        Node::Ext(Arc::new(ExtData {
+        let augmentation = child.augmentation();
+        NodeAug::Ext(Arc::new(ExtDataAug {
             hash,
             nibble_count,
             nibbles: nibble_arr,
             child,
+            augmentation,
             _live_counter: LiveMultiMapNodeCounter::new(),
         }))
     }
 
     /// Create a branch node WITHOUT computing the hash.
     /// ONLY for temporary nodes in ensure_branch_at_depth — the hash is never read.
-    pub fn new_branch_unhashed(children: [Node<V>; 16]) -> Self {
+    pub fn new_branch_unhashed(children: [NodeAug<V, A>; 16]) -> Self {
         let mut bitmap: u16 = 0;
+        let mut augmentation = A::identity();
         for nib in 0..16u16 {
-            if !children[nib as usize].is_empty() {
+            if let Some(child_augmentation) = children[nib as usize].augmentation_ref() {
                 bitmap |= 1u16 << nib;
+                augmentation = A::combine(&augmentation, child_augmentation);
             }
         }
-        Node::Branch(Arc::new(BranchData {
+        NodeAug::Branch(Arc::new(BranchDataAug {
             hash: [0; 32],
             bitmap,
             children,
+            augmentation,
+            _live_counter: LiveMultiMapNodeCounter::new(),
+        }))
+    }
+
+    pub(crate) fn new_branch_unhashed_single(nib: u8, child: NodeAug<V, A>) -> Self {
+        debug_assert!(nib < 16);
+        debug_assert!(!child.is_empty());
+        let augmentation = child.augmentation();
+        let mut children: [NodeAug<V, A>; 16] = Default::default();
+        children[nib as usize] = child;
+        NodeAug::Branch(Arc::new(BranchDataAug {
+            hash: [0; 32],
+            bitmap: 1u16 << nib,
+            children,
+            augmentation,
             _live_counter: LiveMultiMapNodeCounter::new(),
         }))
     }
 
     /// Create an ext node WITHOUT computing the hash.
     /// ONLY for temporary nodes in ensure_branch_at_depth — the hash is never read.
-    pub fn new_ext_unhashed(nibbles: &[u8], child: Node<V>) -> Self {
+    pub fn new_ext_unhashed(nibbles: &[u8], child: NodeAug<V, A>) -> Self {
         debug_assert!(!nibbles.is_empty());
         debug_assert!(nibbles.len() <= 64);
         let nibble_count = nibbles.len() as u8;
         let mut nibble_arr = [0u8; 64];
         nibble_arr[..nibbles.len()].copy_from_slice(nibbles);
-        Node::Ext(Arc::new(ExtData {
+        let augmentation = child.augmentation();
+        NodeAug::Ext(Arc::new(ExtDataAug {
             hash: [0; 32],
             nibble_count,
             nibbles: nibble_arr,
             child,
+            augmentation,
             _live_counter: LiveMultiMapNodeCounter::new(),
         }))
     }
@@ -142,22 +205,46 @@ impl<V: MultiMapValue> Node<V> {
     /// Get the hash of any node variant.
     pub fn hash(&self) -> [u8; 32] {
         match self {
-            Node::Empty => empty_map_hash(),
-            Node::Leaf(d) => d.hash,
-            Node::Branch(d) => d.hash,
-            Node::Ext(d) => d.hash,
+            NodeAug::Empty => empty_map_hash(),
+            NodeAug::Leaf(d) => d.hash,
+            NodeAug::Branch(d) => d.hash,
+            NodeAug::Ext(d) => d.hash,
+        }
+    }
+
+    pub fn augmentation(&self) -> A {
+        match self {
+            NodeAug::Empty => A::identity(),
+            NodeAug::Leaf(d) => d.augmentation.clone(),
+            NodeAug::Branch(d) => d.augmentation.clone(),
+            NodeAug::Ext(d) => d.augmentation.clone(),
+        }
+    }
+
+    pub(crate) fn augmentation_ref(&self) -> Option<&A> {
+        match self {
+            NodeAug::Empty => None,
+            NodeAug::Leaf(d) => Some(&d.augmentation),
+            NodeAug::Branch(d) => Some(&d.augmentation),
+            NodeAug::Ext(d) => Some(&d.augmentation),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        matches!(self, Node::Empty)
+        matches!(self, NodeAug::Empty)
+    }
+}
+
+impl<V: MultiMapValue> NodeAug<V, ()> {
+    pub fn new_leaf(value: V) -> Self {
+        Self::new_leaf_aug(value, ())
     }
 }
 
 /// Default is Empty.
-impl<V: MultiMapValue> Default for Node<V> {
+impl<V: MultiMapValue, A: MultiMapAugmentation> Default for NodeAug<V, A> {
     fn default() -> Self {
-        Node::Empty
+        NodeAug::Empty
     }
 }
 

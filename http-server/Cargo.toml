@@ -18,6 +18,7 @@ salvo.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
+snapshot-storage.workspace = true
 telemetry_utils.workspace = true
 # Not used directly here — this activates the workspace-wide pin that holds the
 # transitive `time` crate at a cookie-compatible version (see root Cargo.toml).
@@ -34,3 +35,4 @@ message-router.workspace = true
 actix-rt = "2.10.0"
 actix-web.workspace = true
 lazy_static.workspace = true
+tempfile.workspace = true

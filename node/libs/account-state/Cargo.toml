@@ -56,5 +56,13 @@ path = "src/bin/archive_summary.rs"
 name = "update_maps"
 harness = false
 
+[[bench]]
+name = "account_partition"
+harness = false
+
+[[bench]]
+name = "snapshot_export"
+harness = false
+
 [features]
 disable-live-counting = ["multi-map/disable-live-counting"]

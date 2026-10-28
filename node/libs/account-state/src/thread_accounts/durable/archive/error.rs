@@ -59,7 +59,7 @@ impl fmt::Display for ArchiveStateError {
             Self::CorruptedControlRecord(tid, reason) => {
                 write!(f, "Corrupted control record for thread {tid}: {reason}")
             }
-            Self::Store(e) => write!(f, "Store error: {e}"),
+            Self::Store(e) => write!(f, "Store error: {e:#}"),
         }
     }
 }

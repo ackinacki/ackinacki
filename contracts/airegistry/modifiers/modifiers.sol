@@ -68,6 +68,37 @@ abstract contract AiRegistryModifiers is AiRegistryErrors {
     // Forwarded value for child -> parent registration messages.
     varuint16 constant REGISTER_FORWARD_VALUE = 5 vmshell;
 
+    // ── Per-entry gas charge (measured, #950) ───────────────────────────────────────────────
+    // Every call into a deal burns SHELL ECC for the work it causes: the caller attaches the
+    // amount below, the entry burns exactly that, and the fee lands on the sender under flag 1.
+    // The deal no longer relies on a funder's one-time deposit to stay alive — it lives in the
+    // ordinary dapp now, so `ensureBalance` covers the native side and these charge the caller
+    // for what the call costs the network.
+    //
+    // The figures come from the measured campaign in #950, rounded UP to the next 0.005: the
+    // deployment run cost 0.23684 vmshell across eleven transactions, and each entry's share was
+    // measured on its own transaction rather than divided out of the total. The 4.0.35 correction
+    // from live shellnet is folded in — the claim shelf settled at ~0.0124 once the two-slot
+    // conveyor removed two state variables, and 0.015 is that number rounded up.
+    //
+    // Rounding UP per entry is deliberate and does NOT sum to the deal's lifetime figure: adding
+    // the rounded rows gives 0.260 against a measured 0.23684, because every row carries its own
+    // margin. Sizing a whole deal is a separate question, answered by the formula in #950
+    // (~0.215 constant + 0.013 per tick); these constants price ONE call.
+    uint64 constant GAS_DEPLOY          = 0.100 vmshell;  // measured 0.09705 — the code-carrying message
+    uint64 constant GAS_TERMINAL        = 0.045 vmshell;  // measured 0.04262 (stop); every wind-down path
+    uint64 constant GAS_POST_FROM_NOTE  = 0.025 vmshell;  // measured 0.02344
+    uint64 constant GAS_FUND_FROM_BOOK  = 0.020 vmshell;  // measured 0.01865
+    uint64 constant GAS_OPEN            = 0.015 vmshell;  // measured 0.01174
+    uint64 constant GAS_ACCEPT_PROBE    = 0.015 vmshell;  // measured 0.01324
+    uint64 constant GAS_CLAIM           = 0.015 vmshell;  // shellnet 4.0.35 shelf 0.0124
+    uint64 constant GAS_FUND_DEAL       = 0.010 vmshell;  // measured 0.00685
+    // Entries the #950 run never exercised, priced by the closest measured neighbour rather than
+    // left unpriced: the accounting entries do a claim's work (`GAS_CLAIM`), and the ones that only
+    // record or read take the floor the campaign's cheapest row established (0.001 -> 0.005).
+    uint64 constant GAS_SETTLE          = 0.015 vmshell;  // finalize / settleWeek — claim-shaped work
+    uint64 constant GAS_LIGHT           = 0.005 vmshell;  // onSellClosed / touchDeal / withdrawShell
+
     // External address constants for directed events (off-chain subscribers).
     uint constant bitCntAddress = 256;
     uint128 constant RootRegisteredEmit          = 700;

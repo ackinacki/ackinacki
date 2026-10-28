@@ -1,12 +1,21 @@
+mod account_partition_codec;
+mod account_validation;
 pub(crate) mod accumulator;
 pub mod archive;
 pub(crate) mod kv_store;
 mod legacy;
 mod maps;
+mod ordered_export;
+mod partition;
 pub(crate) mod repository;
+mod snapshot_v1;
+mod snapshot_v1_export;
 
 use std::fmt::Display;
 
+pub use account_partition_codec::read_account_partition_checked;
+pub use account_partition_codec::write_account_partition_checked;
+pub use account_partition_codec::ACCOUNT_PARTITION_MAGIC;
 pub use accumulator::AnchorBlockRef;
 pub use accumulator::FlushGuard;
 pub use accumulator::PinHandle;
@@ -20,14 +29,16 @@ pub use archive::update::ThreadSnapshot;
 pub use kv_store::KVRecord;
 pub use kv_store::KVStore;
 pub use legacy::ensure_legacy_durable_snapshot_is_empty;
+pub use maps::AccountCapacity;
 pub use maps::DurableThreadAccountsIter;
 pub use maps::ThreadAccountMap;
-pub use maps::ThreadAccountMapRepository;
 use multi_map::MultiMapValue;
 use node_types::AccountHash;
 use node_types::AccountRouting;
 use node_types::Blake3Hashable;
 use node_types::DAppIdentifier;
+pub use ordered_export::PartitionReadLimits;
+pub use partition::AccountPartition;
 pub use repository::AccountHashMismatchError;
 pub use repository::BlockAccountOperation;
 pub use repository::DurableThreadAccountsRepository;
@@ -40,14 +51,15 @@ use serde::Serialize;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AccountInfo {
     Redirect(DAppIdentifier),
-    VmAccountHash(AccountHash),
+    /// Hash of the complete account version (TVM ShardAccount, not its inner Account).
+    AccountHash(AccountHash),
 }
 
 impl Display for AccountInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AccountInfo::Redirect(dapp_id) => write!(f, "Redirect({})", dapp_id),
-            AccountInfo::VmAccountHash(account_hash) => {
+            AccountInfo::AccountHash(account_hash) => {
                 write!(f, "{}", account_hash.to_hex_string())
             }
         }
@@ -60,7 +72,7 @@ impl Blake3Hashable for AccountInfo {
             AccountInfo::Redirect(dapp_id) => {
                 hasher.update(dapp_id.as_slice());
             }
-            AccountInfo::VmAccountHash(account_hash) => {
+            AccountInfo::AccountHash(account_hash) => {
                 hasher.update(account_hash.as_slice());
             }
         }
@@ -75,7 +87,7 @@ impl MultiMapValue for AccountInfo {
                 w.write_all(&[1u8])?;
                 w.write_all(dapp_id.as_slice())?;
             }
-            AccountInfo::VmAccountHash(account_hash) => {
+            AccountInfo::AccountHash(account_hash) => {
                 w.write_all(&[2u8])?;
                 w.write_all(account_hash.as_slice())?;
             }
@@ -95,7 +107,7 @@ impl MultiMapValue for AccountInfo {
             2u8 => {
                 let mut account_hash_bytes = [0u8; 32];
                 r.read_exact(&mut account_hash_bytes)?;
-                AccountInfo::VmAccountHash(AccountHash::new(account_hash_bytes))
+                AccountInfo::AccountHash(AccountHash::new(account_hash_bytes))
             }
             _ => anyhow::bail!("Unknown account info tag: {}", tag[0]),
         })

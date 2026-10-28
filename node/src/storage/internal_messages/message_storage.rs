@@ -9,7 +9,6 @@ use aerospike::Value;
 use node_types::AccountRouting;
 use parking_lot::Mutex;
 use telemetry_utils::now_ms;
-use tvm_block::GetRepresentationHash;
 
 use crate::helper::metrics::AEROSPIKE_OBJECT_TYPE_INT_MESSAGES;
 use crate::message::identifier::MessageIdentifier;
@@ -71,8 +70,7 @@ impl MessageDurableStorage {
         for (routing, messages) in messages {
             let dest = routing.to_hex_string();
             for message in messages {
-                let hash =
-                    message.1.message.hash().expect("message must have hash").to_hex_string();
+                let hash = message.0.inner().hash.to_hex_string();
                 let blob = bincode::serialize(&message.1)?;
 
                 let last_seq = {
@@ -262,6 +260,40 @@ fn monotonic_prefix_len(xs: &[i64]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(feature = "messages_db", not(feature = "disable_db_for_messages")))]
+    #[test]
+    fn durable_messages_preserve_canonical_bodies_and_legacy_record_bytes() {
+        use tvm_block::InternalMessageHeader;
+        use tvm_block::Message;
+        use tvm_block::Serializable;
+
+        let store = MemStore::new();
+        let db = MessageDurableStorage::new(store.clone(), "canonical-message-test");
+        let mut header = InternalMessageHeader::default();
+        header.created_lt = 7;
+        let native = Message::with_int_header(header);
+        let id = MessageIdentifier::from(&native);
+        let body = Arc::new(WrappedMessage::from_tvm(&native));
+        let routing = AccountRouting::default();
+        db.write_messages(HashMap::from([(routing, vec![(id.clone(), body.clone())])])).unwrap();
+        let hash = id.inner().hash.to_hex_string();
+        let raw = store
+            .get(&db.message_key(&hash), &[BIN_BLOB].into(), AEROSPIKE_OBJECT_TYPE_INT_MESSAGES)
+            .unwrap()
+            .unwrap();
+        let Some(Value::Blob(wire)) = raw.get(BIN_BLOB) else {
+            panic!("missing body");
+        };
+        assert_eq!(wire, &bincode::serialize(&native.write_to_bytes().unwrap()).unwrap());
+        let (seq, loaded) = db.read_message(&hash).unwrap().unwrap();
+        assert_eq!(loaded.canonical_bytes(), body.canonical_bytes());
+        assert_eq!(loaded.identifier(), id);
+        assert_eq!(loaded.tvm_message().unwrap(), &native);
+        let (batch, cursor) = db.next_simple(&routing.to_hex_string(), seq - 1, 1).unwrap();
+        assert_eq!(batch, vec![loaded]);
+        assert_eq!(cursor, Some(seq));
+    }
 
     #[test]
     fn test_find_monotonicity_border() {

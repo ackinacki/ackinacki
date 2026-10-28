@@ -57,6 +57,25 @@ pub type HistoryLayerData = BTreeMap<LayerNumber, HistoryBlockData>;
 pub type GlobalHistoryData = Arc<RwLock<HistoryLayerData>>;
 pub type GlobalHistoryDataSnapshot = HistoryLayerData;
 
+/// Compare cursor contents, not the stale buffer slots left after a window rolls over.
+pub fn history_cursors_match(left: &HistoryLayerData, right: &HistoryLayerData) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|((layer, a), (other_layer, b))| {
+            layer == other_layer
+                && a.thread_id == b.thread_id
+                && a.last_processed_block_height == b.last_processed_block_height
+                && a.data_len == b.data_len
+                && a.data_len <= HISTORY_PROOF_WINDOW_SIZE
+                && a.data[..a.data_len] == b.data[..b.data_len]
+                // A cleared layer can still expose its previous window's last
+                // hash through history_cursor_layer_hashes; do not ignore it.
+                && (a.data_len != 0
+                    || *a.last_processed_block_height.height() == 0
+                    || a.data[HISTORY_PROOF_WINDOW_SIZE - 1]
+                        == b.data[HISTORY_PROOF_WINDOW_SIZE - 1])
+        })
+}
+
 pub fn history_proof_thread_id() -> ThreadIdentifier {
     ThreadIdentifier::default()
 }
@@ -397,8 +416,66 @@ mod tests {
     use node_types::AccountIdentifier;
     use node_types::DAppIdentifier;
 
-    use super::compute_block_leaf_hash;
-    use super::compute_ext_out_messages_root;
+    use super::*;
+
+    #[test]
+    fn history_cursor_comparison_ignores_only_inactive_buffer_slots() {
+        let mut layer = HistoryBlockData::new();
+        for height in 1..=HISTORY_PROOF_WINDOW_SIZE as u64 + 1 {
+            layer
+                .update_from_pure_data(
+                    [height as u8; 32],
+                    BlockHeight::builder()
+                        .height(height)
+                        .thread_identifier(history_proof_thread_id())
+                        .build(),
+                )
+                .unwrap();
+        }
+        let original = BTreeMap::from_iter([(0, layer)]);
+        let normalized = normalize_history_layer_data(original.clone());
+        assert_ne!(original, normalized);
+        assert!(history_cursors_match(&original, &normalized));
+        assert!(history_cursors_match(&normalized, &original));
+
+        let mut changed = normalized.clone();
+        changed.get_mut(&0).unwrap().data[0] = [0xFE; 32];
+        assert!(!history_cursors_match(&original, &changed));
+        let mut changed = normalized.clone();
+        changed.get_mut(&0).unwrap().data_len += 1;
+        assert!(!history_cursors_match(&original, &changed));
+        let mut changed = normalized.clone();
+        changed.get_mut(&0).unwrap().last_processed_block_height =
+            BlockHeight::builder().height(130).thread_identifier(history_proof_thread_id()).build();
+        assert!(!history_cursors_match(&original, &changed));
+        let mut changed = normalized.clone();
+        changed.insert(1, HistoryBlockData::new());
+        assert!(!history_cursors_match(&original, &changed));
+        let changed = BTreeMap::from_iter([(1, normalized[&0].clone())]);
+        assert!(!history_cursors_match(&original, &changed));
+        let mut changed = normalized.clone();
+        changed.get_mut(&0).unwrap().thread_id =
+            ThreadIdentifier::new(&BlockIdentifier::new([0xFE; 32]), 1);
+        assert!(!history_cursors_match(&original, &changed));
+
+        let mut invalid = normalized;
+        invalid.get_mut(&0).unwrap().data_len = HISTORY_PROOF_WINDOW_SIZE + 1;
+        assert!(!history_cursors_match(&invalid, &invalid));
+    }
+
+    #[test]
+    fn cleared_history_cursor_still_compares_the_exposed_previous_window_hash() {
+        let mut layer = HistoryBlockData::new();
+        layer.last_processed_block_height =
+            BlockHeight::builder().height(128).thread_identifier(history_proof_thread_id()).build();
+        layer.data[HISTORY_PROOF_WINDOW_SIZE - 1] = [1; 32];
+        let original = BTreeMap::from_iter([(0, layer)]);
+        let mut changed = original.clone();
+        changed.get_mut(&0).unwrap().data[0] = [2; 32];
+        assert!(history_cursors_match(&original, &changed));
+        changed.get_mut(&0).unwrap().data[HISTORY_PROOF_WINDOW_SIZE - 1] = [3; 32];
+        assert!(!history_cursors_match(&original, &changed));
+    }
 
     fn routing(dapp: u8, account: u8) -> node_types::AccountRouting {
         AccountIdentifier::new([account; 32]).routing(DAppIdentifier::new([dapp; 32]))

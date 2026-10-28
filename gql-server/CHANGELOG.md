@@ -2,6 +2,19 @@
 
 All notable changes to `gql-server` are documented in this file.
 
+## [1.5.0] – 2026-10-25
+
+### Added
+- Added `blockchain.transactionByInMsg(hash: String)` to fetch a transaction by
+  its inbound message ID.
+
+### Fixed
+- Fixed nested GraphQL relation population for `blockchain.message`,
+  `blockchain.transaction`, transaction/message connections, and the deprecated
+  root `messages` / `transactions` queries. Requested `src_transaction`,
+  `dst_transaction`, `in_message`, and `out_messages` fields are now populated
+  recursively, including connection `nodes` selections.
+
 ## [1.4.0]
 
 ### Added

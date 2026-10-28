@@ -17,3 +17,4 @@ mod file_saving_service;
 pub use file_saving_service::FileSavingService;
 
 pub mod snapshot_compression;
+pub(crate) mod snapshot_runtime_import;

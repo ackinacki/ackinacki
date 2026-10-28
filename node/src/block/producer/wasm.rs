@@ -10,6 +10,13 @@ const NODE_MANDATORY_HASHES: [&str; 2] = [
     "343268736f6dbb5a075a477fb1146b3c25c114d341b41c142e6609a7d1a90a2c",
 ];
 
+const WASM_COMPONENT_OVERRIDES_ENGINE_VERSION: semver::Version = semver::Version::new(1, 0, 8);
+#[cfg(not(test))]
+const WASM_COMPONENT_OVERRIDES: &[(&str, &str)] = &[(
+    "2d577ca2e693700282d6d778dce8cfcedbada644497e411ec6aed889f5a3d5f4",
+    "0d69c25d36f1d8814c644ce96c61dbfbd8ae13e9a116d7d9f379fbaf0648b0eb",
+)];
+
 pub fn check_node_mandatory_wasm_available() {
     for hash in NODE_MANDATORY_HASHES {
         let filename = format!("{WASM_BINARY_ROOT_PATH}/{hash}");
@@ -26,6 +33,7 @@ pub struct WasmNodeCache {
     pub(crate) wasm_binary_root_path: String,
     pub(crate) wasm_hash_whitelist: HashSet<[u8; 32]>,
     pub(crate) wasm_component_cache: HashMap<[u8; 32], wasmtime::component::Component>,
+    wasm_component_cache_with_overrides: HashMap<[u8; 32], wasmtime::component::Component>,
 }
 
 impl WasmNodeCache {
@@ -42,12 +50,33 @@ impl WasmNodeCache {
             Ok(r) => r,
             Err(e) => Err(anyhow!("Couldn't init Node Wasm Engine or Components. This is a misconfiguration or a bug. Caused by: {e:?}"))?,
         };
+        #[cfg(not(test))]
+        let wasm_component_cache_with_overrides = match Self::apply_wasm_component_overrides(
+            &wasm_engine,
+            &wasm_binary_root_path,
+            wasm_component_cache.clone(),
+        ) {
+            Ok(r) => r,
+            Err(e) => Err(anyhow!("Couldn't apply Node Wasm component overrides. This is a misconfiguration or a bug. Caused by: {e:?}"))?,
+        };
+        #[cfg(test)]
+        let wasm_component_cache_with_overrides = HashMap::new();
         Ok(WasmNodeCache {
             wasm_engine,
             wasm_binary_root_path,
             wasm_hash_whitelist,
             wasm_component_cache,
+            wasm_component_cache_with_overrides,
         })
+    }
+
+    pub fn for_engine_version(&self, engine_version: &semver::Version) -> Self {
+        let mut cache = self.clone();
+        if *engine_version >= WASM_COMPONENT_OVERRIDES_ENGINE_VERSION {
+            tracing::trace!(target: "monit", "override wasm_component");
+            cache.wasm_component_cache = self.wasm_component_cache_with_overrides.clone();
+        }
+        cache
     }
 
     pub fn get_wasm_hash_whitelist() -> anyhow::Result<HashSet<[u8; 32]>> {
@@ -85,6 +114,55 @@ impl WasmNodeCache {
         // )
         // .unwrap();
         Ok(whitelist)
+    }
+
+    #[cfg(not(test))]
+    fn hash_from_hex(hash_str: &str) -> anyhow::Result<[u8; 32]> {
+        if hash_str.len() != 64 {
+            return Err(anyhow::format_err!("hash must be 64 hex chars, got {}", hash_str.len()));
+        }
+        let bytes: Vec<u8> = (0..hash_str.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hash_str[i..i + 2], 16))
+            .collect::<Result<Vec<u8>, _>>()
+            .map_err(|e| anyhow::format_err!("invalid hex in hash: {e:?}"))?;
+        bytes.try_into().map_err(|e| anyhow::format_err!("hash is not 32 bytes: {e:?}"))
+    }
+
+    #[cfg(not(test))]
+    fn apply_wasm_component_overrides(
+        wasm_engine: &wasmtime::Engine,
+        wasm_binary_root_path: &str,
+        mut cache: HashMap<[u8; 32], wasmtime::component::Component>,
+    ) -> anyhow::Result<HashMap<[u8; 32], wasmtime::component::Component>> {
+        tracing::trace!(target: "monit", "apply_wasm_component_overrides");
+        use sha2::Digest;
+        for (served_as, replacement_sha256) in WASM_COMPONENT_OVERRIDES {
+            let served_as = Self::hash_from_hex(served_as)?;
+            let expected = Self::hash_from_hex(replacement_sha256)?;
+            let path = format!("{wasm_binary_root_path}/{replacement_sha256}");
+            let binary = std::fs::read(&path)
+                .map_err(|e| anyhow::format_err!("override binary {path:?} not readable: {e:?}"))?;
+            let actual: [u8; 32] = sha2::Sha256::digest(&binary).into();
+            if actual != expected {
+                return Err(anyhow::format_err!(
+                    "override binary {path:?} sha256 {} does not match the pinned {}",
+                    hex::encode(actual),
+                    hex::encode(expected),
+                ));
+            }
+            let component = wasmtime::component::Component::new(wasm_engine, binary.as_slice())
+                .map_err(|e| {
+                    anyhow::format_err!("override binary {path:?} failed to compile: {e:?}")
+                })?;
+            log::warn!(
+                "WASM override active: hash {} now runs {path:?} (sha256 {})",
+                hex::encode(served_as),
+                hex::encode(expected),
+            );
+            cache.insert(served_as, component);
+        }
+        Ok(cache)
     }
 
     pub fn init_wasm_engine() -> anyhow::Result<wasmtime::Engine> {

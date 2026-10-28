@@ -933,6 +933,15 @@ fn process_candidate_block(
                     return Ok(ProcessingIterationResult::Continue);
                 }
             }
+            // Installation makes the parent state available to this worker
+            // before consensus necessarily accepts SyncSnapshotLoaded (it may
+            // already be waiting for a newer candidate). Start the replay
+            // activity here, not in that notification path. The shared guard
+            // survives subsequent blocks and closes on resync/catch-up exit;
+            // this instrumentation does not change the processing-mode flag.
+            if is_catching_up {
+                shared_services.set_thread_catch_up_activity(&thread_id, true);
+            }
             let (cross_thread_ref_data, _messages) = match optimistic_state.apply_block(
                 candidate_block.data(),
                 shared_services,

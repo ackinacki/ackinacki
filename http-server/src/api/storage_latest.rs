@@ -1,6 +1,7 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::path::Path;
 use std::path::PathBuf;
 
 use salvo::prelude::*;
@@ -25,7 +26,7 @@ impl Handler for StorageLatestHandler {
         res: &mut Response,
         _ctrl: &mut FlowCtrl,
     ) {
-        let file_name: String = match get_latest_file(&self.storage_dir.clone()) {
+        let file_name: String = match get_latest_file(&self.storage_dir) {
             Ok(file) => file,
             Err(e) => {
                 res.status_code(StatusCode::NOT_FOUND);
@@ -38,19 +39,11 @@ impl Handler for StorageLatestHandler {
     }
 }
 
-fn get_latest_file(storage_dir: &PathBuf) -> anyhow::Result<String> {
-    match std::fs::read_dir(storage_dir)?
-        .flatten()
-        .filter_map(|e| match e.metadata() {
-            Ok(metadata) if metadata.is_file() => Some((e.file_name(), metadata.modified())),
-            _ => None,
-        })
-        .filter_map(|v| match v.1 {
-            Ok(modified) => Some((v.0, modified)),
-            _ => None,
-        })
-        .max_by_key(|&(_, modified)| modified)
-        .map(|(file, _)| file.to_string_lossy().to_string())
+fn get_latest_file(storage_dir: &Path) -> anyhow::Result<String> {
+    match snapshot_storage::snapshot_headers(storage_dir)?
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)))
+        .map(|(file, _)| file)
     {
         Some(file) => Ok(file),
         None => anyhow::bail!("No file found in storage directory"),

@@ -188,67 +188,74 @@ impl BlockProducer for TVMBlockProducer {
         };
         let block_height = parent_block_height.next(&thread_identifier);
 
-        let (initial_state, _in_table, white_list_of_slashing_messages_hashes, forwarded_messages) =
-            trace_span!("pre processing").in_scope(|| {
-                tracing::trace!("Start production");
-                tracing::trace!(
-                    "Producing block for {}, parent_seq_no: {}, refs: {:?}",
-                    thread_identifier,
-                    parent_state.block_seq_no,
-                    refs.clone()
-                        .map(|e| (*e.block_thread_identifier(), *e.block_seq_no()))
-                        .collect::<Vec<_>>()
-                );
-                let mut wrapped_slash_messages = vec![];
-                let mut white_list_of_slashing_messages_hashes = HashSet::new();
-                trace_span!("nacks").in_scope(|| {
-                    for nack in self.block_nack.iter() {
-                        tracing::trace!("push nack into slash {:?}", nack);
-                        let reason = nack.data().reason.clone();
-                        if let Some((id, bls_key, addr)) =
-                            reason.get_node_data(self.block_state_repository.clone())
-                        {
-                            let epoch_nack_data = BlockKeeperSlashData {
-                                node_id: id,
-                                bls_pubkey: bls_key,
-                                addr,
-                                slash_type: 0,
-                            };
-                            let msg = create_wallet_slash_message(&epoch_nack_data)?;
-                            let wrapped_message = Arc::new(WrappedMessage { message: msg.clone() });
-                            wrapped_slash_messages.push(wrapped_message);
-                            white_list_of_slashing_messages_hashes.insert(msg.hash().unwrap());
-                        }
+        let (
+            initial_state,
+            _in_table,
+            white_list_of_slashing_messages_hashes,
+            forwarded_messages,
+            added_high_priority_messages,
+            settled_messages,
+        ) = trace_span!("pre processing").in_scope(|| {
+            tracing::trace!("Start production");
+            tracing::trace!(
+                "Producing block for {}, parent_seq_no: {}, refs: {:?}",
+                thread_identifier,
+                parent_state.block_seq_no,
+                refs.clone()
+                    .map(|e| (*e.block_thread_identifier(), *e.block_seq_no()))
+                    .collect::<Vec<_>>()
+            );
+            let mut wrapped_slash_messages = vec![];
+            let mut white_list_of_slashing_messages_hashes = HashSet::new();
+            trace_span!("nacks").in_scope(|| {
+                for nack in self.block_nack.iter() {
+                    tracing::trace!("push nack into slash {:?}", nack);
+                    let reason = nack.data().reason.clone();
+                    if let Some((id, bls_key, addr)) =
+                        reason.get_node_data(self.block_state_repository.clone())
+                    {
+                        let epoch_nack_data = BlockKeeperSlashData {
+                            node_id: id,
+                            bls_pubkey: bls_key,
+                            addr,
+                            slash_type: 0,
+                        };
+                        let msg = create_wallet_slash_message(&epoch_nack_data)?;
+                        let wrapped_message = Arc::new(WrappedMessage::from_tvm(&msg));
+                        wrapped_slash_messages.push(wrapped_message);
+                        white_list_of_slashing_messages_hashes.insert(msg.hash().unwrap());
                     }
-                    Ok::<_, anyhow::Error>(())
-                })?;
-                let cross_thread_ref_data_service = self
-                    .shared_services
-                    .exec(|container| container.cross_thread_ref_data_service.clone());
-                let is_split_related =
-                    thread_identifier.is_spawning_block(parent_state.get_block_id());
-                let preprocessing_result = crate::block::preprocessing::preprocess(
-                    parent_state,
-                    refs.clone(),
-                    &thread_identifier,
-                    *block_height.height(),
-                    None,
-                    is_split_related,
-                    &cross_thread_ref_data_service,
-                    wrapped_slash_messages,
-                    self.epoch_block_keeper_data.clone(),
-                    message_db.clone(),
-                    self.metrics.clone(),
-                    &self.thread_accounts_repository,
-                    true,
-                )?;
-                Ok::<_, anyhow::Error>((
-                    preprocessing_result.state,
-                    preprocessing_result.threads_table,
-                    white_list_of_slashing_messages_hashes,
-                    preprocessing_result.redirected_messages,
-                ))
+                }
+                Ok::<_, anyhow::Error>(())
             })?;
+            let cross_thread_ref_data_service = self
+                .shared_services
+                .exec(|container| container.cross_thread_ref_data_service.clone());
+            let is_split_related = thread_identifier.is_spawning_block(parent_state.get_block_id());
+            let preprocessing_result = crate::block::preprocessing::preprocess(
+                parent_state,
+                refs.clone(),
+                &thread_identifier,
+                *block_height.height(),
+                None,
+                is_split_related,
+                &cross_thread_ref_data_service,
+                wrapped_slash_messages,
+                self.epoch_block_keeper_data.clone(),
+                message_db.clone(),
+                self.metrics.clone(),
+                &self.thread_accounts_repository,
+                true,
+            )?;
+            Ok::<_, anyhow::Error>((
+                preprocessing_result.state,
+                preprocessing_result.threads_table,
+                white_list_of_slashing_messages_hashes,
+                preprocessing_result.redirected_messages,
+                preprocessing_result.added_high_priority_messages,
+                preprocessing_result.settled_messages,
+            ))
+        })?;
 
         let ref_ids: Vec<BlockIdentifier> =
             refs.into_iter().map(|ref_data| *ref_data.block_identifier()).collect();
@@ -266,26 +273,30 @@ impl BlockProducer for TVMBlockProducer {
 
         let time = now_ms();
 
-        let producer = BlockBuilder::with_params(
-            thread_identifier,
-            *block_height.height(),
-            initial_state,
-            time,
-            block_gas_limit,
-            None,
-            Some(control_rx_stop),
-            self.thread_accounts_repository.clone(),
-            self.block_keeper_epoch_code_hash.clone(),
-            self.block_keeper_preepoch_code_hash.clone(),
-            self.parallelization_level,
-            forwarded_messages,
-            block_global_config.tracked_ext_out_account_routings.clone(),
-            self.metrics.clone(),
-            self.wasm_cache,
-            false,
-            self.check_history_proof_hash.clone(),
-        )
-        .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
+        let producer = BlockBuilder::builder()
+            .thread_id(thread_identifier)
+            .block_height(*block_height.height())
+            .initial_optimistic_state(initial_state)
+            .gen_utime_ms(time)
+            .block_gas_limit(block_gas_limit)
+            .rand_seed(None)
+            .control_rx_stop(Some(control_rx_stop))
+            .thread_accounts_repository(self.thread_accounts_repository.clone())
+            .block_keeper_epoch_code_hash(self.block_keeper_epoch_code_hash.clone())
+            .block_keeper_preepoch_code_hash(self.block_keeper_preepoch_code_hash.clone())
+            .parallelization_level(self.parallelization_level)
+            .produced_internal_messages_to_other_threads(forwarded_messages)
+            .added_high_priority_messages(added_high_priority_messages)
+            .settled_messages(settled_messages)
+            .tracked_ext_out_account_routings(
+                block_global_config.tracked_ext_out_account_routings.clone(),
+            )
+            .metrics(self.metrics.clone())
+            .wasm_cache(self.wasm_cache.for_engine_version(&block_global_config.engine_version))
+            .is_verifier(false)
+            .check_history_proof_hash(self.check_history_proof_hash.clone())
+            .build()
+            .map_err(|e| anyhow::format_err!("Failed to create block builder: {e}"))?;
         let (mut prepared_block, processed_stamps, ext_message_feedbacks) = producer.build_block(
             self.ext_messages_source,
             &blockchain_config,

@@ -2,7 +2,7 @@
 
 All notable changes to `block-manager` are documented in this file.
 
-## [Unreleased]
+## [0.10.1] – 2026-10-25
 
 ### Changed
 - Moved incoming-request `traceparent` diagnostics to the `http_server` logging target, so operators can filter these DEBUG records independently from the rest of `block_manager`.

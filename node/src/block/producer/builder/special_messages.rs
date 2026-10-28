@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use indexset::BTreeMap;
 use node_types::AccountIdentifier;
+use node_types::AccountRouting;
+use node_types::DAppIdentifier;
 use tvm_block::Augmentation;
 use tvm_block::EnqueuedMsg;
 use tvm_block::GetRepresentationHash;
@@ -24,9 +26,24 @@ use super::BlockBuilder;
 use crate::block::producer::execution_time::ExecutionTimeLimits;
 use crate::creditconfig::dappconfig::calculate_dapp_config_account_id;
 use crate::creditconfig::dappconfig::create_config_touch_message;
-use crate::message::identifier::MessageIdentifier;
 use crate::message::WrappedMessage;
 use crate::repository::optimistic_state::OptimisticState;
+
+fn enqueue_config_message(
+    queues: &mut HashMap<
+        AccountRouting,
+        Vec<(crate::message::identifier::MessageIdentifier, Arc<WrappedMessage>)>,
+    >,
+    message: &Message,
+) -> anyhow::Result<()> {
+    let header = message.int_header().ok_or_else(|| anyhow::anyhow!("int_header() is None"))?;
+    let account_id = AccountIdentifier::from(header.dst.address());
+    let routing =
+        account_id.routing_or_redirect(header.dest_dapp_id.as_ref().map(DAppIdentifier::from));
+    let wrapped = Arc::new(WrappedMessage::from_tvm(message));
+    queues.entry(routing).or_default().push((wrapped.identifier(), wrapped));
+    Ok(())
+}
 
 impl BlockBuilder {
     pub(super) fn execute_dapp_config_messages(
@@ -60,28 +77,25 @@ impl BlockBuilder {
                             anyhow::format_err!("Failed to create config touch message: {e}")
                         })?;
 
-                let dst_addr: AccountIdentifier = message
-                    .dst()
-                    .ok_or_else(|| anyhow::anyhow!("message.dst() is None"))?
-                    .address()
-                    .clone()
-                    .into();
+                // Thread ownership follows the actual dApp, but queue keys must
+                // match the wire header, just like consumption and the applier.
+                // Touch messages have no dest_dapp_id: changing their headers
+                // here would also change message hashes and block contents.
+                let dst_addr = message
+                    .int_dst_account_id()
+                    .map(AccountIdentifier::from)
+                    .ok_or_else(|| anyhow::anyhow!("message.dst() is None"))?;
                 let destination_routing = dst_addr.routing(key);
 
-                let wrapped_message = WrappedMessage { message: message.clone() };
                 if self
                     .initial_optimistic_state
                     .does_routing_belong_to_the_state(&destination_routing)
                 {
                     // If message destination matches current thread, save it in cache to possibly execute in the current block
-                    let entry = self
-                        .produced_internal_messages_to_the_current_thread
-                        .entry(destination_routing)
-                        .or_default();
-                    entry.push((
-                        MessageIdentifier::from(&wrapped_message),
-                        Arc::new(wrapped_message.clone()),
-                    ));
+                    enqueue_config_message(
+                        &mut self.produced_internal_messages_to_the_current_thread,
+                        &message,
+                    )?;
                     config_messages.push(message.clone());
                 } else {
                     // If message destination matches current thread, save it in cache to possibly execute in the current block
@@ -89,14 +103,10 @@ impl BlockBuilder {
                         "New message for another thread: {:?}",
                         message.hash().map(|h| h.to_hex_string())
                     );
-                    let entry = self
-                        .produced_internal_messages_to_other_threads
-                        .entry(destination_routing)
-                        .or_default();
-                    entry.push((
-                        MessageIdentifier::from(&wrapped_message),
-                        Arc::new(wrapped_message),
-                    ));
+                    enqueue_config_message(
+                        &mut self.produced_internal_messages_to_other_threads,
+                        &message,
+                    )?;
                 }
                 let info =
                     message.int_header().ok_or_else(|| anyhow::anyhow!("int_header() is None"))?;
@@ -143,6 +153,7 @@ impl BlockBuilder {
                             tracing::trace!(target: "builder", "Parallel config message: {:?} to {:?}", msg.hash().unwrap(), acc_id.to_hex_string());
                             let thread = self.execute_internal(
                                 msg,
+                                false,
                                 blockchain_config,
                                 &acc_id,
                                 block_unixtime,
@@ -179,7 +190,7 @@ impl BlockBuilder {
                     })?;
                     let acc_id = thread_result.account_id;
                     tracing::trace!(target: "builder", "parallel epoch message finished dest: {}", acc_id.to_hex_string());
-                    self.after_transaction(thread_result)?;
+                    self.after_transaction(thread_result, false)?;
                     active_destinations.remove(&acc_id);
                 } else {
                     break;
@@ -191,6 +202,82 @@ impl BlockBuilder {
                 break;
             }
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use account_state::ThreadAccountsRepository;
+    use node_types::BlockIdentifier;
+    use node_types::ThreadIdentifier;
+
+    use super::*;
+    use crate::block::postprocessing::postprocess;
+    use crate::repository::optimistic_state::OptimisticStateImpl;
+    use crate::storage::MessageDurableStorage;
+    use crate::types::BlockInfo;
+    use crate::types::BlockSeqNo;
+    use crate::types::ThreadsTable;
+
+    #[test]
+    fn config_touch_and_transfer_share_the_wire_queue_routing() -> anyhow::Result<()> {
+        let dapp_id = DAppIdentifier::new([1; 32]);
+        let config_id = AccountIdentifier::new([2; 32]);
+        let touch = create_config_touch_message(100_000_000_000, config_id, 100)?;
+        assert!(touch.int_header().unwrap().dest_dapp_id.is_none());
+        let mut transfer_header = touch.int_header().unwrap().clone();
+        transfer_header.created_lt = 1000;
+        let transfer = Message::with_int_header(transfer_header);
+        let routing = config_id.redirect();
+        assert_ne!(routing, config_id.routing(dapp_id));
+        let mut produced = HashMap::new();
+        enqueue_config_message(&mut produced, &transfer)?;
+        enqueue_config_message(&mut produced, &touch)?;
+        assert_eq!(produced.len(), 1);
+        let messages = &produced[&routing];
+        assert_eq!(messages[0].1.tvm_message()?, &transfer);
+        assert_eq!(messages[1].1.tvm_message()?, &touch);
+        let consumed = messages.iter().map(|(id, _)| id.clone()).collect();
+        let dir = tempfile::tempdir()?;
+        let repository = ThreadAccountsRepository::builder(dir.path().join("durable")).build()?;
+        let state = OptimisticStateImpl::zero();
+        let transition =
+            repository.state_builder(&state.thread_id, 0, &state.shard_state.0).build(None)?;
+        // Both messages execute in this block. The touch's LT is lower, so
+        // postprocess must also preserve consumption order before cancellation.
+        let (after, _, _) = postprocess(
+            state,
+            HashMap::from([(routing, consumed)]),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            produced,
+            HashMap::new(),
+            BlockIdentifier::default(),
+            BlockSeqNo::default(),
+            0,
+            transition,
+            HashMap::new(),
+            BlockInfo::default(),
+            ThreadIdentifier::default(),
+            ThreadsTable::default(),
+            MessageDurableStorage::mem(),
+            &repository,
+            false,
+            #[cfg(feature = "monitor-accounts-number")]
+            0,
+        )?;
+        assert!(after.messages.is_empty());
+        assert!(after.high_priority_messages.is_empty());
+        crate::repository::repository_impl::validate_snapshot_inboxes(&after, &[])?;
+
+        let mut explicit = touch.clone();
+        explicit.int_header_mut().unwrap().set_dest_dapp_id(Some(dapp_id.into()));
+        let mut produced = HashMap::new();
+        enqueue_config_message(&mut produced, &explicit)?;
+        assert_eq!(produced.len(), 1);
+        assert!(produced.contains_key(&config_id.routing(dapp_id)));
         Ok(())
     }
 }

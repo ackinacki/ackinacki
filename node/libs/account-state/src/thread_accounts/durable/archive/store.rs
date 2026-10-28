@@ -69,7 +69,7 @@ pub struct ArchiveStateStore {
     inner: Arc<ArchiveStateStoreInner>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StagedArchiveEpoch {
     pub(crate) previous_epoch: u64,
     pub(crate) epoch: u64,
@@ -492,14 +492,7 @@ impl ArchiveStateStore {
         threads.insert(*initialized_thread);
         let new_system = SystemState { threads: threads.clone(), data_epoch: staged.epoch };
         write_system_record(kv, meta, &new_system).map_err(ArchiveStateError::from)?;
-        for thread_id in threads.iter() {
-            let state = if thread_id == initialized_thread {
-                ThreadControlState::new_idle(*thread_id, *initialized_block)
-            } else {
-                ThreadControlState::new_uninitialized(*thread_id)
-            };
-            write_thread_control(kv, meta, &state, None).map_err(ArchiveStateError::from)?;
-        }
+        self.write_imported_thread_controls(&threads, initialized_thread, initialized_block)?;
         self.inner
             .thread_write_locks
             .write()
@@ -507,6 +500,59 @@ impl ArchiveStateStore {
             .or_insert_with(|| Arc::new(Mutex::new(())));
         *self.inner.data_epoch.write() = staged.epoch;
         drop(threads);
+        Ok(())
+    }
+
+    /// Startup-only completion after the system record switched epochs but a
+    /// later control write may have failed. No account updates may run yet.
+    /// A record still pointing at the previous epoch means commit never began.
+    pub(crate) fn recover_staged_epoch(
+        &self,
+        staged: StagedArchiveEpoch,
+        initialized_thread: &ThreadIdentifier,
+        initialized_block: &BlockIdentifier,
+    ) -> Result<bool, ArchiveStateError> {
+        let control = self.lock_control();
+        if control.epoch() == staged.previous_epoch {
+            return Ok(false);
+        }
+        if control.epoch() != staged.epoch {
+            return Err(ArchiveStateError::EpochChanged {
+                expected: staged.epoch,
+                actual: control.epoch(),
+            });
+        }
+        let threads = self.inner.thread_registry.read();
+        if !threads.contains(initialized_thread) {
+            return Err(ArchiveStateError::CorruptedControlRecord(
+                *initialized_thread,
+                "snapshot recovery thread missing from system record".into(),
+            ));
+        }
+        self.write_imported_thread_controls(&threads, initialized_thread, initialized_block)?;
+        self.inner
+            .thread_write_locks
+            .write()
+            .entry(*initialized_thread)
+            .or_insert_with(|| Arc::new(Mutex::new(())));
+        Ok(true)
+    }
+
+    fn write_imported_thread_controls(
+        &self,
+        threads: &HashSet<ThreadIdentifier>,
+        initialized_thread: &ThreadIdentifier,
+        initialized_block: &BlockIdentifier,
+    ) -> Result<(), ArchiveStateError> {
+        for thread_id in threads {
+            let state = if thread_id == initialized_thread {
+                ThreadControlState::new_idle(*thread_id, *initialized_block)
+            } else {
+                ThreadControlState::new_uninitialized(*thread_id)
+            };
+            write_thread_control(&self.inner.store, &self.inner.set_meta, &state, None)
+                .map_err(ArchiveStateError::from)?;
+        }
         Ok(())
     }
 
@@ -1314,5 +1360,48 @@ mod tests {
         let tid = ThreadIdentifier::default();
         let result = store.commit_staged_epoch(staged, &tid, &make_block(1));
         assert!(matches!(result, Err(ArchiveStateError::EpochChanged { expected: 0, actual: 1 })));
+    }
+
+    #[test]
+    fn staged_recovery_repairs_partial_controls_after_reopening_system_epoch() {
+        let kv = test_kv();
+        let tid = ThreadIdentifier::default();
+        let other = ThreadIdentifier::from([7u8; 34]);
+        let store = ArchiveStateStore::new(kv.clone(), test_config()).unwrap();
+        let staged = store.begin_staged_epoch_after_current();
+        assert!(!store.recover_staged_epoch(staged, &tid, &make_block(4)).unwrap());
+        // Crash after the first persistent commit write. One control is old,
+        // the initialized thread's control has not been written at all.
+        write_system_record(
+            &kv,
+            META_SET,
+            &SystemState { threads: HashSet::from([tid, other]), data_epoch: staged.epoch },
+        )
+        .unwrap();
+        write_thread_control(
+            &kv,
+            META_SET,
+            &ThreadControlState::new_idle(other, make_block(1)),
+            None,
+        )
+        .unwrap();
+        drop(store);
+        let store = ArchiveStateStore::new(kv, test_config()).unwrap();
+        for _ in 0..2 {
+            assert!(store.recover_staged_epoch(staged, &tid, &make_block(4)).unwrap());
+            let states = store.get_all_thread_control_states().unwrap();
+            let initialized = states.iter().find(|state| state.thread_id == tid).unwrap();
+            assert_eq!(initialized.last_block_id, Some(make_block(4)));
+            assert_eq!(initialized.update_phase, UpdatePhase::Idle);
+            assert_eq!(
+                states.iter().find(|state| state.thread_id == other).unwrap().update_phase,
+                UpdatePhase::Uninitialized
+            );
+        }
+        let unrelated = StagedArchiveEpoch { previous_epoch: 2, epoch: 3 };
+        assert!(matches!(
+            store.recover_staged_epoch(unrelated, &tid, &make_block(4)),
+            Err(ArchiveStateError::EpochChanged { .. })
+        ));
     }
 }

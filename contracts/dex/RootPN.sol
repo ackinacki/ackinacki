@@ -13,7 +13,7 @@ import "../airegistry/TokenContract.sol";
 contract RootPN is Modifiers {
 
     /// @notice Contract semantic version.
-    string constant version = "4.0.35";
+    string constant version = "4.0.36";
 
     // RootModel/TokenContract code hashes. Baked into every PrivateNote at deploy
     // (`deployPrivateNote`) so the note derives the canonical RootModel / deal TC
@@ -21,13 +21,31 @@ contract RootPN is Modifiers {
     // note pairs these with is its own constant — RootPN never derives an address
     // itself. RootPN is not pinned by anyone, so pinning these here is cycle-free
     // (cascade-updated together with the note's baked copies).
-    uint256 constant TOKEN_CONTRACT_CODE_HASH  = 0xa67e1ae0a748f902b248a035eabbcfc6393b3154fed7d7002e0defae8b6d685d;
-    uint16  constant TOKEN_CONTRACT_CODE_DEPTH = 17;
-    uint256 constant ROOT_MODEL_CODE_HASH      = 0x287831837ad23d5216956ccca347c65eecb31b56eb95e7ce0fe3bbf9f2edcff4;
+    uint256 constant TOKEN_CONTRACT_CODE_HASH  = 0xee4105b4800d852dde1a86cec4e270ecfa2ae0e199f05a46823aed792933e711;
+    uint16  constant TOKEN_CONTRACT_CODE_DEPTH = 18;
+    uint256 constant ROOT_MODEL_CODE_HASH      = 0xe92a14cb9c5ac757e16be2f453d5c3a25e7bec90044a1389b97414d1b785cac8;
     uint16  constant ROOT_MODEL_CODE_DEPTH     = 8;
 
     /// @notice Stored code of PrivateNote contract
     TvmCell _privateNoteCode;
+
+    /// @notice Code hash + depth of the PREVIOUS PrivateNote generation, so notes deployed before
+    ///         this build can still be served (4.0.36).
+    /// @dev    A note's address derives from its code, so changing the code changes where every
+    ///         FUTURE note lives — and leaves the ones already deployed at addresses this root can
+    ///         no longer derive. `withdrawTokens` is gated on that derivation, which means an
+    ///         upgraded root would stop recognising live notes and their custodied ECC would sit
+    ///         here with no caller able to claim it. That is not a migration cost, it is a loss.
+    ///
+    ///         The root keeps the current CODE (it deploys with it) and the previous HASH (it only
+    ///         needs to address them). Zero means "no previous generation", which is the honest
+    ///         state of a fresh chain and refuses nothing that ever existed.
+    ///
+    ///         ONE generation back, deliberately. Two would need a list and a policy for how long
+    ///         a generation stays honoured; one covers the case that actually occurs — an upgrade
+    ///         with notes still holding balances — and says plainly when it stops.
+    uint256 _prevPrivateNoteCodeHash;
+    uint16  _prevPrivateNoteCodeDepth;
 
     /// @notice Stored code of PMP contract
     TvmCell _pmpCode;
@@ -49,6 +67,15 @@ contract RootPN is Modifiers {
     ///         canonical book address itself instead of trusting a caller-
     ///         supplied OB code / raw address.
     TvmCell _inferenceOrderBookCode;
+
+    /// @notice Stored code of TokenContract (§3 per-deal contract), baked into every PrivateNote at
+    ///         deploy so the note can DEPLOY the deal rather than only address it (4.0.36).
+    /// @dev    The pin `TOKEN_CONTRACT_CODE_HASH` below still travels beside it and still does its
+    ///         own job — a note derives the address of deals it did not create from the hash. This
+    ///         holds the code itself, which only a deploy needs. Set through `setTokenContractCode`
+    ///         rather than the constructor, for the reason `setInferenceOrderBookCode` gives: the
+    ///         upgrade message stays small enough for the shellnet BM body limit.
+    TvmCell _tokenContractCode;
 
     /// @notice Canonical AI SuperRoot account id, the anchor a deal's address derives from.
     /// @dev    Needed only by `_canonicalDeal`: a TokenContract's statics include its RootModel,
@@ -418,7 +445,7 @@ contract RootPN is Modifiers {
             flag: 1,
             bounce: true,
             currencies: gasCc
-        }(value, ephemeralPubkey, tokenType, _pmpCode, _orderBookCode, _inferenceOrderBookCode,
+        }(value, ephemeralPubkey, tokenType, _pmpCode, _orderBookCode, _inferenceOrderBookCode, _tokenContractCode,
           tvm.hash(_oracleCode), _oracleCode.depth(), tvm.hash(_oracleEventListCode), _oracleEventListCode.depth(),
           TOKEN_CONTRACT_CODE_HASH, TOKEN_CONTRACT_CODE_DEPTH, ROOT_MODEL_CODE_HASH, ROOT_MODEL_CODE_DEPTH);
     }
@@ -467,6 +494,17 @@ contract RootPN is Modifiers {
     function setInferenceOrderBookCode(TvmCell inferenceOrderBookCode) public onlyOwnerPubkey(_ownerPubkey) accept {
         ensureBalance();
         _inferenceOrderBookCode = inferenceOrderBookCode;
+    }
+
+    /// @notice Owner-only setter for the TokenContract code baked into notes (4.0.36).
+    /// @dev    Same reason as the book code above: one code in one small message, so an upgrade
+    ///         never has to carry the whole bundle. A note deployed before this is set holds an
+    ///         empty cell and its `deployDeal` cannot produce the canonical deal — set it in the
+    ///         same provisioning step as the book code, before any note is issued.
+    /// @param tokenContractCode New TokenContract code baked into notes.
+    function setTokenContractCode(TvmCell tokenContractCode) public onlyOwnerPubkey(_ownerPubkey) accept {
+        ensureBalance();
+        _tokenContractCode = tokenContractCode;
     }
 
     // The InferenceOrderBook code hash is no longer requested from RootPN at runtime.
@@ -651,6 +689,38 @@ contract RootPN is Modifiers {
 		emit VoucherGenerated{dest: addrExtern}(skUCommit, voucherNominal, tokenType);
 	}
 
+    /// @notice Accept a note of EITHER generation as the sender for `depositIdentifierHash`.
+    /// @dev    Runs before `accept`, like every other sender gate here, so a stranger's message is
+    ///         refused at the door and paid for by whoever sent it. The current generation is
+    ///         derived from the code this root holds; the previous one from its hash, and only if
+    ///         one has been recorded — an unset `_prevPrivateNoteCodeHash` widens nothing.
+    modifier senderIsNoteOfAnyGeneration(uint256 depositIdentifierHash) {
+        require(
+            msg.sender == DexLib.computePrivateNoteAddress(_privateNoteCode, depositIdentifierHash)
+            || (_prevPrivateNoteCodeHash != 0
+                && msg.sender == DexLib.computePrivateNoteAddressFromHash(
+                       _prevPrivateNoteCodeHash, _prevPrivateNoteCodeDepth, depositIdentifierHash)),
+            ERR_INVALID_SENDER);
+        _;
+    }
+
+    /// @notice Owner-only record of the previous PrivateNote generation's code hash and depth.
+    /// @dev    Set as part of an upgrade, from the artifact the chain was running BEFORE it — the
+    ///         hash of the deployed note code, not of whatever is in the tree now. Passing zero
+    ///         clears it, which closes the door on the old generation deliberately.
+    /// @param codeHash Code hash of the previous PrivateNote code.
+    /// @param codeDepth Cell depth of that code.
+    function setPrevPrivateNoteCode(uint256 codeHash, uint16 codeDepth) public onlyOwnerPubkey(_ownerPubkey) accept {
+        ensureBalance();
+        _prevPrivateNoteCodeHash = codeHash;
+        _prevPrivateNoteCodeDepth = codeDepth;
+    }
+
+    /// @notice The previous PrivateNote generation this root still serves (0 = none).
+    function getPrevPrivateNoteCode() external view returns (uint256 codeHash, uint16 codeDepth) {
+        return (_prevPrivateNoteCodeHash, _prevPrivateNoteCodeDepth);
+    }
+
     /// @notice Withdraws tokens to a specified wallet.
     /// @dev The inner `transfer` flag is hard-coded to 1. A caller-supplied flag
     ///      could pass TVM flags 128 (CARRY_ALL_BALANCE) or 32 (DELETE_IF_EMPTY),
@@ -665,7 +735,7 @@ contract RootPN is Modifiers {
         address walletAddr,
         uint256 initialDataHash,
         uint256 dapp_id
-    ) public senderIs(DexLib.computePrivateNoteAddress(_privateNoteCode, initialDataHash)) accept {
+    ) public senderIsNoteOfAnyGeneration(initialDataHash) accept {
         // `dapp_id` drives no logic here — only surfaced in the TokensWithdrawn
         // event below; kept for forward compatibility / off-chain context.
         ensureBalance();

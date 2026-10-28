@@ -95,7 +95,10 @@ pub(crate) fn strip_cold_pruned_transaction_fields(
     fields
 }
 
+use self::blockchain_api::populate_message_tree;
+use self::blockchain_api::populate_transaction_tree;
 use self::blockchain_api::BlockchainQuery;
+use self::blockchain_api::MAX_RELATION_DEPTH;
 use self::message::Message;
 use self::message::MessageFilter;
 use super::db;
@@ -110,7 +113,6 @@ use crate::schema::graphql::info::Info;
 use crate::schema::graphql::message;
 use crate::schema::graphql::transaction::Transaction;
 use crate::schema::graphql::transaction::TransactionFilter;
-use crate::schema::graphql::transaction::TransactionLoader;
 use crate::schema::graphql_ext::account::AccountQuery;
 use crate::schema::graphql_shared::filter::WhereOp;
 
@@ -343,40 +345,10 @@ impl QueryRoot {
         let mut messages: Vec<Option<Message>> =
             db_messages.into_iter().map(|b| Some(b.into())).collect();
 
-        let transaction_loader = ctx.data_unchecked::<DataLoader<TransactionLoader>>();
-        if ctx.look_ahead().field("src_transaction").exists() {
-            for message in messages.iter_mut().flatten() {
-                if let Some(transaction_id) = &message.transaction_id {
-                    message.src_transaction = transaction_loader
-                        .load_one(transaction_id.to_string())
-                        .await
-                        .unwrap_or_else(|_| panic!("Failed to load transaction: {transaction_id}"))
-                        .map(Box::new);
-                }
-            }
-        }
-        if ctx.look_ahead().field("dst_transaction").exists() {
-            for message in messages.iter_mut().flatten() {
-                let projection = db::transaction::Transaction::projection_for_fields(["id"]);
-                let dst_transaction = db::transaction::Transaction::by_in_message(
-                    db_connector,
-                    &projection,
-                    &message.id,
-                    None,
-                )
+        for message in messages.iter_mut().flatten() {
+            populate_message_tree(ctx, message, ctx.look_ahead(), MAX_RELATION_DEPTH)
                 .await
-                .expect("Failed to load transaction by inbound message");
-
-                if let Some(transaction) = dst_transaction {
-                    message.dst_transaction = transaction_loader
-                        .load_one(transaction.id.clone())
-                        .await
-                        .unwrap_or_else(|_| {
-                            panic!("Failed to load transaction: {}", transaction.id)
-                        })
-                        .map(Box::new);
-                }
-            }
+                .map_err(|err| async_graphql::Error::new(err.to_string()))?;
         }
 
         Ok(Some(messages))
@@ -420,18 +392,10 @@ impl QueryRoot {
         let mut transactions: Vec<Option<Transaction>> =
             db_transactions.into_iter().map(|b| Some(b.into())).collect();
 
-        let message_loader = ctx.data_unchecked::<DataLoader<MessageLoader>>();
-        if ctx.look_ahead().field("in_message").exists() {
-            for transaction in transactions.iter_mut().flatten() {
-                transaction.in_message =
-                    message_loader.load_one(transaction.in_msg.clone()).await?;
-            }
-        }
-        if ctx.look_ahead().field("out_messages").exists() {
-            for transaction in transactions.iter_mut().flatten() {
-                let out_messages = message_loader.load_many(transaction.out_msgs.clone()).await?;
-                transaction.out_messages = Some(out_messages.into_values().map(Some).collect());
-            }
+        for transaction in transactions.iter_mut().flatten() {
+            populate_transaction_tree(ctx, transaction, ctx.look_ahead(), MAX_RELATION_DEPTH)
+                .await
+                .map_err(|err| async_graphql::Error::new(err.to_string()))?;
         }
         Ok(Some(transactions))
     }

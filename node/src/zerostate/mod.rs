@@ -23,6 +23,8 @@ pub const DEFAULT_EXPIRY_OFFSET_SECS: u64 = 100 * 365 * 24 * 3600 + 25 * 24 * 36
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ZeroState {
     expires_at: u64,
+    // Keep the deployed zerostate wire layout despite the in-memory queue change.
+    #[serde(with = "serialize::legacy_states")]
     states: HashMap<ThreadIdentifier, OptimisticStateImpl>,
     block_keeper_set: HashMap<ThreadIdentifier, BlockKeeperSet>,
 }

@@ -2,6 +2,93 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.6] – 2026-10-25
+
+### Breaking Changes
+- The default `engine_version` is now `1.0.8`, so `node-helper config -d`
+  generates a new protocol identifier; existing global configs keep their
+  explicit version. A running network moves to `1.0.8` with the rolling
+  upgrade: set `engine_version: 1.0.8` in the current global config and pass
+  the network's previous `1.0.7` global config with `-r`
+  (`--retired-global-config-path`). The `block-keeper` Ansible role generates
+  that retired config with `--engine-version 1.0.7`.
+- From `1.0.8`, calls to the Miner WASM hash
+  `2d577ca2e693700282d6d778dce8cfcedbada644497e411ec6aed889f5a3d5f4` execute
+  the verifier `0d69c25d36f1d8814c644ce96c61dbfbd8ae13e9a116d7d9f379fbaf0648b0eb`,
+  shipped in `config/wasm` next to the original file, which must stay there:
+  blocks of the retired protocol keep executing it. The new verifier binds
+  every revealed leaf to its position in the committed Merkle tree and derives
+  the mining duration from the number of hard leaves (`floor(n * 4.7)`) instead
+  of client timestamps.
+- Snapshots from engine `1.0.8` on use the partitioned `SNAP2V2` format; below
+  `1.0.8` the node keeps publishing and importing `SNAP2V1`, chosen by the
+  exported block's protocol, including during the rolling upgrade.
+- Persisted optimistic states and account-map files of previous releases are not
+  migrated. Upgrade with a clean data directory, keep the original zerostate
+  and import a `SNAP2V1` snapshot; the database needs room for a staged copy of
+  the accounts next to the active state during import.
+- Added the global setting `snapshot_partition_size_bytes` (default
+  `1073741824`, must be positive). From `1.0.8` it is part of the protocol
+  hash, so all nodes must use the same value.
+- `/v2/storage/` lists only snapshots that have both the primary file and its
+  `.header`; partitions are served under `<block-id>.partitions/`, with
+  lowercase 64-hex block and partition IDs only.
+- Snapshot retention moved into the node. Redeploy the block-keeper
+  `logrotate` configuration and restart its container to remove the old
+  `/share` cleanup cron; `SHARE_CLEANUP_SPEC` and `SHARE_KEEP_AMOUNT` no longer
+  have any effect.
+
+### New / Improvements
+- Partitioned snapshots: account and message partitions are published under
+  `<block-id>.partitions/`, the header becomes available before all partitions
+  are published, and shared partitions are hard links — keep
+  `.snapshot-resources/` when moving published snapshots. A snapshot manifest
+  holds at most `65536` roots per account and inbox list.
+- Snapshot synchronization downloads up to four files at once, verifies and
+  resumes partial downloads, switches sources, and treats HTTP 404 as "not
+  published yet". Stalled transfers are dropped after 30 seconds without data
+  or below 64 KiB/s.
+- Published snapshots are kept for at least one hour and at least the two
+  latest per thread.
+- Downloaded snapshots go to a bounded cache in `.snapshot-downloads/`, sized by
+  the local setting `snapshot_download_cache_bytes` (default `53687091200`,
+  50 GiB, applied on restart).
+- Added `network.shared_state_download_deadline_millis` (default `3600000`, one
+  hour, applied on restart) and the matching `node-helper` option
+  `--shared-state-download-deadline-millis` to bound snapshot downloads.
+- Added the node flag `--sync-without-finalization-wait` (off by default): a
+  node known to be far behind starts finalized-state synchronization at once
+  instead of waiting `time_to_enable_sync_finalized`.
+- Added the `node_activity` metric for snapshot download, import, export and
+  catch-up phases; snapshot stage timings are logged at INFO on the `monit`
+  target.
+- gql-server: added `blockchain.transactionByInMsg(hash: String)` to look up a
+  transaction by its inbound message.
+
+### Fixes
+- Fixed `/v2/storage_latest` redirecting to a header or temporary file instead
+  of a ready snapshot.
+- Fixed snapshot import, restart recovery and checkpoint restore: failed or
+  interrupted imports no longer replace or lose the active state, and a
+  checkpoint with missing account data is rejected instead of loading empty.
+- Fixed snapshot synchronization stalls and retries: catch-up no longer hangs on
+  blocks received in producer-switch messages, export waits until catch-up
+  ends, and stale snapshots of the previous protocol are no longer recommended
+  after a protocol transition.
+- Fixed internal-message queue handling that rejected valid blocks or failed
+  block production: high-priority messages (including slashing messages from
+  NACKs), messages created at the same logical time, and transfers to
+  DAppConfig.
+- Fixed node panics on truncated serialized blocks, malformed message
+  identifiers and duplicate-message-hash verification failures.
+- Fixed authority-switch recovery after a restart: missing fallback
+  attestations are regenerated and sent.
+- Fixed node shutdown hanging after interrupted synchronization or on an
+  unavailable OpenTelemetry collector (now limited to five seconds).
+- gql-server: fixed nested `src_transaction`, `dst_transaction`, `in_message`
+  and `out_messages` fields coming back empty, including inside connection
+  `nodes`.
+
 ## [0.19.5] – 2026-10-14
 
 ### Breaking Changes

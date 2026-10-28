@@ -11,10 +11,8 @@ use std::fs::File;
 use std::hash::Hash;
 use std::io::Cursor;
 use std::io::Read;
-use std::io::Seek;
 use std::io::Write;
 use std::ops::Add;
-use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -511,18 +509,22 @@ fn derive_snapshot_ancestor_block_heights(
     heights
 }
 
-fn history_cursor_from_snapshot(snapshot: &ThreadSnapshot) -> Option<HistoryLayerData> {
-    let cursor = normalize_history_layer_data(snapshot.history_cursor.clone());
+fn history_cursor_from_snapshot(
+    history_cursor: &HistoryLayerData,
+    history_data_snapshot: &GlobalHistoryDataSnapshot,
+    block_height: &BlockHeight,
+) -> Option<HistoryLayerData> {
+    let cursor = normalize_history_layer_data(history_cursor.clone());
     if !cursor.is_empty() {
         return Some(cursor);
     }
 
-    let cursor = normalize_history_layer_data(snapshot.history_data_snapshot.clone());
+    let cursor = normalize_history_layer_data(history_data_snapshot.clone());
     if !cursor.is_empty() {
         return Some(cursor);
     }
 
-    if *snapshot.block_height.height() == 0 {
+    if *block_height.height() == 0 {
         return Some(initial_history_cursor());
     }
 
@@ -586,7 +588,269 @@ fn serialize_into_writer<W: Write + ?Sized, T: Serialize>(
         .map_err(|e| anyhow::format_err!("Failed to serialize snapshot field: {e}"))
 }
 
-const STREAMED_THREAD_SNAPSHOT_MAGIC: &[u8; 7] = b"SNAP2V1";
+pub(crate) mod snapshot_consumption;
+pub(crate) mod snapshot_http_import;
+mod snapshot_installation;
+pub(crate) mod snapshot_manifest;
+pub(crate) mod snapshot_partitioned;
+pub(crate) mod snapshot_publication;
+pub(crate) mod snapshot_schedule;
+pub(crate) mod snapshot_sources;
+pub(crate) mod thread_snapshot_import;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SnapshotVersion {
+    Legacy,
+    Current,
+}
+
+impl SnapshotVersion {
+    pub(crate) fn for_block(
+        version: &BlockProtocolVersionState,
+        configs: &ConfigRead,
+    ) -> anyhow::Result<Self> {
+        let config = configs.get(version.to_use()).ok_or_else(|| {
+            anyhow::anyhow!("No configuration for snapshot block protocol {}", version.to_use())
+        })?;
+        Ok(if config.engine_version < semver::Version::new(1, 0, 8) {
+            Self::Legacy
+        } else {
+            Self::Current
+        })
+    }
+
+    pub(crate) fn serialize_state(self, state: OptimisticStateImpl) -> anyhow::Result<Vec<u8>> {
+        match self {
+            Self::Legacy => snapshot_v1::encode_state(state),
+            Self::Current => Ok(bincode::serialize(&state)?),
+        }
+    }
+}
+
+#[path = "repository_impl/snapshot_v1.rs"]
+pub(crate) mod snapshot_v1;
+
+#[cfg(test)]
+#[path = "repository_impl/snapshot_runtime_tests.rs"]
+mod snapshot_runtime_tests;
+#[cfg(test)]
+#[path = "repository_impl/state_lifecycle_tests.rs"]
+mod state_lifecycle_tests;
+
+// Verify against the bodies carried by the snapshot, not the local database.
+// Only one index entry per compacted inbox is needed, not one per message.
+pub(crate) fn validate_snapshot_inboxes(
+    state: &OptimisticStateImpl,
+    db_messages: &[Vec<Arc<WrappedMessage>>],
+) -> anyhow::Result<()> {
+    fn identifier(message: &WrappedMessage) -> anyhow::Result<MessageIdentifier> {
+        anyhow::ensure!(
+            message.tvm_message().map_err(anyhow::Error::msg)?.int_header().is_some(),
+            "Snapshot inbox contains a non-internal message"
+        );
+        Ok(message.identifier())
+    }
+    let mut groups = HashMap::new();
+    for messages in db_messages.iter().filter(|group| !group.is_empty()) {
+        let first = identifier(&messages[0])?;
+        anyhow::ensure!(
+            groups.insert(first, messages).is_none(),
+            "Duplicate snapshot message range"
+        );
+    }
+    for queue in [&state.messages, &state.high_priority_messages] {
+        for (dapp_id, dapp) in queue.messages.iter() {
+            anyhow::ensure!(!dapp.is_empty(), "Snapshot contains an empty DApp queue");
+            for (routing, inbox) in dapp.messages.iter() {
+                anyhow::ensure!(routing.dapp_id() == &dapp_id, "Snapshot inbox DApp mismatch");
+                anyhow::ensure!(!inbox.is_empty(), "Snapshot contains an empty inbox");
+                let history = if let Some(range) = inbox.compacted_history() {
+                    let history = groups.remove(range.start()).ok_or_else(|| {
+                        anyhow::anyhow!("Missing snapshot messages for {routing:?}")
+                    })?;
+                    anyhow::ensure!(
+                        identifier(history.last().unwrap())? == *range.end(),
+                        "Snapshot message range endpoint mismatch for {routing:?}"
+                    );
+                    history.as_slice()
+                } else {
+                    &[]
+                };
+                let canonical_size = history
+                    .iter()
+                    .chain(inbox.tail_sequence().iter().map(|(_, body)| body))
+                    .try_fold(0u64, |sum, body| {
+                        sum.checked_add(body.canonical_size()).ok_or_else(|| {
+                            anyhow::anyhow!("Snapshot inbox canonical size overflow")
+                        })
+                    })?;
+                anyhow::ensure!(
+                    canonical_size == inbox.canonical_size(),
+                    "Snapshot inbox canonical size mismatch for {routing:?}"
+                );
+                inbox
+                    .commitment
+                    .verify(history.iter().map(|message| identifier(message)).chain(
+                        inbox.tail_sequence().iter().map(|(key, message)| {
+                            let id = identifier(message)?;
+                            anyhow::ensure!(
+                                *key == id,
+                                "Snapshot message key mismatch for {routing:?}"
+                            );
+                            Ok(id)
+                        }),
+                    ))
+                    .with_context(|| format!("Invalid snapshot inbox for {routing:?}"))?;
+            }
+        }
+    }
+    anyhow::ensure!(groups.is_empty(), "Snapshot contains unreferenced message ranges");
+    Ok(())
+}
+
+#[cfg(test)]
+mod inbox_snapshot_tests {
+    use super::*;
+    use crate::types::AccountInbox;
+
+    pub(super) fn fixture() -> (OptimisticStateImpl, Vec<Vec<Arc<WrappedMessage>>>) {
+        let messages: Vec<_> = (1..=6)
+            .map(|lt| {
+                let header =
+                    tvm_block::InternalMessageHeader { created_lt: lt, ..Default::default() };
+                Arc::new(WrappedMessage::from_tvm(&tvm_block::Message::with_int_header(header)))
+            })
+            .collect();
+        let route = AccountRouting::default();
+        let mut inbox = AccountInbox::empty();
+        for message in &messages[..5] {
+            inbox.commitment.add(&message.identifier());
+        }
+        inbox.commitment.consume(&messages[0].identifier());
+        inbox
+            .messages
+            .set_compacted_history(Some(messages[1].identifier()..=messages[3].identifier()));
+        inbox
+            .add_capacity(messages[1..4].iter().map(|message| message.canonical_size()).sum())
+            .unwrap();
+        inbox.add_messages(vec![(messages[4].identifier(), messages[4].clone())]).unwrap();
+        let mut state = OptimisticStateImpl::zero();
+        state.messages.set_inbox(route, inbox);
+        let mut high = AccountInbox::empty();
+        high.commitment.add(&messages[5].identifier());
+        high.add_messages(vec![(messages[5].identifier(), messages[5].clone())]).unwrap();
+        state.high_priority_messages.set_inbox(route, high);
+        (state, vec![messages[1..4].to_vec()])
+    }
+
+    #[test]
+    fn snapshot_preserves_non_seed_anchor_and_verifies_both_priorities_without_local_db() {
+        let (state, bodies) = fixture();
+        let bytes = bincode::serialize(&state).unwrap();
+        let restored: OptimisticStateImpl = bincode::deserialize(&bytes).unwrap();
+        validate_snapshot_inboxes(&restored, &bodies).unwrap();
+        assert_eq!(restored.messages.root_hash(), state.messages.root_hash());
+        assert_eq!(
+            restored.high_priority_messages.root_hash(),
+            state.high_priority_messages.root_hash()
+        );
+        let route = AccountRouting::default();
+        assert_eq!(
+            restored.messages.account_inbox_by_routing(&route).unwrap().commitment,
+            state.messages.account_inbox_by_routing(&route).unwrap().commitment
+        );
+    }
+
+    #[test]
+    fn snapshot_rejects_missing_reordered_and_extra_bodies() {
+        let (state, bodies) = fixture();
+        assert!(validate_snapshot_inboxes(&state, &[]).is_err());
+        let mut corrupted = bodies.clone();
+        corrupted[0].swap(0, 1);
+        assert!(validate_snapshot_inboxes(&state, &corrupted).is_err());
+        corrupted = bodies.clone();
+        corrupted[0].remove(1); // Endpoints stay valid: the fold must detect this.
+        assert!(validate_snapshot_inboxes(&state, &corrupted).is_err());
+        corrupted = bodies.clone();
+        corrupted.push(bodies[0].clone());
+        assert!(validate_snapshot_inboxes(&state, &corrupted).is_err());
+        corrupted = bodies.clone();
+        corrupted.push(vec![bodies[0][1].clone()]);
+        assert!(validate_snapshot_inboxes(&state, &corrupted).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_a_forged_chain_or_tail_key_for_either_priority() {
+        let (state, bodies) = fixture();
+        let route = AccountRouting::default();
+        for high in [false, true] {
+            for field in 0..4 {
+                let mut changed = state.clone();
+                let queue =
+                    if high { &mut changed.high_priority_messages } else { &mut changed.messages };
+                let mut inbox = queue.account_inbox_by_routing(&route).unwrap().clone();
+                match field {
+                    0 => inbox.commitment.added[0] ^= 1,
+                    1 => inbox.commitment.consumed[0] ^= 1,
+                    3 => inbox.add_capacity(1).unwrap(),
+                    _ => {
+                        let (_, body) = inbox.tail_sequence().front().unwrap().clone();
+                        inbox.messages.set_tail_sequence(std::collections::VecDeque::from([(
+                            bodies[0][0].identifier(),
+                            body,
+                        )]));
+                    }
+                }
+                queue.set_inbox(route, inbox);
+                assert!(validate_snapshot_inboxes(&changed, &bodies).is_err());
+            }
+        }
+        validate_snapshot_inboxes(&state, &bodies).unwrap(); // COW source unchanged.
+    }
+
+    #[test]
+    fn legacy_file_reader_rejects_partitioned_and_intermediate_markers() {
+        for marker in [b"SNAP2V2", b"SNAP2V3", b"SNAP2V4"] {
+            assert!(read_thread_snapshot_from_payload(marker, SnapshotCompression::Plain).is_err());
+        }
+    }
+
+    #[test]
+    fn snapshot_rejects_wrong_dapp_placement_and_empty_leaves() {
+        use node_types::DAppIdentifier;
+
+        use crate::types::thread_message_queue::DAppMessageQueueState;
+        use crate::types::thread_message_queue::ThreadMessageQueueState;
+
+        let (state, bodies) = fixture();
+        for high in [false, true] {
+            let mut changed = state.clone();
+            let queue =
+                if high { &mut changed.high_priority_messages } else { &mut changed.messages };
+            let mut dapp = queue.messages.get(&DAppIdentifier::default()).unwrap().as_ref().clone();
+            // A single L2 routing can name another DApp; its placement in L1
+            // must be checked even though the L2 key hashes only account ID.
+            let mut misplaced = ThreadMessageQueueState::empty();
+            misplaced.messages.insert(DAppIdentifier::new([42; 32]), Arc::new(dapp.clone()));
+            *queue = misplaced;
+            assert!(validate_snapshot_inboxes(&changed, &bodies).is_err());
+
+            let mut changed = state.clone();
+            let queue =
+                if high { &mut changed.high_priority_messages } else { &mut changed.messages };
+            dapp.messages.insert(AccountRouting::default(), Arc::new(AccountInbox::empty()));
+            queue.messages.insert(DAppIdentifier::default(), Arc::new(dapp));
+            assert!(validate_snapshot_inboxes(&changed, &bodies).is_err());
+
+            let queue =
+                if high { &mut changed.high_priority_messages } else { &mut changed.messages };
+            queue
+                .messages
+                .insert(DAppIdentifier::default(), Arc::new(DAppMessageQueueState::empty()));
+            assert!(validate_snapshot_inboxes(&changed, &bodies).is_err());
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DurableSnapshotHeader {
@@ -630,6 +894,7 @@ struct SnapshotImportRecovery {
     snapshot_thread_id: ThreadIdentifier,
     snapshot_block_id: BlockIdentifier,
     prefix: StreamedThreadSnapshot,
+    staged: account_state::StagedArchiveEpoch,
 }
 
 impl StreamedThreadSnapshot {
@@ -696,21 +961,15 @@ impl StreamedThreadSnapshot {
     }
 }
 
-fn deserialize_streamed_thread_snapshot_prefix(
-    prefix_bytes: &[u8],
-) -> bincode::Result<StreamedThreadSnapshot> {
-    bincode::deserialize(prefix_bytes)
-}
-
 fn read_thread_snapshot_from_payload(
     payload: &[u8],
     compression: SnapshotCompression,
 ) -> anyhow::Result<SnapshotFile> {
     anyhow::ensure!(
-        payload.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC),
+        payload.starts_with(snapshot_v1::MAGIC),
         "Unsupported thread snapshot format: missing streamed snapshot magic",
     );
-    let mut reader = Cursor::new(&payload[STREAMED_THREAD_SNAPSHOT_MAGIC.len()..]);
+    let mut reader = Cursor::new(&payload[snapshot_v1::MAGIC.len()..]);
     let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut reader)
         .map_err(|e| anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}"))?;
     let prefix_len = usize::try_from(header.prefix_len).map_err(|_| {
@@ -718,7 +977,7 @@ fn read_thread_snapshot_from_payload(
     })?;
     let header_len = usize::try_from(reader.position())
         .map_err(|_| anyhow::format_err!("Streamed snapshot header offset is too large"))?;
-    let prefix_start = STREAMED_THREAD_SNAPSHOT_MAGIC
+    let prefix_start = snapshot_v1::MAGIC
         .len()
         .checked_add(header_len)
         .ok_or_else(|| anyhow::format_err!("Streamed snapshot prefix offset overflow"))?;
@@ -733,11 +992,13 @@ fn read_thread_snapshot_from_payload(
     );
 
     let prefix_bytes = &payload[prefix_start..prefix_end];
-    let prefix = deserialize_streamed_thread_snapshot_prefix(prefix_bytes)
-        .map_err(|e| anyhow::format_err!("Failed to deserialize streamed snapshot prefix: {e}"))?;
+    let mut prefix = snapshot_v1::decode_prefix(prefix_bytes)?;
+    // Helpers expose the current in-memory model while preserving legacy bodies.
+    snapshot_v1::convert_state(&mut prefix)?;
 
     let durable_tag = prefix.durable_snapshot_header.tag;
     let durable_len = prefix.durable_snapshot_header.len;
+    anyhow::ensure!(durable_tag <= 1, "Invalid legacy durable header");
     if durable_tag == 0 {
         anyhow::ensure!(
             durable_len == 0,
@@ -767,16 +1028,12 @@ fn read_thread_snapshot_from_payload(
     })
 }
 
-fn write_streamed_thread_snapshot_prefix_to_writer<W: Write + ?Sized>(
-    snapshot: &ThreadSnapshot,
-    durable_len: u64,
+fn write_legacy_snapshot_prefix<W: Write + ?Sized>(
+    prefix: &StreamedThreadSnapshot,
     writer: &mut W,
 ) -> anyhow::Result<()> {
-    let prefix = StreamedThreadSnapshot::from_snapshot(snapshot, durable_len);
-    let prefix_bytes = bincode::serialize(&prefix)
-        .map_err(|e| anyhow::format_err!("Failed to serialize streamed snapshot prefix: {e}"))?;
-
-    writer.write_all(STREAMED_THREAD_SNAPSHOT_MAGIC)?;
+    let prefix_bytes = snapshot_v1::encode_prefix(prefix)?;
+    writer.write_all(snapshot_v1::MAGIC)?;
     serialize_into_writer(
         writer,
         &StreamedThreadSnapshotHeader { prefix_len: prefix_bytes.len() as u64 },
@@ -785,7 +1042,7 @@ fn write_streamed_thread_snapshot_prefix_to_writer<W: Write + ?Sized>(
     Ok(())
 }
 
-fn write_streamed_thread_snapshot_bytes_to_writer<W: Write + ?Sized>(
+fn write_legacy_snapshot_bytes_to_writer<W: Write + ?Sized>(
     snapshot: &ThreadSnapshot,
     durable_bytes: &[u8],
     writer: &mut W,
@@ -793,7 +1050,11 @@ fn write_streamed_thread_snapshot_bytes_to_writer<W: Write + ?Sized>(
     let durable_len = u64::try_from(durable_bytes.len()).map_err(|_| {
         anyhow::format_err!("Durable snapshot is too large: {}", durable_bytes.len())
     })?;
-    write_streamed_thread_snapshot_prefix_to_writer(snapshot, durable_len, writer)?;
+    // SnapshotFile is a helper-facing current model; only its wire state is legacy.
+    let mut prefix = StreamedThreadSnapshot::from_snapshot(snapshot, durable_len);
+    let state: OptimisticStateImpl = bincode::deserialize(snapshot.optimistic_state())?;
+    prefix.optimistic_state = snapshot_v1::encode_state(state)?;
+    write_legacy_snapshot_prefix(&prefix, writer)?;
     writer.write_all(durable_bytes)?;
     Ok(())
 }
@@ -804,17 +1065,13 @@ fn write_snapshot_payload_to_writer<W: Write + ?Sized>(
 ) -> anyhow::Result<()> {
     match snapshot_file.format() {
         SnapshotFormat::Streamed { durable_bytes } => {
-            write_streamed_thread_snapshot_bytes_to_writer(
-                snapshot_file.snapshot(),
-                durable_bytes,
-                writer,
-            )
+            write_legacy_snapshot_bytes_to_writer(snapshot_file.snapshot(), durable_bytes, writer)
         }
     }
 }
 
-/// Reads a snapshot helper file, preserving its logical snapshot,
-/// on-disk format, and compression envelope.
+/// Reads a legacy SNAP2V1 helper file, preserving its compression envelope and
+/// account segment. The exposed optimistic state uses the current in-memory model.
 pub fn read_snapshot_file(path: &Path) -> anyhow::Result<SnapshotFile> {
     let bytes = std::fs::read(path)
         .with_context(|| format!("Failed to read snapshot file: {}", path.display()))?;
@@ -836,7 +1093,7 @@ pub fn read_snapshot_file(path: &Path) -> anyhow::Result<SnapshotFile> {
         .with_context(|| format!("Failed to parse snapshot file: {}", path.display()))
 }
 
-/// Writes a snapshot helper file back using the streamed on-disk format
+/// Writes a snapshot helper file back using the legacy SNAP2V1 format
 /// and preserved compression envelope.
 pub fn write_snapshot_file(path: &Path, snapshot_file: &SnapshotFile) -> anyhow::Result<()> {
     let parent_dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -885,7 +1142,9 @@ where
     write_snapshot_file(output, &snapshot_file)
 }
 
-pub(crate) fn write_streamed_thread_snapshot_to_writer<W: Write + ?Sized>(
+/// Writes the legacy monolithic wire format. The caller supplies a legacy-encoded
+/// optimistic state and legacy account segment; current snapshots use partitions.
+pub(crate) fn write_legacy_thread_snapshot<W: Write + ?Sized>(
     snapshot: &ThreadSnapshot,
     durable_snapshot_path: Option<&Path>,
     writer: &mut W,
@@ -894,39 +1153,13 @@ pub(crate) fn write_streamed_thread_snapshot_to_writer<W: Write + ?Sized>(
         Some(path) => std::fs::metadata(path)?.len(),
         None => 0,
     };
-    write_streamed_thread_snapshot_prefix_to_writer(snapshot, durable_len, writer)?;
+    let prefix = StreamedThreadSnapshot::from_snapshot(snapshot, durable_len);
+    write_legacy_snapshot_prefix(&prefix, writer)?;
     if let Some(path) = durable_snapshot_path {
         let mut durable_file = File::open(path)?;
         std::io::copy(&mut durable_file, writer)?;
     }
     Ok(())
-}
-
-fn copy_snapshot_segment_to_writer<R: Read, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    expected_len: u64,
-    segment_name: &str,
-) -> anyhow::Result<()> {
-    let mut limited_reader = reader.take(expected_len);
-    let copied = std::io::copy(&mut limited_reader, writer)?;
-    anyhow::ensure!(
-        copied == expected_len,
-        "{segment_name}: expected {expected_len} bytes, received {copied}"
-    );
-    Ok(())
-}
-
-fn stage_snapshot_segment_to_temp<R: Read>(
-    reader: &mut R,
-    temp_dir: &Path,
-    expected_len: u64,
-    segment_name: &str,
-) -> anyhow::Result<NamedTempFile> {
-    let mut temp = NamedTempFile::new_in(temp_dir)?;
-    copy_snapshot_segment_to_writer(reader, temp.as_file_mut(), expected_len, segment_name)?;
-    temp.as_file_mut().rewind()?;
-    Ok(temp)
 }
 
 impl RepositoryImpl {
@@ -990,9 +1223,9 @@ impl RepositoryImpl {
     ) -> anyhow::Result<SnapshotImportStatus> {
         tracing::debug!(target: "monit", "set_state_from_snapshot_reader");
         let snapshot_import_start = Instant::now();
-        let mut probe = Vec::with_capacity(STREAMED_THREAD_SNAPSHOT_MAGIC.len());
+        let mut probe = Vec::with_capacity(snapshot_v1::MAGIC.len());
         let mut byte = [0u8; 1];
-        while probe.len() < STREAMED_THREAD_SNAPSHOT_MAGIC.len() {
+        while probe.len() < snapshot_v1::MAGIC.len() {
             match reader.read(&mut byte)? {
                 0 => break,
                 _ => probe.push(byte[0]),
@@ -1000,14 +1233,14 @@ impl RepositoryImpl {
         }
 
         anyhow::ensure!(
-            probe.as_slice() == STREAMED_THREAD_SNAPSHOT_MAGIC,
+            probe.as_slice() == snapshot_v1::MAGIC,
             "Unsupported thread snapshot format: missing streamed snapshot magic",
         );
-        tracing::debug!("set_state_from_streamed_snapshot_reader");
         let status = self.set_state_from_streamed_snapshot_reader(
             reader,
             cur_thread_id,
             skipped_attestation_ids,
+            None,
         )?;
         if let Some(metrics) = self.metrics.as_ref() {
             metrics.report_snapshot_import_time(
@@ -1018,12 +1251,39 @@ impl RepositoryImpl {
         Ok(status)
     }
 
+    pub(crate) fn import_legacy_network_payload<R: Read>(
+        &mut self,
+        reader: &mut R,
+        expected: (ThreadIdentifier, BlockIdentifier),
+        anchor: BlockHeight,
+    ) -> anyhow::Result<SnapshotImportStatus> {
+        let mut magic = [0; 7];
+        reader.read_exact(&mut magic)?;
+        anyhow::ensure!(&magic == snapshot_v1::MAGIC, "unsupported legacy network snapshot marker");
+        self.set_state_from_streamed_snapshot_reader(
+            reader,
+            &expected.0,
+            Arc::new(Mutex::new(HashSet::new())),
+            Some((expected.0, expected.1, anchor)),
+        )
+    }
+
     fn set_state_from_streamed_snapshot_reader<R: Read>(
         &mut self,
         reader: &mut R,
         cur_thread_id: &ThreadIdentifier,
         skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+        network_expected: Option<(ThreadIdentifier, BlockIdentifier, BlockHeight)>,
     ) -> anyhow::Result<SnapshotImportStatus> {
+        let activity_slot = cur_thread_id.to_string();
+        let phase = |name| {
+            crate::helper::metrics::ActivityMetric::parallel(
+                "snapshot_import",
+                name,
+                &activity_slot,
+            )
+            .enter()
+        };
         let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut *reader)
             .map_err(|e| {
                 tracing::error!("Failed to deserialize streamed snapshot header: {e}");
@@ -1031,18 +1291,34 @@ impl RepositoryImpl {
             })?;
         let mut prefix_bytes = vec![0u8; header.prefix_len as usize];
         reader.read_exact(&mut prefix_bytes)?;
-        let prefix = deserialize_streamed_thread_snapshot_prefix(&prefix_bytes).map_err(|e| {
-            tracing::error!("Failed to deserialize streamed snapshot prefix: {e}");
-            anyhow::format_err!("Failed to deserialize streamed snapshot prefix: {e}")
+        let mut prefix = snapshot_v1::decode_prefix(&prefix_bytes).map_err(|e| {
+            tracing::error!("Failed to deserialize legacy snapshot prefix: {e}");
+            anyhow::format_err!("Failed to deserialize snapshot prefix: {e}")
         })?;
 
-        let mut state = <Self as Repository>::OptimisticState::deserialize_from_buf(
-            prefix.optimistic_state.as_slice(),
-        )
-        .map_err(|e| {
-            tracing::error!("Failed to deserialize streamed snapshot state: {e}");
-            anyhow::format_err!("Failed to deserialize state: {e}")
-        })?;
+        if let Some((thread, block, height)) = network_expected {
+            anyhow::ensure!(
+                prefix.finalized_block.data().identifier() == block
+                    && *prefix.finalized_block.data().common_section().thread_id() == thread,
+                "legacy snapshot request mismatch"
+            );
+            if height.thread_identifier() == &thread {
+                anyhow::ensure!(
+                    prefix.block_height == height,
+                    "legacy snapshot anchor height mismatch"
+                );
+            }
+            anyhow::ensure!(
+                SnapshotVersion::for_block(
+                    &prefix.block_protocol_version_state,
+                    &self.config_read
+                )? == SnapshotVersion::Legacy,
+                "legacy snapshot not allowed for this block protocol"
+            );
+        }
+
+        let mut state = snapshot_v1::convert_state(&mut prefix)?;
+        validate_snapshot_inboxes(&state, &prefix.db_messages)?;
 
         let block_id = prefix.finalized_block.data().identifier();
         let snapshot_block_height = prefix.block_height;
@@ -1082,41 +1358,40 @@ impl RepositoryImpl {
             }
         }
         let mut staged_import = None;
+        anyhow::ensure!(durable_tag <= 1, "Invalid legacy durable header");
         if durable_tag == 0 {
             anyhow::ensure!(
                 durable_len == 0,
                 "Invalid streamed durable snapshot header: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, tag={durable_tag}, len={durable_len}"
             );
+            anyhow::ensure!(reader.read(&mut [0])? == 0, "Trailing bytes in legacy snapshot");
         } else {
             anyhow::ensure!(
                 durable_len > 0,
                 "Invalid streamed durable snapshot header: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, tag={durable_tag}, len={durable_len}"
             );
 
-            let segment_name = format!(
-                "streamed durable snapshot block_id={block_id:?} thread_id={snapshot_thread_id:?}"
-            );
-            let mut durable_snapshot =
-                stage_snapshot_segment_to_temp(reader, &self.data_dir, durable_len, &segment_name)
-                    .map_err(|e| {
-                        tracing::error!(
-                            target: "node",
-                            ?block_id,
-                            ?snapshot_thread_id,
-                            expected_durable_len = durable_len,
-                            "Failed to stage durable snapshot bytes: {e}",
-                        );
-                        e
-                    })?;
-
+            // Import bodies directly into the provisional archive epoch.
             let staged = self.thread_accounts_repository.begin_staged_import_after_current_epoch();
-            let import_result =
-                self.thread_accounts_repository.import_durable_snapshot_from_reader_staged(
-                    durable_snapshot.as_file_mut(),
-                    &snapshot_thread_id,
-                    &block_id,
-                    staged,
-                );
+            let import_result = {
+                let _activity = phase("2_legacy_accounts");
+                (|| {
+                    let mut segment = (&mut *reader).take(durable_len);
+                    let state =
+                        self.thread_accounts_repository.import_snapshot_v1_from_reader_staged(
+                            &mut segment,
+                            &snapshot_thread_id,
+                            &block_id,
+                            staged,
+                        )?;
+                    anyhow::ensure!(segment.limit() == 0, "Truncated legacy durable segment");
+                    anyhow::ensure!(
+                        reader.read(&mut [0])? == 0,
+                        "Trailing bytes in legacy snapshot"
+                    );
+                    Ok(state)
+                })()
+            };
             let new_durable = match import_result {
                 Ok(new_durable) => new_durable,
                 Err(err) => {
@@ -1137,16 +1412,42 @@ impl RepositoryImpl {
             staged_import = Some(staged);
         }
 
+        self.install_staged_snapshot(
+            prefix,
+            state,
+            staged_import,
+            cur_thread_id,
+            skipped_attestation_ids,
+            &|| false,
+        )
+    }
+
+    fn install_staged_snapshot(
+        &mut self,
+        prefix: StreamedThreadSnapshot,
+        state: OptimisticStateImpl,
+        staged_import: Option<account_state::StagedArchiveEpoch>,
+        cur_thread_id: &ThreadIdentifier,
+        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
+        should_cancel: &impl Fn() -> bool,
+    ) -> anyhow::Result<SnapshotImportStatus> {
+        // Own cleanup across every fallible pre-commit operation, including
+        // eligibility checks and recovery-file persistence.
+        let mut staging = snapshot_installation::StagedImportGuard::new(
+            self.thread_accounts_repository.clone(),
+            staged_import,
+        );
+        let block_id = state.block_id;
+        let snapshot_thread_id = state.thread_id;
+        let snapshot_block_height = prefix.block_height;
         let finalization_import_gate = self.finalization_import_gate.clone();
         let _finalization_import_guard = finalization_import_gate.write();
+        anyhow::ensure!(!should_cancel(), "snapshot installation cancelled");
         let import_decision =
             self.decide_snapshot_import(&snapshot_thread_id, &block_id, &snapshot_block_height)?;
         match import_decision {
             SnapshotImportDecision::ImportNeeded { .. } => {}
             SnapshotImportDecision::AlreadyCovered { distance_from_last_finalized } => {
-                if let Some(staged) = staged_import {
-                    self.thread_accounts_repository.abort_staged_import(staged);
-                }
                 tracing::info!(
                     target: "node",
                     ?block_id,
@@ -1158,9 +1459,6 @@ impl RepositoryImpl {
                 return Ok(SnapshotImportStatus::Skipped(import_decision));
             }
             SnapshotImportDecision::TooClose { distance_from_last_finalized } => {
-                if let Some(staged) = staged_import {
-                    self.thread_accounts_repository.abort_staged_import(staged);
-                }
                 tracing::info!(
                     target: "node",
                     ?block_id,
@@ -1172,38 +1470,53 @@ impl RepositoryImpl {
                 return Ok(SnapshotImportStatus::Skipped(import_decision));
             }
             SnapshotImportDecision::Invalidated => {
-                if let Some(staged) = staged_import {
-                    self.thread_accounts_repository.abort_staged_import(staged);
-                }
                 anyhow::bail!(
                     "Refusing to commit invalidated staged snapshot: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, block_height={snapshot_block_height:?}"
                 );
             }
+        }
+        // Reject known history conflicts while the staged epoch can still be
+        // discarded, before publishing archive controls or repository state.
+        if let Some(cursor) = history_cursor_from_snapshot(
+            &prefix.history_cursor,
+            &prefix.history_data_snapshot,
+            &prefix.block_height,
+        ) {
+            self.block_state_repository
+                .get(&block_id)?
+                .guarded(|state| state.ensure_history_cursor_matches(&cursor))?;
         }
         if let Some(staged) = staged_import {
             if !self
                 .thread_accounts_repository
                 .flush_pending_and_wait_for_drain(std::time::Duration::from_secs(60))
             {
-                self.thread_accounts_repository.abort_staged_import(staged);
                 anyhow::bail!(
-                    "Timed out waiting for durable account accumulator to drain before committing staged snapshot import: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, expected_durable_len={durable_len}"
+                    "Timed out waiting for durable account accumulator to drain before committing staged snapshot import: block_id={block_id:?}, thread_id={snapshot_thread_id:?}"
                 );
             }
+            // OptimisticShardState serde contains TVM only. Recovery must have
+            // the verified durable map on disk before archive controls advance.
+            self.thread_accounts_repository.state_save(&block_id, &state.shard_state.0)?;
+            anyhow::ensure!(!should_cancel(), "snapshot installation cancelled");
             self.save_snapshot_import_recovery(&SnapshotImportRecovery {
                 cur_thread_id: *cur_thread_id,
                 snapshot_thread_id,
                 snapshot_block_id: block_id,
                 prefix: prefix.clone(),
+                staged,
             })?;
-            self.thread_accounts_repository
-                .commit_staged_import(staged, &snapshot_thread_id, &block_id)
-                .map_err(|e| {
-                    let _ = self.remove_snapshot_import_recovery();
-                    anyhow::anyhow!(
-                        "Failed to commit staged durable snapshot: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, expected_durable_len={durable_len}, err={e}"
-                    )
-                })?;
+            // KV publication has multiple writes. Any failure after entering
+            // commit has an ambiguous outcome: retain bodies and recovery,
+            // stop, and let startup complete controls from the system epoch.
+            staging.disarm();
+            if let Err(err) = self.thread_accounts_repository.commit_staged_import(
+                staged,
+                &snapshot_thread_id,
+                &block_id,
+            ) {
+                panic!("snapshot archive commit failed; restart recovery required: {err}");
+            }
         }
 
         let finalized_block = prefix.finalized_block.clone();
@@ -1287,7 +1600,11 @@ impl RepositoryImpl {
                 block_state_repo_clone.get(&thread_snapshot.finalized_block.data().identifier())?;
             let parent =
                 block_state_repo_clone.get(&thread_snapshot.finalized_block.data().parent())?;
-            let history_cursor = history_cursor_from_snapshot(&thread_snapshot);
+            let history_cursor = history_cursor_from_snapshot(
+                &thread_snapshot.history_cursor,
+                &thread_snapshot.history_data_snapshot,
+                &thread_snapshot.block_height,
+            );
             block_state.guarded_mut(|state| {
                 if state.thread_identifier().is_none() {
                     state.set_thread_identifier(
@@ -1422,7 +1739,7 @@ impl RepositoryImpl {
                 if v.is_empty() {
                     None
                 } else {
-                    let first_message = &v[0].message;
+                    let first_message = v[0].tvm_message().ok()?;
                     let dest: AccountIdentifier =
                         first_message.int_dst_account_id().map(From::from)?;
                     let dest_dapp_id = first_message
@@ -1435,7 +1752,7 @@ impl RepositoryImpl {
                         dest.routing(dest_dapp_id),
                         v.into_iter()
                             .map(|msg| {
-                                let id = MessageIdentifier::from(msg.deref());
+                                let id = msg.identifier();
                                 (id, msg)
                             })
                             .collect(),
@@ -1600,25 +1917,21 @@ impl RepositoryImpl {
 fn read_snapshot_header_from_reader<R: Read>(
     reader: &mut R,
 ) -> anyhow::Result<Option<ThreadSnapshotHeader>> {
-    let mut probe = Vec::with_capacity(STREAMED_THREAD_SNAPSHOT_MAGIC.len());
+    let mut probe = Vec::with_capacity(snapshot_v1::MAGIC.len());
     let mut byte = [0u8; 1];
-    while probe.len() < STREAMED_THREAD_SNAPSHOT_MAGIC.len() {
+    while probe.len() < snapshot_v1::MAGIC.len() {
         match reader.read(&mut byte)? {
             0 => break,
             _ => probe.push(byte[0]),
         }
     }
 
-    anyhow::ensure!(
-        probe.as_slice() == STREAMED_THREAD_SNAPSHOT_MAGIC,
-        "Unsupported thread snapshot format: missing streamed snapshot magic",
-    );
+    anyhow::ensure!(probe.as_slice() == snapshot_v1::MAGIC, "Unsupported legacy snapshot marker",);
     let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut *reader)
-        .map_err(|e| anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}"))?;
+        .map_err(|e| anyhow::format_err!("Failed to deserialize legacy snapshot header: {e}"))?;
     let mut prefix_bytes = vec![0u8; header.prefix_len as usize];
     reader.read_exact(&mut prefix_bytes)?;
-    let snapshot = deserialize_streamed_thread_snapshot_prefix(&prefix_bytes)
-        .map_err(|e| anyhow::format_err!("Failed to deserialize streamed snapshot prefix: {e}"))?;
+    let snapshot = snapshot_v1::decode_prefix(&prefix_bytes)?;
     Ok(Some(ThreadSnapshotHeader {
         block_id: snapshot.finalized_block.data().identifier(),
         thread_id: *snapshot.finalized_block.data().common_section().thread_id(),
@@ -1815,7 +2128,9 @@ impl RepositoryImpl {
         &self,
         recovery: &SnapshotImportRecovery,
     ) -> anyhow::Result<()> {
-        save_to_file(&Self::snapshot_import_recovery_path(&self.data_dir), recovery, true)
+        save_to_file(&Self::snapshot_import_recovery_path(&self.data_dir), recovery, true)?;
+        File::open(&self.data_dir)?.sync_all()?;
+        Ok(())
     }
 
     fn load_snapshot_import_recovery(
@@ -1827,7 +2142,10 @@ impl RepositoryImpl {
     fn remove_snapshot_import_recovery(&self) -> anyhow::Result<()> {
         let path = Self::snapshot_import_recovery_path(&self.data_dir);
         match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                File::open(&self.data_dir)?.sync_all()?;
+                Ok(())
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(err.into()),
         }
@@ -1875,16 +2193,25 @@ impl RepositoryImpl {
             recovery.snapshot_block_id,
             block_id,
         );
-        let state = <Self as Repository>::OptimisticState::deserialize_from_buf(
+        let mut state = <Self as Repository>::OptimisticState::deserialize_from_buf(
             recovery.prefix.optimistic_state.as_slice(),
         )
         .map_err(|e| anyhow::format_err!("Failed to deserialize recovery state: {e}"))?;
+        validate_snapshot_inboxes(&state, &recovery.prefix.db_messages)?;
         anyhow::ensure!(
             state.thread_id == recovery.snapshot_thread_id,
             "Snapshot import recovery thread mismatch: marker={:?}, state={:?}, block_id={block_id:?}",
             recovery.snapshot_thread_id,
             state.thread_id,
         );
+        anyhow::ensure!(state.block_id == block_id, "Snapshot recovery state block mismatch");
+        state.shard_state.0.durable = self
+            .thread_accounts_repository
+            .durable_map_repo()
+            .state_load(&block_id, &state.thread_id)?
+            .ok_or_else(|| {
+                anyhow::anyhow!("Missing durable account map for snapshot recovery: {block_id:?}")
+            })?;
         let thread_id = recovery.snapshot_thread_id;
         let block = recovery.prefix.finalized_block.clone();
         self.apply_thread_snapshot(
@@ -1990,13 +2317,12 @@ impl RepositoryImpl {
         };
 
         if let Some(recovery) = Self::load_snapshot_import_recovery(&data_dir)? {
-            let archive_covers_recovery = thread_accounts_repository
-                .get_archive_thread_control_states()?
-                .into_iter()
-                .any(|state| {
-                    state.thread_id == recovery.snapshot_thread_id
-                        && state.last_block_id == Some(recovery.snapshot_block_id)
-                });
+            let archive_covers_recovery =
+                thread_accounts_repository.durable_map_repo().recover_staged_import(
+                    recovery.staged,
+                    &recovery.snapshot_thread_id,
+                    &recovery.snapshot_block_id,
+                )?;
             if archive_covers_recovery {
                 tracing::warn!(
                     target: "node",
@@ -2006,6 +2332,7 @@ impl RepositoryImpl {
                 );
                 repo_impl.complete_snapshot_import_recovery(recovery)?;
             } else {
+                thread_accounts_repository.abort_staged_import(recovery.staged);
                 tracing::warn!(
                     target: "node",
                     block_id = ?recovery.snapshot_block_id,
@@ -3983,9 +4310,25 @@ mod extract_new_messages_tests {
     use tvm_block::OutMsgQueueKey;
 
     use super::*;
+    use crate::types::AccountInbox;
 
-    fn dummy_message() -> Arc<String> {
-        Arc::new(String::default())
+    fn dummy_message() -> Arc<WrappedMessage> {
+        Arc::new(WrappedMessage::from_tvm(&tvm_block::Message::with_int_header(
+            tvm_block::InternalMessageHeader::default(),
+        )))
+    }
+
+    fn queue_from_inboxes(
+        inboxes: BTreeMap<AccountRouting, MessagesRange<MessageIdentifier, Arc<WrappedMessage>>>,
+    ) -> ThreadMessageQueueState {
+        let mut queue = ThreadMessageQueueState::empty();
+        for (routing, inbox) in inboxes {
+            let mut account_inbox = AccountInbox::empty();
+            account_inbox.messages = inbox;
+            account_inbox.rebase(&MessageDurableStorage::mem()).unwrap();
+            queue.set_inbox(routing, account_inbox);
+        }
+        queue
     }
 
     fn gen_message_id() -> MessageIdentifier {
@@ -3995,7 +4338,7 @@ mod extract_new_messages_tests {
 
     #[test]
     fn test_extract_new_messages_no_last_saved() {
-        let addr = AccountAddress(UInt256::default());
+        let addr = AccountIdentifier::default().redirect();
         let id1 = gen_message_id();
         let id2 = gen_message_id();
 
@@ -4010,7 +4353,7 @@ mod extract_new_messages_tests {
 
         let m_map = Mutex::new(HashMap::new());
 
-        let result = extract_new_messages(&btree, &m_map.lock()).unwrap();
+        let result = extract_new_messages(&queue_from_inboxes(btree), &m_map.lock()).unwrap();
         let inbox = result.get(&addr).unwrap();
 
         assert_eq!(inbox.len(), 2);
@@ -4019,7 +4362,7 @@ mod extract_new_messages_tests {
 
     #[test]
     fn test_extract_new_messages_with_last_saved_in_middle() {
-        let addr = AccountAddress(UInt256::default());
+        let addr = AccountIdentifier::default().redirect();
         let id1 = gen_message_id();
         let id2 = gen_message_id();
         let id3 = gen_message_id();
@@ -4037,7 +4380,9 @@ mod extract_new_messages_tests {
         let mut last_saved = HashMap::new();
         last_saved.insert(addr.clone(), id1.clone());
 
-        let result = extract_new_messages(&btree, &Mutex::new(last_saved).lock()).unwrap();
+        let result =
+            extract_new_messages(&queue_from_inboxes(btree), &Mutex::new(last_saved).lock())
+                .unwrap();
         let inbox = result.get(&addr).unwrap();
 
         assert_eq!(inbox.len(), 2); // should skip id1
@@ -4047,7 +4392,7 @@ mod extract_new_messages_tests {
 
     #[test]
     fn test_extract_new_messages_with_last_saved_latest() {
-        let addr = AccountAddress(UInt256::default());
+        let addr = AccountIdentifier::default().redirect();
         let id1 = gen_message_id();
         let id2 = gen_message_id();
 
@@ -4063,7 +4408,9 @@ mod extract_new_messages_tests {
         let mut last_saved = HashMap::new();
         last_saved.insert(addr.clone(), id2.clone());
 
-        let result = extract_new_messages(&btree, &Mutex::new(last_saved).lock()).unwrap();
+        let result =
+            extract_new_messages(&queue_from_inboxes(btree), &Mutex::new(last_saved).lock())
+                .unwrap();
 
         assert!(!result.contains_key(&addr));
     }
@@ -4080,7 +4427,7 @@ mod extract_new_messages_tests {
             (id_a1_1.clone(), dummy_message()),
             (id_a1_2.clone(), dummy_message()),
         ]));
-        let addr1 = AccountAddress(UInt256::default());
+        let addr1 = AccountIdentifier::default().redirect();
         btree.insert(addr1.clone(), range1);
 
         // Acc 2
@@ -4091,14 +4438,16 @@ mod extract_new_messages_tests {
             (id_a2_1.clone(), dummy_message()),
             (id_a2_2.clone(), dummy_message()),
         ]));
-        let addr2 = AccountAddress(UInt256::max());
+        let addr2 = AccountIdentifier::new([0xff; 32]).redirect();
         btree.insert(addr2.clone(), range2);
 
         // Previous saved ids only for Acc 1
         let mut last_saved = HashMap::new();
         last_saved.insert(addr1.clone(), id_a1_1.clone());
 
-        let result = extract_new_messages(&btree, &Mutex::new(last_saved).lock()).unwrap();
+        let result =
+            extract_new_messages(&queue_from_inboxes(btree), &Mutex::new(last_saved).lock())
+                .unwrap();
 
         let inbox1 = result.get(&addr1).unwrap();
         let inbox2 = result.get(&addr2).unwrap();
@@ -4180,7 +4529,7 @@ fn extract_new_messages(
         for (routing, m_range) in dapp_queue.messages.iter() {
             let mut tail = m_range.tail_sequence().clone(); // TODO: remove this clone if possible
 
-            if let Some(last_saved_m_id) = last_message_guard.get(routing) {
+            if let Some(last_saved_m_id) = last_message_guard.get(&routing) {
                 let found_index =
                     tail.iter().position(|(message_id, _)| message_id == last_saved_m_id);
 
@@ -4190,7 +4539,7 @@ fn extract_new_messages(
             }
             if !tail.is_empty() {
                 let tail_as_vec = tail.into_iter().collect();
-                messages.insert(*routing, tail_as_vec);
+                messages.insert(routing, tail_as_vec);
             }
         }
     }
@@ -4239,8 +4588,9 @@ pub mod tests {
     use super::read_snapshot_file;
     use super::rewrite_snapshot_file;
     use super::should_skip_stale_finalization;
+    use super::snapshot_v1;
+    use super::write_legacy_snapshot_bytes_to_writer;
     use super::write_snapshot_file;
-    use super::write_streamed_thread_snapshot_bytes_to_writer;
     use super::AncestorBlockData;
     use super::BkSetUpdate;
     use super::Metadata;
@@ -4249,7 +4599,6 @@ pub mod tests {
     use super::SnapshotFormat;
     use super::ThreadSnapshot;
     use super::OID;
-    use super::STREAMED_THREAD_SNAPSHOT_MAGIC;
     use crate::block_keeper_system::BlockKeeperData;
     use crate::block_keeper_system::BlockKeeperSet;
     use crate::bls::envelope::BLSSignedEnvelope;
@@ -4268,7 +4617,6 @@ pub mod tests {
     use crate::node::shared_services::SharedServices;
     use crate::node::NodeIdentifier;
     use crate::repository::accounts::AccountsRepository;
-    use crate::repository::optimistic_state::OptimisticState;
     use crate::repository::optimistic_state::OptimisticStateImpl;
     use crate::repository::repository_impl::BlockStateRepository;
     use crate::repository::repository_impl::FinalizedBlockStorage;
@@ -4291,7 +4639,6 @@ pub mod tests {
     use crate::utilities::FixedSizeHashSet;
     use crate::versioning::block_protocol_version_state::BlockProtocolVersionState;
     use crate::versioning::ProtocolVersion;
-    use crate::zerostate::ZeroState;
 
     const ZEROSTATE: &str = "../config/zerostate";
     const DB_PATH: &str = "./tests-data";
@@ -4422,11 +4769,18 @@ pub mod tests {
         Envelope::create(Default::default(), HashMap::new(), block)
     }
 
-    fn make_test_repository(
+    pub(super) fn make_test_repository(
         tmp: &tempfile::TempDir,
     ) -> anyhow::Result<(RepositoryImpl, BlockStateRepository)> {
         let thread_accounts_repository =
             ThreadAccountsRepository::builder(tmp.path().join("thread-accounts")).build()?;
+        make_test_repository_with_accounts(tmp, thread_accounts_repository)
+    }
+
+    pub(super) fn make_test_repository_with_accounts(
+        tmp: &tempfile::TempDir,
+        thread_accounts_repository: ThreadAccountsRepository,
+    ) -> anyhow::Result<(RepositoryImpl, BlockStateRepository)> {
         let block_state_repository = BlockStateRepository::test(tmp.path().join("block-state"));
         let repository = RepositoryImpl::new(
             tmp.path().join("repo"),
@@ -4447,7 +4801,7 @@ pub mod tests {
         Ok((repository, block_state_repository))
     }
 
-    fn make_test_snapshot() -> ThreadSnapshot {
+    pub(super) fn make_test_snapshot() -> ThreadSnapshot {
         let parent_block_id = BlockIdentifier::new([9; 32]);
         let finalized_block = make_finalized_block(parent_block_id);
         let block_id = finalized_block.data().identifier();
@@ -4461,8 +4815,11 @@ pub mod tests {
         let prefinalization_proof =
             Envelope::create(Default::default(), HashMap::new(), attestation_data);
 
+        let mut state = OptimisticStateImpl::zero();
+        state.block_id = block_id;
+        state.thread_id = *finalized_block.data().common_section().thread_id();
         ThreadSnapshot::builder()
-            .optimistic_state(vec![1, 2, 3, 4])
+            .optimistic_state(bincode::serialize(&state).unwrap())
             .ancestor_blocks_data(vec![])
             .db_messages(vec![])
             .finalized_block(finalized_block.clone())
@@ -4491,7 +4848,7 @@ pub mod tests {
             .build()
     }
 
-    fn make_ancestor_block_data(
+    pub(super) fn make_ancestor_block_data(
         block_identifier: BlockIdentifier,
         parent_block_identifier: BlockIdentifier,
         block_seq_no: BlockSeqNo,
@@ -4580,14 +4937,14 @@ pub mod tests {
 
     fn streamed_durable_offset(bytes: &[u8]) -> anyhow::Result<usize> {
         anyhow::ensure!(
-            bytes.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC),
+            bytes.starts_with(snapshot_v1::MAGIC),
             "Snapshot is not in streamed format"
         );
-        let mut reader = Cursor::new(&bytes[STREAMED_THREAD_SNAPSHOT_MAGIC.len()..]);
+        let mut reader = Cursor::new(&bytes[snapshot_v1::MAGIC.len()..]);
         let header: super::StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut reader)?;
         let header_len = usize::try_from(reader.position())?;
         let prefix_len = usize::try_from(header.prefix_len)?;
-        Ok(STREAMED_THREAD_SNAPSHOT_MAGIC.len() + header_len + prefix_len)
+        Ok(snapshot_v1::MAGIC.len() + header_len + prefix_len)
     }
 
     #[test]
@@ -4873,8 +5230,12 @@ pub mod tests {
         base_layer.update_from_pure_data([0x42; 32], block_height)?;
         snapshot.history_cursor = BTreeMap::from_iter([(0 as LayerNumber, base_layer.clone())]);
 
-        let cursor = super::history_cursor_from_snapshot(&snapshot)
-            .expect("snapshot with history data must restore cursor");
+        let cursor = super::history_cursor_from_snapshot(
+            &snapshot.history_cursor,
+            &snapshot.history_data_snapshot,
+            &snapshot.block_height,
+        )
+        .expect("snapshot with history data must restore cursor");
 
         assert_eq!(cursor.get(&(0 as LayerNumber)), Some(&base_layer));
         Ok(())
@@ -4884,7 +5245,12 @@ pub mod tests {
     fn non_genesis_legacy_snapshot_without_history_cursor_stays_empty() {
         let snapshot = make_test_snapshot();
 
-        assert!(super::history_cursor_from_snapshot(&snapshot).is_none());
+        assert!(super::history_cursor_from_snapshot(
+            &snapshot.history_cursor,
+            &snapshot.history_data_snapshot,
+            &snapshot.block_height,
+        )
+        .is_none());
     }
 
     #[test]
@@ -5154,7 +5520,42 @@ pub mod tests {
     #[test]
     #[ignore = "uses local snapshot files from LOCAL_SNAPSHOT_DIR or /Volumes/x5/_"]
     fn test_set_state_from_local_snapshots_via_streamed_reader() -> anyhow::Result<()> {
+        use anyhow::Context;
+
         use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
+
+        struct ProgressReader<R> {
+            inner: R,
+            bytes: u64,
+            next: u64,
+            total: u64,
+            started: std::time::Instant,
+        }
+        impl<R: Read> Read for ProgressReader<R> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.inner.read(output)?;
+                self.bytes += count as u64;
+                if self.bytes >= self.next {
+                    eprintln!(
+                        "snapshot input: {:.1}% ({}/{} bytes), elapsed {:.1}s",
+                        100.0 * self.bytes as f64 / self.total as f64,
+                        self.bytes,
+                        self.total,
+                        self.started.elapsed().as_secs_f64(),
+                    );
+                    self.next = self.bytes + 256 * 1024 * 1024;
+                }
+                Ok(count)
+            }
+        }
+
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "account_state=info".into()),
+            )
+            .with_test_writer()
+            .try_init();
 
         let snapshots_dir = std::env::var_os("LOCAL_SNAPSHOT_DIR")
             .map(PathBuf::from)
@@ -5193,41 +5594,34 @@ pub mod tests {
 
         for snapshot_path in snapshot_paths {
             let tmp = tempfile::TempDir::new()?;
-            let block_state_repository = BlockStateRepository::test(tmp.path().join("block-state"));
-            let accounts_repository =
-                AccountsRepository::new(tmp.path().join("accounts"), Some(0), 1);
-            let thread_accounts_repository =
-                ThreadAccountsRepository::builder(tmp.path().join("durable")).build()?;
-            let message_db = MessageDurableStorage::mem();
-            let finalized_blocks = finalized_blocks_storage();
+            // Real snapshots must not accumulate both archive copies in RAM.
+            // Require an explicit external test store and isolate each run's sets.
+            let address = std::env::var("LOCAL_SNAPSHOT_AEROSPIKE_ADDRESS")
+                .context("Set LOCAL_SNAPSHOT_AEROSPIKE_ADDRESS to an isolated test Aerospike")?;
+            let namespace = std::env::var("LOCAL_SNAPSHOT_AEROSPIKE_NAMESPACE")
+                .unwrap_or_else(|_| "snapshot_import".to_string());
+            let set_prefix = format!(
+                "snapshot_import_{}",
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()
+            );
+            eprintln!("snapshot archive: {address}, namespace={namespace}, prefix={set_prefix}");
+            let accounts = ThreadAccountsRepository::builder(tmp.path().join("thread-accounts"))
+                .set_accounts_aerospike_store(&address, &namespace, &set_prefix)
+                .build()?;
+            let (mut repository, _) = make_test_repository_with_accounts(&tmp, accounts)?;
 
-            let mut repository = RepositoryImpl::new(
-                tmp.path().join("repo"),
-                Some(PathBuf::from(ZEROSTATE)),
-                1,
-                SharedServices::test_start(RoutingService::stub().0, u32::MAX),
-                Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
-                false,
-                block_state_repository,
-                None,
-                accounts_repository,
-                thread_accounts_repository,
-                message_db.clone(),
-                finalized_blocks,
-                mock_bk_set_updates_tx(),
-                ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
-            )?;
-
-            let zerostate = ZeroState::load_from_file(PathBuf::from(ZEROSTATE))?;
-            for tid in zerostate.list_threads() {
-                let block_id = *zerostate.state(tid)?.get_block_id();
-                repository.thread_accounts_repository.ensure_thread(tid, &block_id, false)?;
-            }
-
-            let mut snapshot_file = File::open(&snapshot_path)?;
+            let file = File::open(&snapshot_path)?;
+            let mut snapshot_file = ProgressReader {
+                total: file.metadata()?.len(),
+                inner: file,
+                bytes: 0,
+                next: 256 * 1024 * 1024,
+                started: std::time::Instant::now(),
+            };
             let mut magic = [0u8; COMPRESSED_SNAPSHOT_MAGIC.len()];
             let skipped_attestation_ids = Arc::new(Mutex::new(HashSet::default()));
 
+            let import_started = std::time::Instant::now();
             let restore_result = match snapshot_file.read_exact(&mut magic) {
                 Ok(()) if &magic == COMPRESSED_SNAPSHOT_MAGIC => {
                     let mut decoder = zstd::Decoder::new(snapshot_file)?;
@@ -5255,6 +5649,10 @@ pub mod tests {
             restore_result.map_err(|e| {
                 anyhow::anyhow!("Failed to restore {}: {e}", snapshot_path.display())
             })?;
+            eprintln!(
+                "streamed snapshot import completed in {:.1}s",
+                import_started.elapsed().as_secs_f64()
+            );
             let (restored_block_id, _) = repository
                 .select_thread_last_finalized_block(&ThreadIdentifier::default())?
                 .ok_or_else(|| anyhow::anyhow!("No finalized block after restore"))?;
@@ -5272,13 +5670,15 @@ pub mod tests {
                 .thread_accounts_repository
                 .durable_map_iter(&restored_state.shard_state.0.durable)
             {
-                if let AccountInfo::VmAccountHash(_) = info {
+                if let AccountInfo::AccountHash(_) = info {
                     total_accounts += 1;
-                    if let Some(account) = repository
-                        .thread_accounts_repository
-                        .state_account(&restored_state.shard_state.0, &routing)?
-                    {
-                        if printed_accounts < MAX_PRINTED_RESTORED_ACCOUNTS {
+                    if printed_accounts < MAX_PRINTED_RESTORED_ACCOUNTS {
+                        // Import already authenticates every body. Read back a
+                        // sample, not the entire database with another BOC decode.
+                        if let Some(account) = repository
+                            .thread_accounts_repository
+                            .state_account(&restored_state.shard_state.0, &routing)?
+                        {
                             eprintln!(
                                 "streamed snapshot test: account {} last_trans_lt={} dapp_id={} last_trans_hash={}",
                                 routing,
@@ -5304,18 +5704,14 @@ pub mod tests {
     }
 
     #[test]
-    fn snapshot_file_streamed_roundtrip_preserves_durable_bytes() -> anyhow::Result<()> {
+    fn legacy_snapshot_file_roundtrip_preserves_durable_bytes() -> anyhow::Result<()> {
         let tempdir = tempfile::tempdir()?;
         let input_path = tempdir.path().join("streamed.snapshot");
         let output_path = tempdir.path().join("streamed-out.snapshot");
         let durable_bytes = vec![0x10, 0x20, 0x30, 0x40, 0x50];
 
         let mut payload = Vec::new();
-        write_streamed_thread_snapshot_bytes_to_writer(
-            &make_test_snapshot(),
-            &durable_bytes,
-            &mut payload,
-        )?;
+        write_legacy_snapshot_bytes_to_writer(&make_test_snapshot(), &durable_bytes, &mut payload)?;
         std::fs::write(&input_path, payload)?;
 
         let mut snapshot_file = read_snapshot_file(&input_path)?;
@@ -5345,7 +5741,7 @@ pub mod tests {
     }
 
     #[test]
-    fn snapshot_file_compressed_roundtrip_preserves_compression() -> anyhow::Result<()> {
+    fn legacy_snapshot_file_roundtrip_preserves_compression() -> anyhow::Result<()> {
         use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
 
         let tempdir = tempfile::tempdir()?;
@@ -5354,11 +5750,7 @@ pub mod tests {
         let durable_bytes = vec![0xAB, 0xCD, 0xEF];
 
         let mut payload = Vec::new();
-        write_streamed_thread_snapshot_bytes_to_writer(
-            &make_test_snapshot(),
-            &durable_bytes,
-            &mut payload,
-        )?;
+        write_legacy_snapshot_bytes_to_writer(&make_test_snapshot(), &durable_bytes, &mut payload)?;
         std::fs::write(&input_path, compress_snapshot_payload(&payload)?)?;
 
         let mut snapshot_file = read_snapshot_file(&input_path)?;
@@ -5369,7 +5761,7 @@ pub mod tests {
         let output_bytes = std::fs::read(&output_path)?;
         assert!(output_bytes.starts_with(COMPRESSED_SNAPSHOT_MAGIC));
         let decompressed = zstd::decode_all(&output_bytes[COMPRESSED_SNAPSHOT_MAGIC.len()..])?;
-        assert!(decompressed.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC));
+        assert!(decompressed.starts_with(snapshot_v1::MAGIC));
 
         let reparsed = read_snapshot_file(&output_path)?;
         assert_eq!(reparsed.compression(), SnapshotCompression::ZstdWithMagic);
@@ -5382,17 +5774,13 @@ pub mod tests {
     }
 
     #[test]
-    fn rewrite_snapshot_file_keeps_streamed_format() -> anyhow::Result<()> {
+    fn rewrite_snapshot_file_keeps_legacy_format() -> anyhow::Result<()> {
         let tempdir = tempfile::tempdir()?;
         let input_path = tempdir.path().join("rewrite-streamed.snapshot");
         let output_path = tempdir.path().join("rewrite-streamed-out.snapshot");
 
         let mut payload = Vec::new();
-        write_streamed_thread_snapshot_bytes_to_writer(
-            &make_test_snapshot(),
-            &[0x01, 0x02],
-            &mut payload,
-        )?;
+        write_legacy_snapshot_bytes_to_writer(&make_test_snapshot(), &[0x01, 0x02], &mut payload)?;
         std::fs::write(&input_path, payload)?;
 
         rewrite_snapshot_file(&input_path, &output_path, |snapshot| {
@@ -5401,7 +5789,7 @@ pub mod tests {
         })?;
 
         let output_bytes = std::fs::read(&output_path)?;
-        assert!(output_bytes.starts_with(STREAMED_THREAD_SNAPSHOT_MAGIC));
+        assert!(output_bytes.starts_with(snapshot_v1::MAGIC));
         Ok(())
     }
 
@@ -5429,18 +5817,5 @@ pub mod tests {
         let bytes = bincode::serialize(&some_large).unwrap();
         let deserialized: Option<Vec<u8>> = bincode::deserialize(&bytes).unwrap();
         assert_eq!(deserialized.unwrap().len(), 10000);
-    }
-
-    #[test]
-    fn streamed_durable_segment_copy_rejects_truncated_input() {
-        let mut reader = Cursor::new(vec![1u8, 2, 3]);
-        let mut writer = Vec::new();
-
-        let err =
-            super::copy_snapshot_segment_to_writer(&mut reader, &mut writer, 4, "durable snapshot")
-                .unwrap_err();
-
-        assert!(err.to_string().contains("expected 4 bytes, received 3"));
-        assert_eq!(writer, vec![1u8, 2, 3]);
     }
 }

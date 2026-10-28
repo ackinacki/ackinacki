@@ -36,6 +36,7 @@ use crate::node::SignerIndex;
 use crate::types::bp_selector::ProducerSelector;
 use crate::types::envelope_hash::AckiNackiEnvelopeHash;
 use crate::types::history_proof::compute_block_leaf_hash;
+use crate::types::history_proof::history_cursors_match;
 use crate::types::history_proof::initial_history_cursor;
 use crate::types::history_proof::HistoryLayerData;
 use crate::types::notification::Notification;
@@ -597,11 +598,18 @@ has_cross_thread_ref_data_prepared={:?}\
     }
 
     pub fn set_history_cursor(&mut self, cursor: HistoryLayerData) -> anyhow::Result<()> {
-        if let Some(existing) = &self.history_cursor {
-            anyhow::ensure!(existing == &cursor, "history cursor mismatch");
+        self.ensure_history_cursor_matches(&cursor)?;
+        if self.history_cursor.is_some() {
             return Ok(());
         }
         self.set_history_cursor_unchecked(cursor)
+    }
+
+    pub fn ensure_history_cursor_matches(&self, cursor: &HistoryLayerData) -> anyhow::Result<()> {
+        if let Some(existing) = &self.history_cursor {
+            anyhow::ensure!(history_cursors_match(existing, cursor), "history cursor mismatch");
+        }
+        Ok(())
     }
 
     pub fn set_history_cursor_unchecked(&mut self, cursor: HistoryLayerData) -> anyhow::Result<()> {
@@ -917,6 +925,38 @@ impl AllowGuardedMut for AckiNackiBlockState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_cursor_setter_accepts_normalized_tail_without_replacing_local_cursor() {
+        use crate::types::history_proof::normalize_history_layer_data;
+        use crate::types::history_proof::HistoryBlockData;
+        use crate::types::history_proof::HISTORY_PROOF_WINDOW_SIZE;
+
+        let mut layer = HistoryBlockData::new();
+        for height in 1..=HISTORY_PROOF_WINDOW_SIZE as u64 + 1 {
+            layer
+                .update_from_pure_data(
+                    [height as u8; 32],
+                    BlockHeight::builder()
+                        .height(height)
+                        .thread_identifier(ThreadIdentifier::default())
+                        .build(),
+                )
+                .unwrap();
+        }
+        let cursor = HistoryLayerData::from_iter([(0, layer)]);
+        let normalized = normalize_history_layer_data(cursor.clone());
+        assert_ne!(cursor, normalized);
+        for (existing, incoming) in [(&cursor, &normalized), (&normalized, &cursor)] {
+            let mut state = AckiNackiBlockState::default();
+            state.set_history_cursor(existing.clone()).unwrap();
+            state.ensure_history_cursor_matches(incoming).unwrap();
+            state.set_history_cursor(incoming.clone()).unwrap();
+            assert_eq!(state.history_cursor(), &Some(existing.clone()));
+            assert!(state.set_history_cursor(initial_history_cursor()).is_err());
+            assert_eq!(state.history_cursor(), &Some(existing.clone()));
+        }
+    }
 
     #[test]
     fn cleanup_subscribers_removes_deduplicated_subscribers() {

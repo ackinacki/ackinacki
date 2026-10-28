@@ -143,6 +143,133 @@ mod tests {
     }
 
     #[test]
+    fn queued_primaries_do_not_pin_cache_while_waiting_for_repository() -> anyhow::Result<()> {
+        use std::collections::HashMap;
+        use std::sync::mpsc;
+        use std::sync::Arc;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        use external_fileshares_based::download_cache::DownloadCache;
+        use parking_lot::Mutex;
+
+        use crate::repository::repository_impl::snapshot_http_import::tests::Server;
+
+        for borrowed in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let private = directory.path().join(".snapshot-downloads");
+            std::fs::create_dir(&private)?;
+            let mut bodies = HashMap::new();
+            for index in [1, 2, 3] {
+                let id = hex::encode([index; 32]);
+                let body = vec![index; 20];
+                std::fs::write(private.join(&id), &body)?;
+                bodies.insert(id, body);
+            }
+            let primary = hex::encode([1; 32]);
+            if borrowed {
+                std::fs::write(directory.path().join(&primary), [1; 20])?;
+            }
+            let server = Server::new(bodies, primary.clone(), None, None, None);
+            let service = external_fileshares_based::ExternalFileSharesBased::builder()
+                .local_storage_share_base_path(directory.path().to_owned())
+                .download_cache_bytes(60)
+                .build()
+                .start(None)?;
+            let cache = DownloadCache::open(&private, None)?;
+            // Hold admission while all three loads are dispatched. No callback
+            // may acquire a primary lease and wait on the repository behind us.
+            let admission = cache.admit_import(&|| false)?;
+            let repository = Arc::new(Mutex::new(()));
+            let mut interface = service.interface();
+            let (tx, rx) = mpsc::channel();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            for index in [1, 2, 3] {
+                let (entered, failed) = (tx.clone(), tx.clone());
+                let (cache, repository) = (cache.clone(), repository.clone());
+                interface.load_blob(
+                    hex::encode([index; 32]),
+                    vec![server.base.clone()],
+                    1,
+                    None,
+                    Some(deadline),
+                    move |reader| {
+                        entered.send(Ok(false))?;
+                        let _repo = repository.lock();
+                        let mut body = Vec::new();
+                        reader.read_to_end(&mut body)?;
+                        assert_eq!(body, vec![index; 20]);
+                        // Analogous to partition import: need almost the entire
+                        // budget while holding the repository mutex. Other
+                        // queued primaries must remain evictable, not leased.
+                        let partition =
+                            cache.acquire(&hex::encode([index + 10; 32]), 50, &|| {
+                                Instant::now() >= deadline
+                            })?;
+                        std::fs::write(partition.path(), [0; 50])?;
+                        partition.accepted()?;
+                        drop(partition);
+                        entered.send(Ok(true))?;
+                        Ok(())
+                    },
+                    move |error| {
+                        let _ = failed.send(Err(error.to_string()));
+                    },
+                )?;
+            }
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_millis(200)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(admission);
+            let mut completed = 0;
+            for _ in 0..6 {
+                match rx.recv_timeout(Duration::from_secs(5))? {
+                    Ok(done) => completed += usize::from(done),
+                    Err(error) => anyhow::bail!("queued primary failed: {error}"),
+                }
+            }
+            assert_eq!(completed, 3);
+            if borrowed {
+                assert_eq!(std::fs::read(directory.path().join(primary))?, [1; 20]);
+            }
+            drop(interface);
+            service.join();
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_consumer_failure_preserves_published_resource() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let id = "ab".repeat(32);
+        let path = directory.path().join(&id);
+        std::fs::write(&path, [1, 2, 3])?;
+        let service = external_fileshares_based::ExternalFileSharesBased::builder()
+            .local_storage_share_base_path(directory.path().to_owned())
+            .build()
+            .start(None)?;
+        let mut interface = service.interface();
+        let (tx, rx) = std::sync::mpsc::channel();
+        interface.load_blob(
+            id,
+            vec![],
+            1,
+            None,
+            None,
+            |_| anyhow::bail!("rejected snapshot"),
+            move |error| {
+                tx.send(error.to_string()).unwrap();
+            },
+        )?;
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(5))?.contains("rejected snapshot"));
+        assert_eq!(std::fs::read(path)?, [1, 2, 3]);
+        drop(interface);
+        service.join();
+        Ok(())
+    }
+
+    #[test]
     fn load_blob_removes_cached_file_when_consumer_fails() {
         let tmp_dir = tempfile::tempdir().unwrap();
         let base_path = tmp_dir.path().join("cache");

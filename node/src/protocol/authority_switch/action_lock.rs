@@ -699,7 +699,10 @@ impl ThreadAuthority {
         //     tracing::trace!("Can not lock a block from a future round, local_round={local_round:?} > {:?}", *block_proposed_in_rounds.iter().min().unwrap());
         //     return ActionLockResult::Rejected;
         // }
-        let block_ref = BlockRef::try_from(&block_state).unwrap();
+        let Ok(block_ref) = BlockRef::try_from(&block_state) else {
+            tracing::trace!("try_lock_send_attestation_action: block state is not ready");
+            return ActionLockResult::Rejected;
+        };
 
         let mut is_lock_updated = false;
         let result = || -> ActionLockResult {
@@ -750,9 +753,13 @@ impl ThreadAuthority {
                     return ActionLockResult::Rejected;
                 };
 
+                let Ok(parent_block_ref) = BlockRef::try_from(&parent_block) else {
+                    tracing::trace!("try_lock_send_attestation_action: parent block is not ready");
+                    return ActionLockResult::Rejected;
+                };
                 let lock: ActionLock = ActionLock {
                     parent_block_producer_selector_data,
-                    parent_block: BlockRef::try_from(&parent_block).unwrap(),
+                    parent_block: parent_block_ref,
                     parent_prefinalization_proof: None,
                     locked_round: local_round,
                     locked_block: Some((block_round, block_ref)),
@@ -834,8 +841,15 @@ impl ThreadAuthority {
         };
         tracing::trace!("on_block_producer_stalled: last_prefinalized={last_prefinalized:?}");
         let parent_block: BlockState = last_prefinalized;
-        let (seq_no, parent_block_height) = parent_block
-            .guarded(|e| (e.block_seq_no().unwrap_or_default(), e.block_height().unwrap()));
+        let (seq_no, parent_block_height) =
+            parent_block.guarded(|e| (e.block_seq_no().unwrap_or_default(), *e.block_height()));
+        let Some(parent_block_height) = parent_block_height else {
+            tracing::warn!(
+                "on_block_producer_stalled: last prefinalized block for thread {} has no block height yet; retrying after synchronization",
+                thread_identifier,
+            );
+            return OnBlockProducerStalledResult::retry_later(None);
+        };
 
         if let Some(m) = self.block_repository.get_metrics() {
             let seq_no: u32 = seq_no.into();
@@ -964,12 +978,22 @@ impl ThreadAuthority {
                 existing.clone()
             } else {
                 was_lock_updated = true;
-                let parent_block_producer_selector_data = parent_block
-                    .guarded(|e| e.descendant_producer_selector_data().clone().unwrap());
+                let Some(parent_block_producer_selector_data) =
+                    parent_block.guarded(|e| e.descendant_producer_selector_data().clone())
+                else {
+                    tracing::warn!(
+                        "start_next_round: parent block has no producer selector yet; retrying"
+                    );
+                    return OnBlockProducerStalledResult::retry_later(None);
+                };
+                let Ok(parent_block_ref) = BlockRef::try_from(&parent_block) else {
+                    tracing::warn!("start_next_round: parent block is not ready; retrying");
+                    return OnBlockProducerStalledResult::retry_later(None);
+                };
                 let new_lock = ActionLock::builder()
                     .parent_prefinalization_proof(parent_prefinalization_proof)
                     .parent_block_producer_selector_data(parent_block_producer_selector_data)
-                    .parent_block(BlockRef::try_from(&parent_block).unwrap())
+                    .parent_block(parent_block_ref)
                     .locked_round(local_round)
                     // Note: if we ended up at this line it is clear that no attestation
                     // for any block were send yet. safe to assume that there's no block
@@ -1085,31 +1109,11 @@ impl ThreadAuthority {
                     tracing::trace!("start_next_round: parent ancestor_blocks_finalization_checkpoints are not set");
                     return OnBlockProducerStalledResult::retry_later(Some(block_height));
                 };
-                let required_fallback_attestations = {
-                    let mut ancestors = Vec::<BlockIdentifier>::from_iter(
-                        ancestor_blocks_finalization_checkpoints.fallback().keys().cloned(),
-                    );
-                    ancestors.retain(|e| {
-                        // Keep keys that are in the fallback checkpoints list
-                        // and are not in the primary list.
-                        // Those are blocks that have missed their primary attestation target.
-                        !ancestor_blocks_finalization_checkpoints.primary().contains_key(e)
-                    });
-                    ancestors
-                };
+                let required_fallback_attestations = Vec::<BlockIdentifier>::from_iter(
+                    ancestor_blocks_finalization_checkpoints.fallback().keys().cloned(),
+                );
                 let required_primary_attestations = Vec::<BlockIdentifier>::from_iter(
-                    ancestor_blocks_finalization_checkpoints.primary().keys().filter_map(|id| {
-                        // Note:
-                        // It is possible to send only attestations for blocks
-                        // that must be finalized on the next round.
-                        // However it seems that sending attestations for the entire
-                        // chain may work better.
-                        if !required_fallback_attestations.contains(id) {
-                            Some(*id)
-                        } else {
-                            None
-                        }
-                    }),
+                    ancestor_blocks_finalization_checkpoints.primary().keys().cloned(),
                 );
                 let mut attestations = vec![];
                 for id in required_fallback_attestations.iter() {
@@ -1132,42 +1136,35 @@ impl ThreadAuthority {
                     {
                         Some(attestation) => attestation,
                         None => {
-                            if ancestor_state.guarded(|e| e.is_finalized()) {
-                                let attestation = match AttestationSendService::generate_attestation(
-                                    self.bls_keys_map.clone(),
-                                    &self.node_credentials,
-                                    &ancestor_state,
-                                    AttestationTargetType::Fallback,
-                                ) {
-                                    Ok(attestation) => attestation,
-                                    Err(GenerateAttestationError::NodeIsNotInTheBKSet) => {
-                                        // Note: node can be absent in the ancestor bk set. If network stops just after this
-                                        // node was added to BK set, it won't be able to send next round request.
-                                        continue;
-                                    }
-                                    Err(e) => {
-                                        tracing::trace!(
+                            let attestation = match AttestationSendService::generate_attestation(
+                                self.bls_keys_map.clone(),
+                                &self.node_credentials,
+                                &ancestor_state,
+                                AttestationTargetType::Fallback,
+                            ) {
+                                Ok(attestation) => attestation,
+                                Err(GenerateAttestationError::NodeIsNotInTheBKSet) => {
+                                    // Note: node can be absent in the ancestor bk set. If network stops just after this
+                                    // node was added to BK set, it won't be able to send next round request.
+                                    continue;
+                                }
+                                Err(e) => {
+                                    tracing::trace!(
                                             "start_next_round: Failed to generate attestation for {:?}: {e}",
                                             ancestor_state
                                         );
-                                        return OnBlockProducerStalledResult::retry_later(Some(
-                                            block_height,
-                                        ));
-                                    }
-                                };
-                                ancestor_state.guarded_mut(|e| {
-                                    if e.own_fallback_attestation().is_none() {
-                                        e.set_own_fallback_attestation(attestation)
-                                            .expect("failed to set fallback attestation");
-                                    }
-                                    e.own_fallback_attestation().clone().unwrap()
-                                })
-                            } else {
-                                tracing::trace!("start_next_round: ancestor block does not have own_fallback_attestation set");
-                                return OnBlockProducerStalledResult::retry_later(Some(
-                                    block_height,
-                                ));
-                            }
+                                    return OnBlockProducerStalledResult::retry_later(Some(
+                                        block_height,
+                                    ));
+                                }
+                            };
+                            ancestor_state.guarded_mut(|e| {
+                                if e.own_fallback_attestation().is_none() {
+                                    e.set_own_fallback_attestation(attestation)
+                                        .expect("failed to set fallback attestation");
+                                }
+                                e.own_fallback_attestation().clone().unwrap()
+                            })
                         }
                     };
                     attestations.push(attestation);
@@ -1767,6 +1764,10 @@ impl ThreadAuthority {
             );
             return OnNextRoundIncomingRequestResult::DoNothing;
         }
+        let Some(parent_seq_no) = parent_state.guarded(|e| *e.block_seq_no()) else {
+            tracing::warn!("on_next_round_incoming_request: parent block is not ready");
+            return OnNextRoundIncomingRequestResult::DoNothing;
+        };
         // Produce block for this round AND broadcast it as a NextRoundSuccess
         match self.block_producers
             .as_ref()
@@ -1775,7 +1776,7 @@ impl ThreadAuthority {
                 StartBlockProducerThreadInitialParameters::builder()
                     .thread_identifier(*thread_identifier)
                     .parent_block_identifier(*parent_state.block_identifier())
-                    .parent_block_seq_no(parent_state.guarded(|e| (*e.block_seq_no()).unwrap()))
+                    .parent_block_seq_no(parent_seq_no)
                     .round(*round)
                     .nacked_blocks_bad_block(
                         nacked_blocks_bad_block
@@ -1918,6 +1919,10 @@ impl ThreadAuthority {
                 e.set_locked_bad_block_nacks(envelope_nacks.clone());
             }
         } else {
+            let Ok(_parent_block_ref) = BlockRef::try_from(&parent_state) else {
+                tracing::warn!("on_next_round_success: parent block is not ready");
+                return OnNextRoundSuccessResult::CantBeProcessedNow;
+            };
             let new_lock = ActionLock::builder()
                 .parent_prefinalization_proof(parent_state_prefinalization_proof)
                 .parent_block_producer_selector_data(parent_producer_selector)

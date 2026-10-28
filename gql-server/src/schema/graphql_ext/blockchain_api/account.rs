@@ -7,7 +7,6 @@ use async_graphql::connection::ConnectionNameType;
 use async_graphql::connection::Edge;
 use async_graphql::connection::EdgeNameType;
 use async_graphql::connection::EmptyFields;
-use async_graphql::dataloader::DataLoader;
 use async_graphql::types::connection::query;
 use async_graphql::types::connection::Connection;
 use async_graphql::Context;
@@ -17,15 +16,18 @@ use async_graphql::Object;
 use async_graphql::OutputType;
 use tvm_client::ClientContext;
 
+use super::connection_node_selection;
+use super::populate_message_tree;
+use super::populate_transaction_tree;
 use super::selected_node_fields_at;
 use super::transactions::BlockchainTransaction;
+use super::MAX_RELATION_DEPTH;
 use crate::schema::db;
 use crate::schema::db::transaction::AccountTransactionsQueryArgs;
 use crate::schema::db::DBConnector;
 use crate::schema::graphql::account::Account;
 use crate::schema::graphql::query::PaginationArgs;
 use crate::schema::graphql::transaction::Transaction;
-use crate::schema::graphql::transaction::TransactionLoader;
 use crate::schema::graphql_ext::account::AccountEventEdge;
 use crate::schema::graphql_ext::account::AccountEventsConnection;
 use crate::schema::graphql_ext::blockchain_api::transactions::BlockchainTransactionsConnection;
@@ -367,65 +369,19 @@ impl BlockchainAccountQuery<'_> {
 
                 args.pagination.shrink_portion(&mut messages);
 
-                let is_parent_transaction =
-                    selected_fields.iter().any(|field| field == "src_transaction");
-                let is_child_transaction =
-                    selected_fields.iter().any(|field| field == "dst_transaction");
-                let transaction_loader = self.ctx.data_unchecked::<DataLoader<TransactionLoader>>();
-
-                // Batch-fetch dst transactions by inbound message IDs (single query).
-                let dst_transactions = if is_child_transaction {
-                    let msg_ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
-                    let projection = db::transaction::Transaction::projection_for_fields(["id"]);
-                    db::transaction::Transaction::by_in_messages(
-                        self.ctx.data::<Arc<DBConnector>>().unwrap(),
-                        &projection,
-                        &msg_ids,
-                    )
-                    .await?
-                } else {
-                    std::collections::HashMap::new()
-                };
-
-                // Batch-fetch src and dst Transaction objects via DataLoader
-                // instead of per-message load_one calls.
-                let src_trx_ids: Vec<String> = if is_parent_transaction {
-                    messages.iter().filter_map(|m| m.transaction_id.clone()).collect()
-                } else {
-                    vec![]
-                };
-                let dst_trx_ids: Vec<String> = if is_child_transaction {
-                    dst_transactions.values().map(|t| t.id.clone()).collect()
-                } else {
-                    vec![]
-                };
-                let mut all_trx_ids = src_trx_ids;
-                all_trx_ids.extend(dst_trx_ids);
-                let loaded_transactions = if !all_trx_ids.is_empty() {
-                    transaction_loader.load_many(all_trx_ids).await.unwrap_or_default()
-                } else {
-                    std::collections::HashMap::new()
-                };
-
                 let mut edges: Vec<Edge<String, Message, EmptyFields, BlockchainMessageEdge>> =
                     vec![];
                 for message in messages {
-                    let parent_transaction = message.transaction_id.clone();
-                    let msg_id = message.id.clone();
                     let mut message: BlockchainMessage = message.into();
-                    if is_parent_transaction {
-                        if let Some(ref trx_id) = parent_transaction {
-                            message.src_transaction =
-                                loaded_transactions.get(trx_id).cloned().map(Box::new);
-                        }
-                    }
-                    if is_child_transaction {
-                        let stripped_id = msg_id.strip_prefix("message/").unwrap_or(&msg_id);
-                        if let Some(dst_db_trx) = dst_transactions.get(stripped_id) {
-                            message.dst_transaction =
-                                loaded_transactions.get(&dst_db_trx.id).cloned().map(Box::new);
-                        }
-                    }
+                    populate_message_tree(
+                        self.ctx,
+                        &mut message,
+                        connection_node_selection(
+                            self.ctx.look_ahead().field("account").field("messages"),
+                        ),
+                        MAX_RELATION_DEPTH,
+                    )
+                    .await?;
                     let cursor = match args.cursor_field() {
                         db::MessageCursorField::Dst => message
                             .dst_chain_order
@@ -550,13 +506,24 @@ impl BlockchainAccountQuery<'_> {
 
                 args.pagination.shrink_portion(&mut transactions);
 
-                connection.edges.extend(transactions.into_iter().map(|transaction| {
-                    let transaction: BlockchainTransaction = transaction.into();
+                let mut edges = vec![];
+                for transaction in transactions {
+                    let mut transaction: BlockchainTransaction = transaction.into();
+                    populate_transaction_tree(
+                        self.ctx,
+                        &mut transaction,
+                        connection_node_selection(
+                            self.ctx.look_ahead().field("account").field("transactions"),
+                        ),
+                        MAX_RELATION_DEPTH,
+                    )
+                    .await?;
                     let cursor = transaction.chain_order.clone();
                     let edge: Edge<String, Transaction, EmptyFields, BlockchainTransactionsEdge> =
                         Edge::with_additional_fields(cursor, transaction, EmptyFields);
-                    edge
-                }));
+                    edges.push(edge);
+                }
+                connection.edges.extend(edges);
                 Ok::<_, async_graphql::Error>(connection)
             })
             .await

@@ -1,0 +1,36 @@
+Production two-level account-map partition benchmark, 2026-10-15.
+Host: Apple M3 Pro, macOS, 36 GiB RAM. Release, overflow checks enabled.
+
+Command:
+cargo bench -p account-state --bench account_partition --offline -- 1000000 1000 512 31
+
+Actual account-state production map and partition/merge APIs; no node dependency.
+1000 DApps x 1000 accounts. Leaves contain synthetic 32-byte version hashes.
+Capacity is supplied independently as AccountCapacity, not stored in values.
+Deterministic sizes: 1-16 KiB, with ten 256 KiB-2 MiB outliers.
+No account body payloads are generated or allocated; no database is accessed.
+The reported 8714840078 bytes are logical payload capacity, not memory usage.
+Map construction uses the production single-key L2/L1 update path.
+
+31 warm rounds. Partition timing includes traversal, L2 grafts, all 17 L1 maps,
+and their Merkle roots. Reverse-merge timing includes disjoint L2 unions and L1
+reconstruction. Root/content verification and destruction are outside timings.
+
+DATASET leaves=1000000 dapps=1000 accounts_per_dapp=1000 build_s=11.032 total_bytes=8714840078 target_bytes=536870912 bodies=none
+PARTITIONS count=17 sizes_bytes=[531968176, 531452859, 530942123, 531275259, 529798853, 534361087, 531248439, 532223010, 531246985, 532313512, 531466471, 531802278, 528862912, 532430137, 532264880, 531303794, 209879303]
+TIMING rounds=31 partition_with_map_assembly_median_ms=1.228083 reverse_merge_median_ms=1.082916 verification_and_drop=excluded
+VERIFIED ordered_leaves=1000000 deterministic_roots=true original_unchanged=true merged_root_matches=true
+
+After generalization into multi-map::partition_nested_by_capacity:
+Same command, dataset, target, and 31 rounds. Single- and two-level planners
+now use the same internal subtree traversal and 90%/10% policy. Account and
+inbox code only adapt inner maps and assemble their outer result.
+
+DATASET leaves=1000000 dapps=1000 accounts_per_dapp=1000 build_s=6.995 total_bytes=8714840078 target_bytes=536870912 bodies=none
+PARTITIONS count=17 sizes_bytes=[531968176, 531452859, 530942123, 531275259, 529798853, 534361087, 531248439, 532223010, 531246985, 532313512, 531466471, 531802278, 528862912, 532430137, 532264880, 531303794, 209879303]
+TIMING rounds=31 partition_with_map_assembly_median_ms=0.951875 reverse_merge_median_ms=0.798042 verification_and_drop=excluded
+VERIFIED ordered_leaves=1000000 deterministic_roots=true original_unchanged=true merged_root_matches=true
+
+Partition sizes/boundaries are unchanged. Runs were not an alternating A/B
+comparison, so the lower times do not establish a speedup; reverse-merge code
+was unchanged and also ran faster in this run.

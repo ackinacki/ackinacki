@@ -1,6 +1,8 @@
 // 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use account::account_id_from_archive_address;
@@ -13,6 +15,7 @@ use async_graphql::connection::Edge;
 use async_graphql::connection::EmptyFields;
 use async_graphql::dataloader::DataLoader;
 use async_graphql::Context;
+use async_graphql::Lookahead;
 use async_graphql::Object;
 use bk_set_updates::BlockchainBkSetUpdate;
 use bk_set_updates::BlockchainBkSetUpdatesConnection;
@@ -66,7 +69,18 @@ pub(super) fn selected_node_fields_at(ctx: &Context<'_>, path: &[&str]) -> Vec<S
     let mut node_path = Vec::with_capacity(path.len() + 2);
     node_path.extend_from_slice(path);
     node_path.extend_from_slice(&["edges", "node"]);
-    selected_fields_at(ctx, &node_path)
+    let mut fields = selected_fields_at(ctx, &node_path);
+
+    let mut nodes_path = Vec::with_capacity(path.len() + 1);
+    nodes_path.extend_from_slice(path);
+    nodes_path.push("nodes");
+    for field in selected_fields_at(ctx, &nodes_path) {
+        if !fields.contains(&field) {
+            fields.push(field);
+        }
+    }
+
+    fields
 }
 
 pub(super) fn selected_fields_at(ctx: &Context<'_>, path: &[&str]) -> Vec<String> {
@@ -103,6 +117,113 @@ fn parse_hex32(value: &str, field_name: &str) -> async_graphql::Result<String> {
 /// Blockchain-related information (blocks, transactions, etc.).
 pub struct BlockchainQuery<'a> {
     pub ctx: &'a Context<'a>,
+}
+
+pub(super) const MAX_RELATION_DEPTH: usize = 20;
+type PopulateFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+pub(super) fn connection_node_selection<'a>(selection: Lookahead<'a>) -> Lookahead<'a> {
+    let mut fields = selection.field("edges").field("node").selection_fields();
+    fields.extend(selection.field("nodes").selection_fields());
+    Lookahead::try_from(fields.as_slice()).unwrap_or(selection.field("edges").field("node"))
+}
+
+pub(super) fn populate_message_tree<'a>(
+    ctx: &'a Context<'a>,
+    message: &'a mut BlockchainMessage,
+    selection: Lookahead<'a>,
+    depth: usize,
+) -> PopulateFuture<'a> {
+    Box::pin(async move {
+        if depth == 0 || !selection.exists() {
+            return Ok(());
+        }
+
+        let transaction_loader = ctx.data_unchecked::<DataLoader<TransactionLoader>>();
+
+        let src_selection = selection.field("src_transaction");
+        if src_selection.exists() {
+            if let Some(transaction_id) = message.transaction_id.clone() {
+                if let Some(mut transaction) = transaction_loader
+                    .load_one(transaction_id.clone())
+                    .await
+                    .unwrap_or_else(|_| panic!("Failed to load transaction: {transaction_id}"))
+                {
+                    populate_transaction_tree(ctx, &mut transaction, src_selection, depth - 1)
+                        .await?;
+                    message.src_transaction = Some(Box::new(transaction));
+                }
+            }
+        }
+
+        let dst_selection = selection.field("dst_transaction");
+        if dst_selection.exists() {
+            let projection = db::transaction::Transaction::projection_for_fields(["id"]);
+            if let Some(transaction) = db::transaction::Transaction::by_in_message(
+                ctx.data::<Arc<DBConnector>>().unwrap(),
+                &projection,
+                &message.id,
+                None,
+            )
+            .await?
+            {
+                if let Some(mut transaction) = transaction_loader
+                    .load_one(transaction.id.clone())
+                    .await
+                    .unwrap_or_else(|_| panic!("Failed to load transaction: {}", transaction.id))
+                {
+                    populate_transaction_tree(ctx, &mut transaction, dst_selection, depth - 1)
+                        .await?;
+                    message.dst_transaction = Some(Box::new(transaction));
+                }
+            }
+        }
+
+        Ok(())
+    })
+}
+
+pub(super) fn populate_transaction_tree<'a>(
+    ctx: &'a Context<'a>,
+    transaction: &'a mut BlockchainTransaction,
+    selection: Lookahead<'a>,
+    depth: usize,
+) -> PopulateFuture<'a> {
+    Box::pin(async move {
+        if depth == 0 || !selection.exists() {
+            return Ok(());
+        }
+
+        let message_loader = ctx.data_unchecked::<DataLoader<MessageLoader>>();
+
+        let in_message_selection = selection.field("in_message");
+        if in_message_selection.exists() {
+            transaction.in_message = message_loader
+                .load_one(transaction.in_msg.clone())
+                .await
+                .map_err(|err| anyhow::anyhow!("{err:?}"))?;
+            if let Some(in_message) = transaction.in_message.as_mut() {
+                populate_message_tree(ctx, in_message, in_message_selection, depth - 1).await?;
+            }
+        }
+
+        let out_messages_selection = selection.field("out_messages");
+        if out_messages_selection.exists() {
+            let loaded_messages = message_loader
+                .load_many(transaction.out_msgs.clone())
+                .await
+                .map_err(|err| anyhow::anyhow!("{err:?}"))?;
+            let mut out_messages: Vec<Option<BlockchainMessage>> =
+                transaction.out_msgs.iter().map(|id| loaded_messages.get(id).cloned()).collect();
+            for out_message in out_messages.iter_mut().flatten() {
+                populate_message_tree(ctx, out_message, selection.field("out_messages"), depth - 1)
+                    .await?;
+            }
+            transaction.out_messages = Some(out_messages);
+        }
+
+        Ok(())
+    })
 }
 
 #[Object]
@@ -547,7 +668,6 @@ impl BlockchainQuery<'_> {
     }
 
     async fn message(&self, hash: String) -> Option<BlockchainMessage> {
-        let transaction_loader = self.ctx.data_unchecked::<DataLoader<TransactionLoader>>();
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
 
         // Shared DataLoaders eagerly convert DB rows into GraphQL objects, so
@@ -555,68 +675,45 @@ impl BlockchainQuery<'_> {
         // optional nested loads here.
         let message = message_loader.load_one(hash).await.expect("Failed to load message");
         let mut message = message?;
-        let selected_fields = selected_single_fields(self.ctx, "message");
-        if selected_fields.iter().any(|field| field == "src_transaction") {
-            if let Some(transaction_id) = message.transaction_id.clone() {
-                message.src_transaction = transaction_loader
-                    .load_one(transaction_id.clone())
-                    .await
-                    .unwrap_or_else(|_| panic!("Failed to load transaction: {transaction_id}"))
-                    .map(Box::new);
-            }
-        }
-
-        if selected_fields.iter().any(|field| field == "dst_transaction") {
-            let projection = db::transaction::Transaction::projection_for_fields(["id", "in_msg"]);
-            let dst_transaction = db::transaction::Transaction::by_in_message(
-                self.ctx.data::<Arc<DBConnector>>().unwrap(),
-                &projection,
-                &message.id,
-                None,
-            )
+        let selection_set = self.ctx.look_ahead().field("message");
+        populate_message_tree(self.ctx, &mut message, selection_set, MAX_RELATION_DEPTH)
             .await
-            .expect("Failed to load transaction by inbound message");
-
-            if let Some(transaction) = dst_transaction {
-                message.dst_transaction = transaction_loader
-                    .load_one(transaction.id.clone())
-                    .await
-                    .unwrap_or_else(|_| panic!("Failed to load transaction: {}", transaction.id))
-                    .map(Box::new);
-            }
-        }
+            .expect("Failed to populate message relations");
 
         Some(message)
     }
 
     async fn transaction(&self, hash: String) -> Option<BlockchainTransaction> {
         let transaction_loader = self.ctx.data_unchecked::<DataLoader<TransactionLoader>>();
-        let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
-        // Shared DataLoaders eagerly convert DB rows into GraphQL objects, so
-        // keep their compatibility projections and use lookahead only for
-        // optional nested loads here.
         let transaction =
             transaction_loader.load_one(hash).await.expect("Failed to load transaction");
 
         let mut transaction = transaction?;
+        let selection_set = self.ctx.look_ahead().field("transaction");
+        populate_transaction_tree(self.ctx, &mut transaction, selection_set, MAX_RELATION_DEPTH)
+            .await
+            .expect("Failed to populate transaction relations");
 
-        let selected_fields = selected_single_fields(self.ctx, "transaction");
-        if selected_fields.iter().any(|field| field == "in_message") {
-            let in_message = message_loader
-                .load_one(transaction.in_msg.clone())
-                .await
-                .expect("Failed to load in_message");
-            transaction.in_message = in_message;
-        }
+        Some(transaction)
+    }
 
-        if selected_fields.iter().any(|field| field == "out_messages") {
-            let out_msg_ids = transaction.out_msgs.clone();
-            let out_messages =
-                message_loader.load_many(out_msg_ids).await.expect("Failed to load out_messages");
+    #[graphql(name = "transactionByInMsg")]
+    async fn transaction_by_in_msg(&self, hash: String) -> Option<BlockchainTransaction> {
+        let projection = db::transaction::Transaction::graphql_transaction_projection(true);
+        let transaction = db::transaction::Transaction::by_in_message(
+            self.ctx.data::<Arc<DBConnector>>().unwrap(),
+            &projection,
+            &hash,
+            None,
+        )
+        .await
+        .expect("Failed to load transaction by inbound message");
 
-            transaction.out_messages = Some(out_messages.into_values().map(Some).collect());
-        }
-
+        let mut transaction: BlockchainTransaction = transaction?.into();
+        let selection_set = self.ctx.look_ahead().field("transactionByInMsg");
+        populate_transaction_tree(self.ctx, &mut transaction, selection_set, MAX_RELATION_DEPTH)
+            .await
+            .expect("Failed to populate transaction relations");
         Some(transaction)
     }
 
@@ -667,7 +764,6 @@ impl BlockchainQuery<'_> {
                         max_balance_delta,
                         pagination: PaginationArgs { first, after, last, before },
                     };
-                    let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
                     let selected_fields = selected_node_fields(self.ctx, "transactions");
                     let projection = db::transaction::Transaction::connection_projection_for_fields(
                         strip_cold_pruned_transaction_fields(self.ctx, selected_fields.clone()),
@@ -700,46 +796,16 @@ impl BlockchainQuery<'_> {
 
                     args.pagination.shrink_portion(&mut transactions);
 
-                    // Convert db transactions to GraphQL type first.
-                    let transactions: Vec<BlockchainTransaction> =
-                        transactions.into_iter().map(Into::into).collect();
-
-                    // Batch-fetch all messages in a single load_many call
-                    // instead of per-transaction load_many inside the loop.
-                    let want_in_message = selected_fields.iter().any(|field| field == "in_message");
-                    let want_out_messages =
-                        selected_fields.iter().any(|field| field == "out_messages");
-
-                    let mut all_msg_ids: Vec<String> = Vec::new();
-                    if want_in_message {
-                        all_msg_ids.extend(transactions.iter().map(|t| t.in_msg.clone()));
-                    }
-                    if want_out_messages {
-                        all_msg_ids.extend(transactions.iter().flat_map(|t| t.out_msgs.clone()));
-                    }
-                    let loaded_messages = if !all_msg_ids.is_empty() {
-                        message_loader.load_many(all_msg_ids).await?
-                    } else {
-                        std::collections::HashMap::new()
-                    };
-
                     let mut edges = Vec::new();
-                    for mut transaction in transactions {
-                        if want_in_message {
-                            transaction.in_message =
-                                loaded_messages.get(&transaction.in_msg).cloned();
-                        }
-
-                        if want_out_messages {
-                            transaction.out_messages = Some(
-                                transaction
-                                    .out_msgs
-                                    .iter()
-                                    .map(|id| loaded_messages.get(id).cloned())
-                                    .collect(),
-                            );
-                        }
-
+                    for transaction in transactions {
+                        let mut transaction: BlockchainTransaction = transaction.into();
+                        populate_transaction_tree(
+                            self.ctx,
+                            &mut transaction,
+                            connection_node_selection(self.ctx.look_ahead().field("transactions")),
+                            MAX_RELATION_DEPTH,
+                        )
+                        .await?;
                         let cursor = transaction.chain_order.clone();
                         let edge: Edge<
                             String,

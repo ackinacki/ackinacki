@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -24,7 +23,6 @@ use tokio::sync::watch::Receiver;
 use url::Url;
 
 use crate::helper::SHUTDOWN_FLAG;
-use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
 use crate::node::services::sync::state_sync_service_trait::SaveStateForSharingStatus;
 use crate::node::services::sync::FileSavingService;
 use crate::node::services::sync::StateSyncService;
@@ -59,16 +57,22 @@ const FAILED_CANDIDATE_BACKOFF: Duration = Duration::from_secs(10);
 ///
 /// `MAX_TRIES` and `RETRY_TIMEOUT` together bound how long we keep
 /// retrying on transient HTTP failures (e.g. persistent 404s while a
-/// peer's snapshot file is still being uploaded): with 2 tries and 2s
-/// between cycles, a 404'ing candidate is rejected in ~4 seconds and
-/// the worker moves to the next one.
+/// peer's snapshot file is still being uploaded). Keep this budget independent
+/// of the general download retry settings: persistent 404s must let the worker
+/// try a newer queued candidate after roughly one minute, not many minutes.
 ///
 /// `DEADLINE` is the wall-clock cap on a *successful* download. State
 /// snapshot files can be many GB, so we allow up to an hour for the
 /// transfer to complete.
-const PER_CANDIDATE_MAX_TRIES: u8 = 2;
+const PER_CANDIDATE_MAX_TRIES: u8 = 30;
 const PER_CANDIDATE_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
-const PER_CANDIDATE_DEADLINE: Duration = Duration::from_secs(60 * 60);
+
+#[derive(Clone, Copy)]
+struct DownloadBudget {
+    max_tries: u8,
+    retry_timeout: Duration,
+    download_deadline: Duration,
+}
 
 /// Sleep between worker iterations when the candidate set is empty or every
 /// candidate failed in the previous pass.
@@ -498,12 +502,14 @@ impl ExternalFileSharesBased {
         net_topology_rx: Receiver<NetTopology<NodeIdentifier>>,
         bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
     ) -> Self {
-        // TODO: move to config
+        if let Err(error) = file_saving_service.start_resource_cleanup() {
+            tracing::warn!("cannot start snapshot cleanup: {error}");
+        }
         Self {
             static_storages: vec![],
             max_download_tries: 30,
             retry_download_timeout: Duration::from_secs(2),
-            download_deadline_timeout: Duration::from_secs(600),
+            download_deadline_timeout: Duration::from_secs(60 * 60),
             blob_sync,
             file_saving_service,
             candidates: Arc::new(LoadCandidates::new()),
@@ -536,6 +542,13 @@ impl ExternalFileSharesBased {
         let bk_set_rx = self.bk_set_rx.clone();
         let net_topology_rx = self.net_topology_rx.clone();
         let metrics = repository.get_metrics().cloned();
+        let budget = DownloadBudget {
+            max_tries: PER_CANDIDATE_MAX_TRIES,
+            retry_timeout: PER_CANDIDATE_RETRY_TIMEOUT,
+            download_deadline: self.download_deadline_timeout,
+        };
+        let cache_directory =
+            self.file_saving_service.resource_directory().join(".snapshot-downloads");
 
         let handle = std::thread::Builder::new()
             .name("State load worker".to_string())
@@ -549,6 +562,8 @@ impl ExternalFileSharesBased {
                     bk_set_rx,
                     net_topology_rx,
                     metrics,
+                    cache_directory,
+                    budget,
                 );
                 Ok(())
             })?;
@@ -652,6 +667,8 @@ fn run_load_worker(
     bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
     net_topology_rx: Receiver<NetTopology<NodeIdentifier>>,
     metrics: Option<crate::helper::metrics::BlockProductionMetrics>,
+    cache_directory: PathBuf,
+    budget: DownloadBudget,
 ) {
     loop {
         if SHUTDOWN_FLAG.get() == Some(&true) {
@@ -757,7 +774,8 @@ fn run_load_worker(
                 );
             }
         }
-        let urls = resolve_urls_for_attempt(&static_storages, &bk_set_rx, &net_topology_rx);
+        let (urls, known_sources) =
+            resolve_urls_for_attempt(&static_storages, &bk_set_rx, &net_topology_rx);
         tracing::trace!(
             target: "node",
             "Load worker: processing candidate anchor_kind={} address={:?} urls={}",
@@ -772,6 +790,9 @@ fn run_load_worker(
             &repository,
             urls,
             metrics.as_ref(),
+            &cache_directory,
+            &known_sources,
+            budget,
             move || candidates_for_cancel.is_cancelled(generation),
         ) {
             Ok(SnapshotDownloadStatus::Imported) => {
@@ -891,7 +912,7 @@ fn resolve_urls_for_attempt(
     static_storages: &[Url],
     bk_set_rx: &tokio::sync::watch::Receiver<ApiBkSet>,
     net_topology_rx: &Receiver<NetTopology<NodeIdentifier>>,
-) -> Vec<Url> {
+) -> (Vec<Url>, Vec<(NodeIdentifier, Url)>) {
     let current_bk_set_node_ids = bk_set_rx
         .borrow()
         .current
@@ -899,18 +920,20 @@ fn resolve_urls_for_attempt(
         .map(|bk| NodeIdentifier::from(AccountIdentifier::new(bk.owner_address.0)))
         .collect::<HashSet<_>>();
     let mut services = HashSet::<Url>::from_iter(static_storages.iter().cloned());
+    let mut known = Vec::new();
     for (node_id, peers) in net_topology_rx.borrow().peer_resolver() {
         if current_bk_set_node_ids.contains(node_id) {
             for peer in peers {
                 if let Some(base_url) = &peer.bk_api_url_for_storage_sync {
                     if let Ok(url) = base_url.join("v2/storage/") {
-                        services.insert(url);
+                        services.insert(url.clone());
+                        known.push((node_id.clone(), url));
                     }
                 }
             }
         }
     }
-    Vec::from_iter(services)
+    (Vec::from_iter(services), known)
 }
 
 /// Synchronously try one candidate. Dispatches `load_blob` for every
@@ -919,12 +942,16 @@ fn resolve_urls_for_attempt(
 /// treated as completed for this candidate; the anchor thread decides whether
 /// the whole candidate can be skipped. Uses short retry budgets so the worker
 /// can move to the next candidate quickly on persistent 404s.
+#[allow(clippy::too_many_arguments)] // Inputs belong to the existing sync worker boundary.
 fn try_download_candidate(
     candidate: &SyncSnapshotRequest,
     blob_sync: &mut ServiceInterface,
     repository: &RepositoryImpl,
     external_blob_share_services: Vec<Url>,
     metrics: Option<&crate::helper::metrics::BlockProductionMetrics>,
+    cache_directory: &std::path::Path,
+    known_sources: &[(NodeIdentifier, Url)],
+    budget: DownloadBudget,
     should_cancel: impl Fn() -> bool + Send + Sync + 'static,
 ) -> anyhow::Result<SnapshotDownloadStatus> {
     let address = candidate.address.clone();
@@ -951,17 +978,31 @@ fn try_download_candidate(
         let repo_clone = repo.clone();
         let metrics_on_error = metrics.cloned();
         let urls = external_blob_share_services.clone();
+        let partition_urls = urls.clone();
+        let cache_directory = cache_directory.to_owned();
+        let known_sources = known_sources.to_vec();
         let should_cancel_before_import = should_cancel.clone();
         let thread_id_copy = *thread_id;
         let block_id_copy = *block_id;
 
+        // The initial blob can be either a legacy snapshot or partitioned primary;
+        // its format is unknown until import starts. Include queueing, cache
+        // admission and HTTP retries. Capturing the guard also closes the phase
+        // if submission fails or the callback is discarded without being called.
+        let wait_snapshot = crate::helper::metrics::ActivityMetric::parallel(
+            "snapshot_import",
+            "1_wait_snapshot",
+            thread_id.to_string(),
+        )
+        .enter();
         blob_sync.load_blob(
             block_id.to_string(),
             urls,
-            PER_CANDIDATE_MAX_TRIES,
-            Some(PER_CANDIDATE_RETRY_TIMEOUT),
-            Some(Instant::now() + PER_CANDIDATE_DEADLINE),
+            budget.max_tries,
+            Some(budget.retry_timeout),
+            Some(Instant::now() + budget.download_deadline),
             move |e| -> anyhow::Result<()> {
+                drop(wait_snapshot);
                 if should_cancel_before_import() {
                     tracing::debug!(
                         target: "node",
@@ -969,70 +1010,14 @@ fn try_download_candidate(
                     );
                     return Err(anyhow::anyhow!("snapshot candidate cancelled"));
                 }
-                let mut header = [0u8; COMPRESSED_SNAPSHOT_MAGIC.len()];
-                match e.read_exact(&mut header) {
-                    Ok(()) => {
-                        if should_cancel_before_import() {
-                            tracing::debug!(
-                                target: "node",
-                                "load worker: snapshot import cancelled after header read for {thread_id_copy:?} (block={block_id_copy:?})",
-                            );
-                            return Err(anyhow::anyhow!("snapshot candidate cancelled"));
-                        }
-                        let res = if &header == COMPRESSED_SNAPSHOT_MAGIC {
-                            tracing::trace!(
-                                "load worker: read COMPRESSED_SNAPSHOT_MAGIC for {thread_id_copy:?}",
-                            );
-                            match zstd::Decoder::new(e) {
-                                Ok(mut decoder) => {
-                                    repo_clone.lock().set_state_from_snapshot_reader_checked(
-                                        &mut decoder,
-                                        &thread_id_copy,
-                                        Arc::new(Mutex::new(HashSet::new())),
-                                    )
-                                }
-                                Err(e) => Err(e.into()),
-                            }
-                        } else {
-                            tracing::trace!(
-                                "load worker: read non-compressed snapshot for {thread_id_copy:?}",
-                            );
-                            let mut reader = std::io::Cursor::new(header).chain(e);
-                            repo_clone.lock().set_state_from_snapshot_reader_checked(
-                                &mut reader,
-                                &thread_id_copy,
-                                Arc::new(Mutex::new(HashSet::new())),
-                            )
-                        };
-                        tracing::trace!(
-                            "load worker: for {thread_id_copy:?} res={res:?}",
-                        );
-                        let status = res?;
-                        match status {
-                            SnapshotImportStatus::Imported => {
-                                tracing::trace!(
-                                    "load worker: done for {thread_id_copy:?} (block={block_id_copy:?})",
-                                );
-                            }
-                            SnapshotImportStatus::Skipped(decision) => {
-                                tracing::info!(
-                                    target: "node",
-                                    ?decision,
-                                    "load worker: snapshot import skipped for {thread_id_copy:?} (block={block_id_copy:?})",
-                                );
-                            }
-                        }
-                        let mut checker = checker_clone.lock();
-                        progress_clone.lock().record_thread_status(
-                            &mut checker,
-                            anchor_thread,
-                            thread_id_copy,
-                            status,
-                        );
-                        Ok(())
-                    }
-                    Err(e) => Err(e.into()),
-                }
+                let status = super::snapshot_runtime_import::import_downloaded_snapshot(
+                    e, &mut repo_clone.lock(), (thread_id_copy, block_id_copy), anchor_height,
+                    &cache_directory, &known_sources, &partition_urls,
+                    &|| should_cancel_before_import(),
+                )?;
+                let mut checker = checker_clone.lock();
+                progress_clone.lock().record_thread_status(&mut checker, anchor_thread, thread_id_copy, status);
+                Ok(())
             },
             move |e| {
                 tracing::trace!(
@@ -1040,7 +1025,10 @@ fn try_download_candidate(
                     "load worker: load_blob failed for {block_id_copy:?}: {e}",
                 );
                 *last_error_clone.lock() = Some(e);
-                checker_clone2.lock().clear();
+                // Keep the barrier closed until every other in-flight thread
+                // finishes; clearing the whole set can let a partial snapshot
+                // import escape while those callbacks are still running.
+                checker_clone2.lock().remove(&thread_id_copy);
                 if let Some(m) = metrics_on_error {
                     m.report_error("load_state_error");
                 }
@@ -1049,8 +1037,8 @@ fn try_download_candidate(
     }
 
     // Block this worker iteration until all dispatched downloads finish
-    // (checker drains) or any one fails (on_error clears the checker
-    // and sets last_error).
+    // (checker drains). Errors remove their own thread and are returned after
+    // the other in-flight downloads have finished.
     loop {
         if SHUTDOWN_FLAG.get() == Some(&true) || should_cancel() {
             return Err(anyhow::anyhow!("shutdown or snapshot candidate cancelled"));
@@ -1289,6 +1277,118 @@ mod tests {
 
         assert!(candidates.claim_next().is_none());
         assert_eq!(candidates.push_or_upgrade(request), LoadCandidatePushResult::FailedBackoff);
+    }
+
+    #[test]
+    fn configured_retry_budget_allows_fallback_after_persistent_404() -> anyhow::Result<()> {
+        use std::io::Read;
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        use crate::services::blob_sync::external_fileshares_based::ExternalFileSharesBased;
+        use crate::services::blob_sync::BlobSyncService;
+
+        let budget = super::DownloadBudget {
+            max_tries: 2,
+            retry_timeout: Duration::from_millis(1),
+            download_deadline: Duration::from_secs(5),
+        };
+        let candidates = LoadCandidates::new();
+        let old = candidate_with_height(1, 1285);
+        candidates.push_or_upgrade(old.clone());
+        let claimed = candidates.claim_next().unwrap().request;
+        let newer = candidate_with_height(2, 2402);
+        candidates.push_or_upgrade(newer.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let url = url::Url::parse(&format!("http://{}/", listener.local_addr()?))?;
+        listener.set_nonblocking(true)?;
+        let old_id = block_id(1).to_string();
+        let new_id = block_id(2).to_string();
+        let server = std::thread::Builder::new()
+            .name("snapshot fallback HTTP test".to_owned())
+            .spawn(move || -> anyhow::Result<Vec<String>> {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut seen = Vec::new();
+                while seen.len() < 3 {
+                    anyhow::ensure!(Instant::now() < deadline, "HTTP test server timed out");
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(connection) => connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(1));
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    // macOS can inherit nonblocking mode from the listener.
+                    stream.set_nonblocking(false)?;
+                    stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+                    let mut header = Vec::new();
+                    while !header.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte)?;
+                        header.push(byte[0]);
+                        anyhow::ensure!(header.len() < 8192, "oversized test HTTP request");
+                    }
+                    let request = String::from_utf8(header)?;
+                    let path = request.split_whitespace().nth(1).unwrap().to_owned();
+                    let response = if path == format!("/{old_id}") {
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    } else {
+                        anyhow::ensure!(path == format!("/{new_id}"), "unexpected request: {path}");
+                        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nblob"
+                    };
+                    stream.write_all(response.as_bytes())?;
+                    seen.push(path);
+                }
+                Ok(seen)
+            })?;
+        let dir = tempfile::tempdir()?;
+        let service = ExternalFileSharesBased::builder()
+            .local_storage_share_base_path(dir.path().to_owned())
+            .build()
+            .start(None)?;
+        let mut interface = service.interface();
+        let mut download = |request: &SyncSnapshotRequest| -> anyhow::Result<Vec<u8>> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let failed = tx.clone();
+            interface.load_blob(
+                request.address[&thread_id()].to_string(),
+                vec![url.clone()],
+                budget.max_tries,
+                Some(budget.retry_timeout),
+                Some(Instant::now() + budget.download_deadline),
+                move |reader| {
+                    let mut bytes = Vec::new();
+                    reader.read_to_end(&mut bytes)?;
+                    tx.send(Ok(bytes))?;
+                    Ok(())
+                },
+                move |error| {
+                    failed.send(Err(error)).unwrap();
+                },
+            )?;
+            rx.recv_timeout(Duration::from_secs(6))?
+        };
+        let error = download(&claimed).unwrap_err();
+        candidates.mark_failure(&claimed, &error);
+        let next = candidates.claim_next().unwrap().request;
+        assert_eq!(next.address, newer.address);
+        assert_eq!(download(&next)?, b"blob");
+        candidates.mark_success(&next);
+        assert!(candidates.claim_next().is_none());
+        drop(interface);
+        service.join();
+        assert_eq!(
+            server.join().unwrap()?,
+            vec![
+                format!("/{}", block_id(1)),
+                format!("/{}", block_id(1)),
+                format!("/{}", block_id(2))
+            ]
+        );
+        Ok(())
     }
 
     #[test]
