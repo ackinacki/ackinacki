@@ -4,6 +4,7 @@
 use async_graphql::ComplexObject;
 use async_graphql::Enum;
 use async_graphql::SimpleObject;
+use faster_hex::hex_string;
 
 use super::transaction::Transaction;
 use crate::helpers::ecc_from_bytes;
@@ -339,6 +340,51 @@ pub struct Message {
     #[graphql(skip)]
     value: Option<String>,
     value_other: Option<Vec<OtherCurrency>>,
+}
+
+impl Message {
+    /// An event read from the history proofs store (a bridge withdrawal or a
+    /// RootPN voucher), with its source transaction (only `id` and
+    /// `block_id`).
+    pub fn from_stored_event(row: db::history_store::EventDbRow) -> Message {
+        let message = db::Message {
+            id: hex_string(&row.msg_hash),
+            boc: Some(row.boc.clone()),
+            transaction_id: Some(row.transaction_id.clone()),
+            msg_type: row.msg_type,
+            src: Some(row.src.clone()),
+            dst: Some(row.dst.clone()),
+            created_at: row.created_at,
+            src_dapp_id: row.src_dapp_id.clone(),
+            ..Default::default()
+        };
+        let mut message = Message::from(message);
+        message.fill_from_stored_event(&row, true);
+        message
+    }
+
+    /// Fills `block_id` and, with `with_transaction`, `src_transaction` from
+    /// the stored event of this message when they are missing.
+    pub fn fill_from_stored_event(
+        &mut self,
+        row: &db::history_store::EventDbRow,
+        with_transaction: bool,
+    ) {
+        let block_id = hex_string(&row.block_id);
+        if with_transaction && self.src_transaction.is_none() {
+            self.src_transaction = Some(Box::new(Transaction::synthetic(
+                row.transaction_id.clone(),
+                block_id.clone(),
+            )));
+        }
+        if self.block_id.is_none() {
+            self.block_id = Some(block_id);
+        }
+    }
+
+    pub fn stored_block_id(&self) -> Option<&str> {
+        self.block_id.as_deref()
+    }
 }
 
 impl From<db::Message> for Message {

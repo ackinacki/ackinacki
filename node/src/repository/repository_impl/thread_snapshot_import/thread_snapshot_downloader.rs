@@ -24,7 +24,6 @@ use super::super::snapshot_partitioned::read_primary_snapshot_checked;
 use super::super::snapshot_partitioned::PrimaryThreadSnapshot;
 use super::super::snapshot_sources::SnapshotSourcePlan;
 use super::partition_downloader::BlobDownloadLimits;
-use super::partition_downloader::DownloadAdmission;
 use super::partition_downloader::PartitionDownloadResponse;
 use super::partition_downloader::PartitionDownloadState;
 use super::partition_downloader::PartitionDownloader;
@@ -203,7 +202,7 @@ impl ThreadSnapshotDownloader {
                         enforce_download_deadline = false;
                     },
                     exited = workers.join_next(), if !workers.is_empty() => anyhow::bail!("snapshot worker exited unexpectedly: {exited:?}"),
-                    // Only retry/disk-admission timers are polled. HTTP replies,
+                    // Only retry timers are polled. HTTP replies,
                     // cancellation and command delivery wake select! immediately.
                     _ = tokio::time::sleep(Duration::from_millis(25)) => {},
                 }
@@ -248,11 +247,6 @@ impl ThreadSnapshotDownloader {
         }
         self.source_plan = Some(plan);
         self.state.partitions.get_mut(&self.primary_id).expect("primary entry").ready = true;
-        if let Some(mut admission) =
-            self.state.partitions.get_mut(&self.primary_id).expect("primary").admission.take()
-        {
-            admission.admitted();
-        }
         self.primary_ready = true;
         self.events
             .as_ref()
@@ -292,6 +286,16 @@ impl ThreadSnapshotDownloader {
         if *self.cancellation.borrow() {
             return Ok(());
         }
+        // Messages cannot be consumed before all accounts. Keep their leases
+        // out of the cache until every account file is ready, otherwise ready
+        // messages could fill the budget and prevent the missing account from
+        // downloading. This gate depends only on download completion, never on
+        // importer acknowledgements. Within either group there is no ordering
+        // dependency: a missing early file must not hold up published siblings.
+        let account_count = self.state.manifest.account_partition_roots.len();
+        let accounts_ready = self.state.partitions.values().all(|part| {
+            !part.manifest_index.is_some_and(|index| index < account_count) || part.ready
+        });
         for (slot, worker) in workers.iter().enumerate() {
             if self.state.slots[slot].is_some() {
                 continue;
@@ -303,6 +307,11 @@ impl ThreadSnapshotDownloader {
                     continue;
                 }
                 if *id != self.primary_id && !self.primary_ready {
+                    continue;
+                }
+                if !accounts_ready
+                    && part.manifest_index.is_some_and(|index| index >= account_count)
+                {
                     continue;
                 }
                 let source = if !part.cache_checked {
@@ -337,23 +346,11 @@ impl ThreadSnapshotDownloader {
                     }
                     let (rank, url) = best.expect("usable source");
                     if rank.0 {
-                        // Preserve a worker for this admission-chain head's
-                        // retry, just as for transient network backoff below.
-                        if part.has_pending_admission() {
-                            break;
-                        }
                         continue;
                     }
                     Some(url)
                 };
                 if Instant::now() < part.retry_after {
-                    // Successors can occupy workers while waiting for this
-                    // blob's disk admission. Keep a worker free for its retry;
-                    // otherwise all four can wait behind an unscheduled task.
-                    // Once admitted, payload retries impose no such barrier.
-                    if part.has_pending_admission() {
-                        break;
-                    }
                     continue;
                 }
                 selected = Some((*id, source));
@@ -419,7 +416,6 @@ impl ThreadSnapshotDownloader {
                     state: download,
                     retained_bytes,
                     cancel: cancellation,
-                    admission: part.admission.take(),
                     reply: replies.clone(),
                 })
                 .await
@@ -534,16 +530,12 @@ impl ThreadSnapshotDownloader {
                     *part.attempts.get_mut(url).expect("attempt") -= 1;
                 }
                 part.retry_after = Instant::now() + Duration::from_millis(25);
-                // Keep each logical blob's admitted reservation: releasing it
-                // could allow later-phase files to starve an earlier resume.
-                // Only alternate representations of THIS blob are expendable.
+                // Retain resumable bytes for this blob. The importer can consume
+                // any ready file in the current group to release disk space;
+                // later-group files cannot reserve space ahead of it.
                 for (etag, representation) in &mut part.etags {
                     if Some(etag.as_str()) != observed.as_deref() {
-                        if let Some(mut state) = representation.download.take() {
-                            if let Some(admission) = state.take_pending_admission() {
-                                part.admission = Some(admission);
-                            }
-                        }
+                        representation.download.take();
                     }
                 }
             }
@@ -555,9 +547,9 @@ impl ThreadSnapshotDownloader {
                 if ban.is_none() {
                     let alternative = part
                         .etags
-                        .values_mut()
-                        .find_map(|entry| entry.download.as_mut())
-                        .map(PartitionDownloadState::new_representation);
+                        .values()
+                        .find_map(|entry| entry.download.as_ref())
+                        .map(PartitionDownloadState::alternative);
                     if let Some(mut alternative) = alternative {
                         alternative.etag = observed.clone();
                         part.etags.entry(observed).or_default().download = Some(alternative);
@@ -677,11 +669,7 @@ impl ThreadSnapshotDownloader {
                 if !etag.sources.is_empty()
                     && etag.sources.iter().all(|source| self.state.sources[source].banned.is_some())
                 {
-                    if let Some(mut state) = etag.download.take() {
-                        if let Some(admission) = state.take_pending_admission() {
-                            part.admission = Some(admission);
-                        }
-                    }
+                    etag.download.take();
                 }
             }
         }
@@ -786,7 +774,6 @@ struct EtagState {
 struct PartitionState {
     /// None denotes primary; otherwise position in the flattened manifest.
     manifest_index: Option<usize>,
-    admission: Option<DownloadAdmission>,
     /// Explicit primary sources only. Partition preferences are ranked lazily
     /// from their manifest index and the frozen source plan, not stored P*N times.
     sources: Vec<Url>,
@@ -803,21 +790,9 @@ struct PartitionState {
 }
 
 impl PartitionState {
-    fn has_pending_admission(&self) -> bool {
-        self.admission.is_some()
-            || self.initial.as_ref().is_some_and(PartitionDownloadState::has_pending_admission)
-            || self.etags.values().any(|representation| {
-                representation
-                    .download
-                    .as_ref()
-                    .is_some_and(PartitionDownloadState::has_pending_admission)
-            })
-    }
-
     fn new(manifest_index: Option<usize>, sources: Vec<Url>) -> Self {
         Self {
             manifest_index,
-            admission: None,
             sources,
             etags: BTreeMap::new(),
             initial: None,
@@ -852,7 +827,6 @@ struct SnapshotDownloadState {
     order: Vec<[u8; 32]>,
     slots: Vec<Option<ActiveTask>>,
     next_task_id: u64,
-    next_admission: Option<oneshot::Receiver<()>>,
 }
 
 impl SnapshotDownloadState {
@@ -864,7 +838,6 @@ impl SnapshotDownloadState {
             order: Vec::new(),
             slots: (0..slots).map(|_| None).collect(),
             next_task_id: 0,
-            next_admission: None,
         }
     }
 
@@ -878,10 +851,7 @@ impl SnapshotDownloadState {
         for source in &sources {
             self.sources.entry(source_base(source)?).or_default();
         }
-        let (admission, following) = DownloadAdmission::next(self.next_admission.take());
-        self.next_admission = Some(following);
-        let mut part = PartitionState::new(manifest_index, sources);
-        part.admission = Some(admission);
+        let part = PartitionState::new(manifest_index, sources);
         self.partitions.insert(id, part);
         self.order.push(id);
         Ok(())

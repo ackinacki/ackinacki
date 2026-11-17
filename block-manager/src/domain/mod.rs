@@ -2,4 +2,6 @@
 // Domain layer: core business logic and entities
 
 pub mod bp_resolver;
+pub mod history_checks;
+pub mod latest_bk_set;
 pub mod models;

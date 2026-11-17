@@ -19,7 +19,6 @@ use crate::message::WrappedMessage;
 use crate::node::associated_types::AckData;
 use crate::node::associated_types::AttestationData;
 use crate::node::associated_types::NackData;
-use crate::node::associated_types::SyncFinalizedData;
 use crate::node::associated_types::SyncFinalizedWithHeightData;
 use crate::node::NodeIdentifier;
 use crate::protocol::authority_switch::network_message::AuthoritySwitch;
@@ -114,8 +113,6 @@ pub enum NetworkMessage {
         at_least_n_blocks: Option<usize>,
     },
 
-    // Legacy message kept for wire compatibility with older nodes.
-    SyncFinalized((Envelope<SyncFinalizedData>, ThreadIdentifier)),
     SyncFinalizedWithHeight((Envelope<SyncFinalizedWithHeightData>, ThreadIdentifier)),
     // Also, SyncFrom is redundant due to the authority switch mechanism.
     // However, keeping it for the review. (less security risk)
@@ -163,7 +160,6 @@ impl Debug for NetworkMessage {
                 BlockAttestation(_) => f.write_str("BlockAttestation"),
                 BlockRequest { .. } => f.write_str("BlockRequest"),
 
-                SyncFinalized(_) => f.write_str("SyncFinalized"),
                 SyncFinalizedWithHeight(_) => f.write_str("SyncFinalizedWithHeight"),
                 SyncFrom(_) => f.write_str("SyncFrom"),
                 AuthoritySwitchProtocol(AuthoritySwitch::Request(_)) => {
@@ -204,7 +200,6 @@ impl Debug for NetworkMessage {
                 BlockAttestation(_) => "BlockAttestation",
                 BlockRequest { .. } => "BlockRequest",
 
-                SyncFinalized(_) => "SyncFinalized",
                 SyncFinalizedWithHeight(_) => "SyncFinalizedWithHeight",
                 SyncFrom(_) => "SyncFrom",
                 AuthoritySwitchProtocol(AuthoritySwitch::Request(_)) => "AuthoritySwitch::Request",

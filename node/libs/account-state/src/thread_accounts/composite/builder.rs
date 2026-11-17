@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use node_types::AccountIdentifier;
@@ -44,6 +43,7 @@ pub struct ThreadAccountsStateBuilder {
     changed_accounts: HashMap<AccountRouting, BlockAccountOperation>,
     known_dapp_ids: HashMap<AccountIdentifier, DAppIdentifier>,
     apply_to_durable: bool,
+    pool: Option<&'static rayon::ThreadPool>,
     /// Pre-computed redirect stubs to be inserted directly into the durable diff,
     /// bypassing the re-routing logic in `build()`.
     explicit_redirects: HashMap<AccountRouting, BlockAccountOperation>,
@@ -55,6 +55,7 @@ impl ThreadAccountsStateBuilder {
         thread_id: ThreadIdentifier,
         block_height: u64,
         original: ThreadAccountsState,
+        pool: Option<&'static rayon::ThreadPool>,
     ) -> Self {
         let apply_to_durable = repository.apply_to_durable;
         Self {
@@ -66,6 +67,7 @@ impl ThreadAccountsStateBuilder {
             changed_accounts: HashMap::new(),
             known_dapp_ids: HashMap::new(),
             apply_to_durable,
+            pool,
             explicit_redirects: HashMap::new(),
         }
     }
@@ -104,7 +106,6 @@ impl ThreadAccountsStateBuilder {
             match operation {
                 BlockAccountOperation::UpdateOrInsert(changed) => Some(Some(changed.clone())),
                 BlockAccountOperation::Remove => Some(None),
-                BlockAccountOperation::MoveFromTvm => None,
                 BlockAccountOperation::AccountMerkleUpdate(_) => None,
             }
         } else {
@@ -175,46 +176,6 @@ impl ThreadAccountsStateBuilder {
         self.changed_accounts.insert(routing, BlockAccountOperation::Remove);
     }
 
-    pub fn move_from_tvm(&mut self, limit: usize) -> anyhow::Result<()> {
-        if !self.apply_to_durable {
-            return Ok(());
-        }
-        let mut accounts_included_in_changes: HashSet<AccountIdentifier> = HashSet::new();
-        let mut moved_count = 0usize;
-        for (routing, update) in &self.changed_accounts {
-            accounts_included_in_changes.insert(*routing.account_id());
-            if matches!(update, BlockAccountOperation::MoveFromTvm) {
-                moved_count += 1;
-            }
-        }
-        let initial_moved_count = moved_count;
-        if moved_count >= limit {
-            return Ok(());
-        }
-        self.original
-            .tvm
-            .shard_accounts
-            .iterate_accounts(|tvm_id, tvm_acc| {
-                let account_id = AccountIdentifier::from(tvm_id);
-                Ok(if accounts_included_in_changes.contains(&account_id) {
-                    true
-                } else {
-                    let routing =
-                        account_id.routing_or_redirect(tvm_acc.get_dapp_id().map(From::from));
-                    self.changed_accounts.insert(routing, BlockAccountOperation::MoveFromTvm);
-                    moved_count += 1;
-                    moved_count < limit
-                })
-            })
-            .map_err(|err| anyhow::anyhow!("Failed to iterate TVM accounts: {}", err))?;
-        let newly_moved = moved_count.saturating_sub(initial_moved_count);
-        if let Some(metrics) = self.repository.durable.state_accounts_metrics() {
-            metrics.report_moved_from_tvm(newly_moved, &self.thread_id);
-        }
-        tracing::trace!(target: "monit", "Moved from TVM: {} accounts", moved_count);
-        Ok(())
-    }
-
     pub fn build(
         self,
         tvm_usage_tree: Option<&tvm_types::UsageTree>,
@@ -253,7 +214,7 @@ impl ThreadAccountsStateBuilder {
                         *routing.dapp_id() != routing.account_id().redirect_dapp_id();
 
                     // Determine the effective routing and whether a redirect stub is needed.
-                    // Case 1: routing already has dapp_id != account_id (e.g., from move_from_tvm)
+                    // Case 1: routing already has dapp_id != account_id
                     // Case 2: an account inserted at default routing but has internal dapp_id != account_id
                     let (effective_routing, needs_redirect) = if routing_has_dapp {
                         (routing, true)
@@ -281,21 +242,6 @@ impl ThreadAccountsStateBuilder {
                                     state_account.with_redirect(*effective_routing.dapp_id())?;
                                 Some(BlockAccountOperation::UpdateOrInsert(redirect))
                             }
-                            BlockAccountOperation::MoveFromTvm => {
-                                if let Ok(Some(tvm_acc)) = self
-                                    .original
-                                    .tvm
-                                    .shard_accounts
-                                    .account(&routing.account_id().into())
-                                {
-                                    let state_acc = ThreadAccount::from(tvm_acc);
-                                    let redirect =
-                                        state_acc.with_redirect(*effective_routing.dapp_id())?;
-                                    Some(BlockAccountOperation::UpdateOrInsert(redirect))
-                                } else {
-                                    None
-                                }
-                            }
                             BlockAccountOperation::Remove => Some(BlockAccountOperation::Remove),
                             BlockAccountOperation::AccountMerkleUpdate(_) => {
                                 // Redirect should already exist in durable, no action needed
@@ -322,11 +268,6 @@ impl ThreadAccountsStateBuilder {
                 }
             } else {
                 for (address, account) in self.changed_accounts {
-                    // When not applying to durable, MoveFromTvm must be a no-op:
-                    // accounts stay in TVM as-is since there's no durable target.
-                    if matches!(account, BlockAccountOperation::MoveFromTvm) {
-                        continue;
-                    }
                     crate::thread_accounts::tvm::patch_account(
                         *address.account_id(),
                         account,
@@ -340,12 +281,13 @@ impl ThreadAccountsStateBuilder {
             new_tvm
                 .write_accounts(&new_tvm_accounts)
                 .map_err(|err| anyhow::anyhow!("Failed to patch TVM accounts: {}", err))?;
-            (new_durable, account_operations) = self.repository.durable.state_update(
+            (new_durable, account_operations) = self.repository.durable.state_update_with_pool(
                 &self.thread_id,
                 self.block_height,
                 &self.original.tvm.shard_accounts,
                 &new_durable,
                 &durable_diff,
+                self.pool,
             )?;
         }
 
@@ -355,13 +297,15 @@ impl ThreadAccountsStateBuilder {
         if self.apply_to_durable && !self.explicit_redirects.is_empty() {
             let explicit_diff: HashMap<AccountRouting, BlockAccountOperation> =
                 self.explicit_redirects.into_iter().collect();
-            let (updated_durable, redirect_operations) = self.repository.durable.state_update(
-                &self.thread_id,
-                self.block_height,
-                &self.original.tvm.shard_accounts,
-                &new_durable,
-                &explicit_diff,
-            )?;
+            let (updated_durable, redirect_operations) =
+                self.repository.durable.state_update_with_pool(
+                    &self.thread_id,
+                    self.block_height,
+                    &self.original.tvm.shard_accounts,
+                    &new_durable,
+                    &explicit_diff,
+                    self.pool,
+                )?;
             new_durable = updated_durable;
             account_operations.extend(redirect_operations);
             // Include explicit redirects in the serialized diff so receivers can
@@ -373,12 +317,18 @@ impl ThreadAccountsStateBuilder {
 
         // Optimize durable diff: convert large UpdateOrInsert entries to merkle updates
         if self.apply_to_durable && !durable_diff.is_empty() {
-            durable_diff = _optimize_durable_diff(
-                &self.repository.durable,
-                &original_durable,
-                &self.original.tvm.shard_accounts,
-                durable_diff,
-            );
+            let optimize = || {
+                _optimize_durable_diff(
+                    &self.repository.durable,
+                    &original_durable,
+                    &self.original.tvm.shard_accounts,
+                    durable_diff,
+                )
+            };
+            durable_diff = match self.pool {
+                Some(pool) => pool.install(optimize),
+                None => optimize(),
+            };
         }
 
         // Create TVM state merkle update
@@ -544,5 +494,55 @@ fn _try_create_merkle_update(
         Some(BlockAccountOperation::AccountMerkleUpdate(update_bytes))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod apply_context_tests {
+    use super::*;
+    use crate::ThreadAccountsRepository;
+
+    #[test]
+    fn apply_view_propagates_to_builders_without_changing_producer_or_state() -> anyhow::Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let repository =
+            ThreadAccountsRepository::builder(dir.path()).set_apply_to_durable(true).build()?;
+        let replay = repository.for_apply()?;
+        let state = ThreadAccountsRepository::new_state();
+        let thread = ThreadIdentifier::default();
+        let mut producer = repository.state_builder(&thread, 1, &state);
+        let mut apply = replay.clone().state_builder(&thread, 1, &state);
+        assert!(producer.pool.is_none());
+        assert!(apply.pool.is_some());
+        assert!(repository.clone().state_builder(&thread, 1, &state).pool.is_none());
+        for seed in 1..=40u8 {
+            let id = AccountIdentifier::new([seed; 32]);
+            let routing = id.redirect();
+            let address = tvm_block::MsgAddressInt::with_standart(
+                None,
+                0,
+                tvm_types::AccountId::from_raw(id.as_slice().to_vec(), 256),
+            )
+            .unwrap();
+            let account = tvm_block::Account::with_address(address);
+            let shard = tvm_block::ShardAccount::with_params(
+                &account,
+                [seed; 32].into(),
+                seed as u64,
+                Some(routing.dapp_id().as_array().into()),
+            )
+            .unwrap();
+            let account = ThreadAccount::from_tvm(shard);
+            producer.insert_account(&routing, &account);
+            apply.insert_account(&routing, &account);
+        }
+        let expected = producer.build(None)?;
+        let actual = apply.build(None)?;
+        assert_eq!(
+            repository.state_hash(&expected.new_state),
+            repository.state_hash(&actual.new_state)
+        );
+        Ok(())
     }
 }

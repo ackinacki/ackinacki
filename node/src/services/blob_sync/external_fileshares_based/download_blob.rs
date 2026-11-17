@@ -11,7 +11,7 @@ use thiserror::Error;
 use super::download_cache::CacheLease;
 use super::download_cache::DownloadCache;
 
-/// Primary/legacy downloads share the partition cache budget. Reserve the
+/// Primary downloads share the partition cache budget. Reserve the
 /// advertised complete response size before writing, not incrementally: several
 /// half-downloaded files must not consume all space and wait on each other.
 pub(super) fn download_snapshot_blob(
@@ -226,7 +226,7 @@ fn download_file_impl(
         anyhow::bail!("download blob: Some error happened. Status: {:?}", response.status());
     }
     // Initial snapshot downloads share one import-admission slot, independently
-    // of partition workers. Legacy files and partitioned primary use the same
+    // of partition workers. Primary files use the same
     // transport; only successful HTTP bodies count, never polling HTTP 404s.
     let _activity = url
         .path_segments()

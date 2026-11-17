@@ -598,7 +598,7 @@ fn resumable_http_source_plan_and_real_account_codec_return_verified_map() -> an
             verified.set(verified.get() + 1);
             let input = snapshot_storage::chunks::PayloadReader::new(file)?;
             let mut payload = zstd::Decoder::with_buffer(input)?.single_frame();
-            let map = read_account_partition_checked(
+            let (map, _) = read_account_partition_checked(
                 &mut payload,
                 multi_map::MapKeyPath::default(),
                 part.map.hash(),

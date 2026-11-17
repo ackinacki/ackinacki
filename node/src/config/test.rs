@@ -35,6 +35,30 @@ mod tests {
     }
 
     #[test]
+    fn external_message_limits_default_when_missing() -> anyhow::Result<()> {
+        let config = crate::config::NodeConfig::default();
+        assert_eq!(config.ext_messages_total_limit, 300);
+        assert_eq!(config.ext_messages_dapp_limit, 250);
+        assert_eq!(config.ext_messages_account_limit, 5);
+        assert_eq!(config.ext_messages_low_priority_limit_percentage, 80);
+        let mut value = serde_json::to_value(config)?;
+        for field in [
+            "ext_messages_total_limit",
+            "ext_messages_dapp_limit",
+            "ext_messages_account_limit",
+            "ext_messages_low_priority_limit_percentage",
+        ] {
+            value.as_object_mut().unwrap().remove(field);
+        }
+        let defaulted: crate::config::NodeConfig = serde_json::from_value(value)?;
+        assert_eq!(defaulted.ext_messages_total_limit, 300);
+        assert_eq!(defaulted.ext_messages_dapp_limit, 250);
+        assert_eq!(defaulted.ext_messages_account_limit, 5);
+        assert_eq!(defaulted.ext_messages_low_priority_limit_percentage, 80);
+        Ok(())
+    }
+
+    #[test]
     fn test_sync_gap_config() -> anyhow::Result<()> {
         let config = GlobalConfig { sync_gap: 30, ..Default::default() };
         assert_eq!(config.sync_gap, 30);

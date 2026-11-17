@@ -10,7 +10,7 @@ pub const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 pub(crate) const PARTITION_WINDOW_LOG: u32 = 21;
 
 /// Encode one partitioned-snapshot blob using the ACCTPV1/MSGSPV1/SNAP2V2
-/// compression profile. Legacy snapshot writers deliberately do not use this.
+/// compression profile.
 ///
 /// The payload callback cannot change encoder parameters or finish a frame.
 /// Its flush calls are suppressed: input buffering must not affect blob bytes.

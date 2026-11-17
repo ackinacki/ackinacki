@@ -78,8 +78,6 @@ mod tests {
     where
         T: BlobSyncService,
     {
-        let tmp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&tmp_dir).unwrap();
         let some_resource_id = "some-resource-id".to_string();
         'share_blob: {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -134,8 +132,9 @@ mod tests {
 
     #[test]
     fn ensure_basic_flow_for_external_fileshares_based_service() {
+        let tmp_dir = tempfile::tempdir().unwrap();
         let service = external_fileshares_based::ExternalFileSharesBased::builder()
-            .local_storage_share_base_path("./tmp".into())
+            .local_storage_share_base_path(tmp_dir.path().join("tmp"))
             .build()
             .start(None)
             .expect("should be able to start");

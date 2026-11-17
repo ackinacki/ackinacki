@@ -2,6 +2,13 @@
 
 All notable changes to `migration-tool` are documented in this file.
 
+## [0.8.0] - 2026-11-16
+
+### Added
+- BM archive migration `011-latest_bk_set`: creates table `latest_bk_set`
+  (latest exact BK set of thread 0 anchored to a block; written by
+  block-manager, read by gql-server `blockchain.latestBkSet`).
+
 ## [0.7.0] - 2026-09-15
 
 ### Added

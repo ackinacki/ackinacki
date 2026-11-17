@@ -25,7 +25,7 @@ use super::thread_snapshot_downloader::ThreadSnapshotDownloaderEvent;
 /// in spawn_blocking, never on a Tokio scheduler thread.
 ///
 /// The runtime's format dispatcher may supply an already decoded primary: it
-/// must distinguish legacy streams before invoking this partitioned pipeline.
+/// must validate the primary before invoking this partitioned pipeline.
 /// That seed is still handed through PrimaryReady and validated exactly once;
 /// the cold download path instead fetches/decodes primary in the coordinator.
 pub(crate) fn import_snapshot<'a, C, V>(

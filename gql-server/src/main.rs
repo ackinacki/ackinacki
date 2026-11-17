@@ -278,8 +278,17 @@ async fn resolve_archives(
 ) -> anyhow::Result<()> {
     let max_attached = db_connector.max_attached_db();
     let attachments = list_archive_dbs(db_fs_path, max_attached)?;
+    let history_proofs_db = find_history_proofs_db(db_fs_path);
+    tracing::info!(path = ?history_proofs_db, "history proofs store:");
+    db_connector.set_history_proofs_db(history_proofs_db.as_deref());
     db_connector.update_attachments(attachments).await?;
     Ok(())
+}
+
+/// The history proofs store that block-manager keeps next to the main DB.
+fn find_history_proofs_db(db_fs_path: &Path) -> Option<PathBuf> {
+    let path = db_fs_path.parent()?.join(defaults::HISTORY_PROOFS_DB_FILE);
+    path.is_file().then_some(path)
 }
 
 fn list_archive_dbs(db_fs_path: &Path, max_attached_db: u16) -> anyhow::Result<Vec<String>> {
@@ -335,6 +344,8 @@ mod tests {
 
     use testdir::testdir;
 
+    use super::defaults;
+    use super::find_history_proofs_db;
     use super::list_archive_dbs;
 
     fn create_file(path: &Path) {
@@ -404,5 +415,31 @@ mod tests {
             .collect();
 
         assert_eq!(names, vec!["bm-archive-20.db", "bm-archive-foo.db"]);
+    }
+
+    #[test]
+    fn list_archive_dbs_ignores_the_history_proofs_store() {
+        let root = testdir!();
+        let db_path = root.join("bm-archive.db");
+        create_file(&db_path);
+        create_file(&root.join("bm-archive-20.db"));
+        create_file(&root.join(defaults::HISTORY_PROOFS_DB_FILE));
+
+        let archives = list_archive_dbs(&db_path, 9).expect("list archives");
+
+        assert_eq!(archives.len(), 1);
+        assert!(archives[0].ends_with("bm-archive-20.db"));
+    }
+
+    #[test]
+    fn find_history_proofs_db_requires_the_file() {
+        let root = testdir!();
+        let db_path = root.join("bm-archive.db");
+        create_file(&db_path);
+        assert_eq!(find_history_proofs_db(&db_path), None);
+
+        let store = root.join(defaults::HISTORY_PROOFS_DB_FILE);
+        create_file(&store);
+        assert_eq!(find_history_proofs_db(&db_path), Some(store));
     }
 }

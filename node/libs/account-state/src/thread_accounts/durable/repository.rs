@@ -57,6 +57,21 @@ const SNAPSHOT_EXPORT_VALIDATION_BATCH_SIZE: usize = 1_000;
 const SNAPSHOT_EXPORT_VALIDATION_QUEUE_BATCHES: usize = 4;
 const SNAPSHOT_EXPORT_VALIDATION_DEFAULT_WORKERS: usize = 1;
 const PARALLEL_PREPARE_UPDATES_THRESHOLD: usize = 16;
+// Bound old canonical bodies prefetched for Merkle apply, not all process
+// memory: decoded cells, caches and the resulting new states may live longer.
+const PREPARE_OLD_ACCOUNTS_BYTES: u64 = 64 * 1024 * 1024;
+
+fn prepare_window_len(sizes: &[u64], budget: u64) -> usize {
+    let mut bytes = 0u64;
+    for (index, &size) in sizes.iter().enumerate() {
+        if size > budget.saturating_sub(bytes) {
+            // An oversized account must still make progress, alone.
+            return index.max(1);
+        }
+        bytes += size;
+    }
+    sizes.len()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccountHashMismatchError {
@@ -175,30 +190,13 @@ fn validate_snapshot_account_bytes(
     archive_data: &[u8],
     expected: &AccountInfo,
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    Ok(validate_snapshot_export_account(archive_data, expected, false)?.map(|(bytes, _)| bytes))
-}
-
-fn legacy_account_info(account: &ThreadAccount) -> anyhow::Result<AccountInfo> {
-    Ok(if account.is_redirect() {
-        AccountInfo::Redirect(
-            account.get_dapp_id().ok_or_else(|| anyhow::anyhow!("Redirect without DApp"))?,
-        )
-    } else {
-        AccountInfo::AccountHash(AccountHash::from(
-            account
-                .tvm_shard_account()?
-                .account_cell()
-                .map_err(|e| anyhow::anyhow!("{e}"))?
-                .repr_hash(),
-        ))
-    })
+    validate_snapshot_export_account(archive_data, expected)
 }
 
 fn validate_snapshot_export_account(
     archive_data: &[u8],
     expected: &AccountInfo,
-    legacy: bool,
-) -> anyhow::Result<Option<(Vec<u8>, Option<AccountInfo>)>> {
+) -> anyhow::Result<Option<Vec<u8>>> {
     let account_bytes: Vec<u8> = bincode::deserialize(archive_data)?;
     let account = ThreadAccount::validate_tvm_bytes(Box::from(account_bytes.as_slice()))?;
     let matches = match expected {
@@ -210,15 +208,13 @@ fn validate_snapshot_export_account(
     if !matches {
         return Ok(None);
     }
-    let legacy_info = if legacy { Some(legacy_account_info(&account)?) } else { None };
-    Ok(Some((account_bytes, legacy_info)))
+    Ok(Some(account_bytes))
 }
 
 type SnapshotHashBatch = Vec<(AccountRouting, Vec<u8>)>;
 type SnapshotHashBatchResult = anyhow::Result<Vec<SnapshotWrittenAccountInfo>>;
 type SnapshotExportValidationBatch = Vec<(AccountRouting, AccountInfo, Vec<u8>)>;
-type SnapshotExportValidationBatchResult =
-    anyhow::Result<Vec<(AccountRouting, Vec<u8>, Option<AccountInfo>)>>;
+type SnapshotExportValidationBatchResult = anyhow::Result<Vec<(AccountRouting, Vec<u8>)>>;
 
 #[derive(Clone, Copy)]
 struct SnapshotWrittenAccountInfo {
@@ -349,7 +345,6 @@ struct ExportValidationPipeline {
 impl ExportValidationPipeline {
     fn new(
         result_tx: crossbeam_channel::Sender<SnapshotExportValidationBatchResult>,
-        legacy: bool,
     ) -> anyhow::Result<Self> {
         let worker_count = snapshot_export_validation_worker_count();
         let queue_batches = snapshot_export_validation_queue_batches();
@@ -378,7 +373,7 @@ impl ExportValidationPipeline {
                             accounts += batch.len();
                             let validation_started = Instant::now();
                             let result =
-                                process_snapshot_export_validation_batch(batch, &cancelled, legacy);
+                                process_snapshot_export_validation_batch(batch, &cancelled);
                             validation_active += validation_started.elapsed();
                             if result.is_err() {
                                 cancelled.store(true, Ordering::Relaxed);
@@ -446,19 +441,15 @@ impl Drop for ExportValidationPipeline {
 }
 
 fn write_validated_export_batch<W: Write>(
-    batch: Vec<(AccountRouting, Vec<u8>, Option<AccountInfo>)>,
+    batch: Vec<(AccountRouting, Vec<u8>)>,
     writer: &mut W,
     written: &mut HashSet<AccountRouting>,
     accounts_count: &mut u64,
-    legacy_entries: &mut Vec<(AccountRouting, AccountInfo)>,
 ) -> anyhow::Result<()> {
-    for (routing, account_bytes, legacy_info) in batch {
+    for (routing, account_bytes) in batch {
         if written.insert(routing) {
             write_snapshot_account_entry(writer, &routing, &account_bytes)?;
             *accounts_count += 1;
-            if let Some(info) = legacy_info {
-                legacy_entries.push((routing, info));
-            }
         }
     }
     Ok(())
@@ -467,25 +458,15 @@ fn write_validated_export_batch<W: Write>(
 fn write_export_validation_results<W: Write>(
     mut writer: W,
     result_rx: crossbeam_channel::Receiver<SnapshotExportValidationBatchResult>,
-    legacy_entry_capacity: usize,
-) -> anyhow::Result<(W, HashSet<AccountRouting>, u64, Vec<(AccountRouting, AccountInfo)>)> {
+) -> anyhow::Result<(W, HashSet<AccountRouting>, u64)> {
     let writer_started = Instant::now();
     let mut write_active = Duration::ZERO;
     let mut batches = 0;
     let mut written = HashSet::new();
     let mut accounts_count = 0u64;
-    // One contiguous allocation, sized from the independent trie leaf count. In non-legacy
-    // exports capacity is zero and no metadata is collected.
-    let mut legacy_entries = Vec::with_capacity(legacy_entry_capacity);
     for result in result_rx {
         let write_started = Instant::now();
-        write_validated_export_batch(
-            result?,
-            &mut writer,
-            &mut written,
-            &mut accounts_count,
-            &mut legacy_entries,
-        )?;
+        write_validated_export_batch(result?, &mut writer, &mut written, &mut accounts_count)?;
         write_active += write_started.elapsed();
         batches += 1;
     }
@@ -493,28 +474,27 @@ fn write_export_validation_results<W: Write>(
         write_active_ms = write_active.as_millis() as u64,
         writer_elapsed_ms = writer_started.elapsed().as_millis() as u64,
         "Snapshot export body writer finished (active time includes encoding, writes and routing bookkeeping)");
-    Ok((writer, written, accounts_count, legacy_entries))
+    Ok((writer, written, accounts_count))
 }
 
 fn process_snapshot_export_validation_batch(
     batch: SnapshotExportValidationBatch,
     cancelled: &AtomicBool,
-    legacy: bool,
 ) -> SnapshotExportValidationBatchResult {
     let mut validated = Vec::with_capacity(batch.len());
     for (routing, info, archive_data) in batch {
         if cancelled.load(Ordering::Relaxed) {
             anyhow::bail!("Export validation pipeline cancelled");
         }
-        let account_bytes = validate_snapshot_export_account(&archive_data, &info, legacy)
-            .map_err(|err| {
+        let account_bytes =
+            validate_snapshot_export_account(&archive_data, &info).map_err(|err| {
                 anyhow::anyhow!(
                     "snapshot export: failed to validate enumerated archive record \
                  routing={routing:?}: {err}",
                 )
             })?;
-        if let Some((account_bytes, legacy_info)) = account_bytes {
-            validated.push((routing, account_bytes, legacy_info));
+        if let Some(account_bytes) = account_bytes {
+            validated.push((routing, account_bytes));
         }
     }
     Ok(validated)
@@ -536,13 +516,11 @@ fn snapshot_export_validation_queue_batches() -> usize {
         .unwrap_or(SNAPSHOT_EXPORT_VALIDATION_QUEUE_BATCHES)
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
 pub enum BlockAccountOperation {
     UpdateOrInsert(ThreadAccount),
     Remove,
-    #[default]
-    MoveFromTvm,
     /// Merkle update delta for an existing account.
     /// Contains the BOC-serialized tvm_block::MerkleUpdate bytes for ShardAccount cell.
     /// Applicable only to TVM accounts that already exist in the durable state.
@@ -646,6 +624,34 @@ pub(crate) enum CacheLevel {
     L2,
 }
 
+/// Resolve L1 completely before taking L2, without holding two guards at once.
+/// Cloning the cached Arcs is cheap; account decoding stays outside these locks.
+fn get_cached_accounts(
+    l1: &Mutex<LruCache<AccountHash, Arc<ThreadAccount>>>,
+    l2: &Mutex<LruCache<AccountHash, Arc<ThreadAccount>>>,
+    hashes: &[AccountHash],
+) -> Vec<Option<(CacheLevel, Arc<ThreadAccount>)>> {
+    if hashes.is_empty() {
+        return Vec::new();
+    }
+    let mut results = {
+        let mut cache = l1.lock();
+        hashes
+            .iter()
+            .map(|hash| cache.get(hash).cloned().map(|a| (CacheLevel::L1, a)))
+            .collect::<Vec<_>>()
+    };
+    if results.iter().any(Option::is_none) {
+        let mut cache = l2.lock();
+        for (hash, result) in hashes.iter().zip(&mut results) {
+            if result.is_none() {
+                *result = cache.get(hash).cloned().map(|a| (CacheLevel::L2, a));
+            }
+        }
+    }
+    results
+}
+
 struct AccountReadCache {
     l1: Mutex<LruCache<AccountHash, Arc<ThreadAccount>>>,
     l2: Mutex<LruCache<AccountHash, Arc<ThreadAccount>>>,
@@ -672,6 +678,10 @@ impl AccountReadCache {
         self.l2.lock().get(hash).cloned().map(|account| (CacheLevel::L2, account))
     }
 
+    fn get_many(&self, hashes: &[AccountHash]) -> Vec<Option<(CacheLevel, Arc<ThreadAccount>)>> {
+        get_cached_accounts(&self.l1, &self.l2, hashes)
+    }
+
     fn insert_by_elapsed(
         &self,
         hash: AccountHash,
@@ -689,15 +699,41 @@ impl AccountReadCache {
         None
     }
 
+    fn remove_many(&self, hashes: &[AccountHash]) {
+        if hashes.is_empty() {
+            return;
+        }
+        let mut retired = Vec::with_capacity(hashes.len().saturating_mul(2));
+        {
+            let mut cache = self.l1.lock();
+            for hash in hashes {
+                if let Some(account) = cache.pop(hash) {
+                    retired.push(account);
+                }
+            }
+        }
+        {
+            let mut cache = self.l2.lock();
+            for hash in hashes {
+                if let Some(account) = cache.pop(hash) {
+                    retired.push(account);
+                }
+            }
+        }
+    }
+
     fn insert_l1(&self, hash: AccountHash, account: Arc<ThreadAccount>) {
-        self.l1.lock().put(hash, account);
-        self.l2.lock().pop(&hash);
+        let evicted = self.l1.lock().push(hash, account);
+        let promoted = self.l2.lock().pop(&hash);
+        drop((evicted, promoted));
     }
 
     fn insert_l2(&self, hash: AccountHash, account: Arc<ThreadAccount>) {
-        self.l2.lock().put(hash, account);
+        let evicted = self.l2.lock().push(hash, account);
+        drop(evicted);
     }
 
+    #[cfg(test)]
     fn remove(&self, hash: &AccountHash) -> bool {
         let removed_l1 = self.l1.lock().pop(hash).is_some();
         let removed_l2 = self.l2.lock().pop(hash).is_some();
@@ -731,6 +767,10 @@ impl AccountWrittenCache {
         self.l2.lock().get(hash).cloned().map(|account| (CacheLevel::L2, account))
     }
 
+    fn get_many(&self, hashes: &[AccountHash]) -> Vec<Option<(CacheLevel, Arc<ThreadAccount>)>> {
+        get_cached_accounts(&self.l1, &self.l2, hashes)
+    }
+
     pub(crate) fn insert_by_serialized_len(
         &self,
         hash: AccountHash,
@@ -749,12 +789,14 @@ impl AccountWrittenCache {
     }
 
     fn insert_l1(&self, hash: AccountHash, account: Arc<ThreadAccount>) {
-        self.l1.lock().put(hash, account);
-        self.l2.lock().pop(&hash);
+        let evicted = self.l1.lock().push(hash, account);
+        let promoted = self.l2.lock().pop(&hash);
+        drop((evicted, promoted));
     }
 
     fn insert_l2(&self, hash: AccountHash, account: Arc<ThreadAccount>) {
-        self.l2.lock().put(hash, account);
+        let evicted = self.l2.lock().push(hash, account);
+        drop(evicted);
     }
 }
 
@@ -764,6 +806,9 @@ pub struct DurableThreadAccountsRepository {
     archive: ArchiveStateStore,
     accumulator: Arc<ArchiveUpdateAccumulator>,
     account_read_cache: Arc<AccountReadCache>,
+    // Zerostate is an immutable replay base. Its bodies must remain available
+    // after finalization drains the pool and the archive advances past genesis.
+    genesis_accounts: Arc<parking_lot::RwLock<HashMap<AccountHash, ThreadAccount>>>,
     update_thread: Arc<parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>>,
     metrics: Option<StateAccountsMetrics>,
 }
@@ -789,6 +834,7 @@ impl DurableThreadAccountsRepository {
             archive,
             accumulator,
             account_read_cache: Arc::new(AccountReadCache::new()),
+            genesis_accounts: Default::default(),
             update_thread: Arc::new(parking_lot::Mutex::new(None)),
             metrics,
         })
@@ -816,6 +862,37 @@ impl DurableThreadAccountsRepository {
     /// Return a human-readable summary of the archive state store.
     pub fn archive_summary(&self) -> String {
         self.archive.summary()
+    }
+
+    pub(crate) fn retain_genesis_accounts(
+        &self,
+        operations: HashMap<AccountRouting, ArchiveOperation>,
+    ) {
+        let mut accounts = self.genesis_accounts.write();
+        for operation in operations.into_values() {
+            if let ArchiveOperation::UpdateOrInsert(account) = operation {
+                accounts.entry(account.account_hash()).or_insert(account);
+            }
+        }
+    }
+
+    /// Called during startup, before the archive update service starts.
+    pub(crate) fn initialize_zerostate_archive(
+        &self,
+        thread_id: &ThreadIdentifier,
+        block_id: &BlockIdentifier,
+        state: &DurableThreadAccountsState,
+    ) -> anyhow::Result<()> {
+        let mut snapshot = ThreadSnapshot::new();
+        for (routing, _) in state.map().iter() {
+            let account = self
+                .state_account(state, &routing)?
+                .ok_or_else(|| anyhow::anyhow!("Missing zerostate account at {routing}"))?;
+            snapshot.insert(routing, account);
+        }
+        self.archive.bootstrap_zerostate_thread(thread_id, *block_id, &snapshot)?;
+        self.accumulator.set_expected_block(*thread_id, *block_id, false);
+        Ok(())
     }
 
     /// Ensure a thread exists in the archive store (idempotent).
@@ -885,7 +962,7 @@ impl DurableThreadAccountsRepository {
         })
     }
 
-    // ---- State accessors (legacy compat wrappers) ----
+    // ---- State accessors ----
 
     pub fn new_state() -> DurableThreadAccountsState {
         DurableThreadAccountsState::new(ThreadAccountMap::new())
@@ -944,47 +1021,9 @@ impl DurableThreadAccountsRepository {
                 self.find_account(state, &routing.with_dapp_id(dapp_id))
             }
             AccountInfo::AccountHash(vm_hash) => {
-                // 1. Unfinalized pool lookup by hash — always correct
-                if let Some(account) = self.accumulator.unfinalized_pool_get(&vm_hash) {
-                    return Ok(Some(account));
+                if let Some(account) = self.find_account_in_memory(routing, vm_hash) {
+                    return Ok(account);
                 }
-                // 2. Accumulator lookup by routing — verify hash
-                if let Some(operation) = self.accumulator.find_account_operation(routing, &vm_hash)
-                {
-                    match operation {
-                        ArchiveOperation::UpdateOrInsert(account) => {
-                            return Ok(Some(account));
-                        }
-                        ArchiveOperation::Remove => return Ok(None),
-                    }
-                }
-                // 3. Content-addressed read cache by expected hash.
-                if let Some((level, account)) = self.account_read_cache.get(&vm_hash) {
-                    tracing::trace!(
-                        target: "mem",
-                        routing = %routing,
-                        hash = %vm_hash.to_hex_string(),
-                        level = ?level,
-                        "account read cache hit",
-                    );
-                    return Ok(Some(Arc::unwrap_or_clone(account)));
-                }
-                if let Some((level, account)) = self.archive.account_written_cache().get(&vm_hash) {
-                    tracing::trace!(
-                        target: "mem",
-                        routing = %routing,
-                        hash = %vm_hash.to_hex_string(),
-                        level = ?level,
-                        "account written cache hit",
-                    );
-                    return Ok(Some(Arc::unwrap_or_clone(account)));
-                }
-                tracing::trace!(
-                    target: "mem",
-                    routing = %routing,
-                    hash = %vm_hash.to_hex_string(),
-                    "account read/write cache miss",
-                );
                 // 3. Archive lookup by routing — verify hash
                 let started = Instant::now();
                 if let Some(account) = self.archive.read_account_operation(routing)? {
@@ -1012,19 +1051,227 @@ impl DurableThreadAccountsRepository {
         }
     }
 
-    fn invalidate_account_read_cache_for_operation(&self, operation: &ArchiveOperation) {
-        let ArchiveOperation::UpdateOrInsert(account) = operation else {
-            return;
-        };
-        let hash = account.account_hash();
-
-        if self.account_read_cache.remove(&hash) {
+    /// Some(None) is an authoritative accumulator removal, not a cache miss.
+    fn find_account_in_memory(
+        &self,
+        routing: &AccountRouting,
+        vm_hash: AccountHash,
+    ) -> Option<Option<ThreadAccount>> {
+        // Genesis bodies remain available for old states after finalization.
+        if let Some(account) = self.genesis_accounts.read().get(&vm_hash) {
+            return Some(Some(account.clone()));
+        }
+        // 1. Unfinalized pool lookup by hash — always correct
+        if let Some(account) = self.accumulator.unfinalized_pool_get(&vm_hash) {
+            return Some(Some(account));
+        }
+        // 2. Accumulator lookup by routing — verify hash
+        if let Some(operation) = self.accumulator.find_account_operation(routing, &vm_hash) {
+            match operation {
+                ArchiveOperation::UpdateOrInsert(account) => {
+                    return Some(Some(account));
+                }
+                ArchiveOperation::Remove => return Some(None),
+            }
+        }
+        // 3. Content-addressed read cache by expected hash.
+        if let Some((level, account)) = self.account_read_cache.get(&vm_hash) {
             tracing::trace!(
                 target: "mem",
-                hash = %hash.to_hex_string(),
-                "account read cache invalidated for written account",
+                routing = %routing,
+                hash = %vm_hash.to_hex_string(),
+                level = ?level,
+                "account read cache hit",
+            );
+            return Some(Some(Arc::unwrap_or_clone(account)));
+        }
+        if let Some((level, account)) = self.archive.account_written_cache().get(&vm_hash) {
+            tracing::trace!(
+                target: "mem",
+                routing = %routing,
+                hash = %vm_hash.to_hex_string(),
+                level = ?level,
+                "account written cache hit",
+            );
+            return Some(Some(Arc::unwrap_or_clone(account)));
+        }
+        tracing::trace!(
+            target: "mem",
+            routing = %routing,
+            hash = %vm_hash.to_hex_string(),
+            "account read/write cache miss",
+        );
+        None
+    }
+
+    // Share redirect resolution between window planning and actual lookup: the
+    // budget must count the target body, never the small redirect stub.
+    fn resolve_account_info(
+        state: &DurableThreadAccountsState,
+        mut routing: AccountRouting,
+        mut info: AccountInfo,
+        mut capacity: AccountCapacity,
+    ) -> anyhow::Result<Option<OldAccountRequest>> {
+        let mut visited = HashSet::new();
+        while let AccountInfo::Redirect(dapp) = info {
+            anyhow::ensure!(visited.insert(routing), "Account redirect cycle: {routing}");
+            routing = routing.with_dapp_id(dapp);
+            let Some((target, target_capacity)) = state.0.map.get_with_capacity(&routing) else {
+                return Ok(None);
+            };
+            info = target;
+            capacity = target_capacity;
+        }
+        let AccountInfo::AccountHash(hash) = info else { return Ok(None) };
+        // Unknown/zero metadata must not overfill a shared prefetch window.
+        let bytes = if capacity.bytes() > 0 { capacity.bytes() } else { u64::MAX };
+        Ok(Some(OldAccountRequest { routing, hash, bytes }))
+    }
+
+    fn old_account_request(
+        state: &DurableThreadAccountsState,
+        routing: &AccountRouting,
+        operation: &BlockAccountOperation,
+    ) -> anyhow::Result<Option<OldAccountRequest>> {
+        if !matches!(operation, BlockAccountOperation::AccountMerkleUpdate(_)) {
+            return Ok(None);
+        }
+        let Some((info, capacity)) = state.0.map.get_with_capacity(routing) else {
+            // TVM fallback is loaded by the apply worker, not prefetched.
+            return Ok(None);
+        };
+        let resolved = Self::resolve_account_info(state, *routing, info, capacity)?;
+        anyhow::ensure!(
+            resolved.is_some(),
+            "Missing account data for {} in durable state",
+            routing
+        );
+        Ok(resolved)
+    }
+
+    /// Batch counterpart of find_account_with_info. Resolve redirects and all
+    /// in-memory layers first, then fetch just archive misses in one request.
+    /// Results remain aligned with the input, including missing redirect targets.
+    fn batch_find_account_with_info(
+        &self,
+        state: &DurableThreadAccountsState,
+        requests: &[(AccountRouting, AccountInfo)],
+        pool: Option<&rayon::ThreadPool>,
+    ) -> anyhow::Result<Vec<Option<ThreadAccount>>> {
+        let mut results = vec![None; requests.len()];
+        let mut misses = Vec::new();
+        for (index, &(routing, info)) in requests.iter().enumerate() {
+            if let Some(request) =
+                Self::resolve_account_info(state, routing, info, AccountCapacity::default())?
+            {
+                misses.push((index, request.routing, request.hash));
+            }
+        }
+        // A layer receives only unresolved requests. A resolved removal is
+        // Some(None), so it stops fallback just like a resolved body.
+        let mut resolve_layer =
+            |misses: &mut Vec<(usize, AccountRouting, AccountHash)>,
+             hits: Vec<Option<Option<ThreadAccount>>>| {
+                assert_eq!(misses.len(), hits.len());
+                let mut hits = hits.into_iter();
+                misses.retain(|(index, _, _)| {
+                    if let Some(account) = hits.next().unwrap() {
+                        results[*index] = account;
+                        false
+                    } else {
+                        true
+                    }
+                });
+            };
+        if !misses.is_empty() {
+            let hashes: Vec<_> = misses.iter().map(|(_, _, hash)| *hash).collect();
+            let hits = self.accumulator.unfinalized_pool_get_many(&hashes);
+            resolve_layer(&mut misses, hits.into_iter().map(|hit| hit.map(Some)).collect());
+        }
+        if !misses.is_empty() {
+            let requests: Vec<_> =
+                misses.iter().map(|(_, routing, hash)| (*routing, *hash)).collect();
+            let hits = self.accumulator.find_account_operations(&requests);
+            resolve_layer(
+                &mut misses,
+                hits.into_iter()
+                    .map(|hit| {
+                        hit.map(|op| match op {
+                            ArchiveOperation::UpdateOrInsert(account) => Some(account),
+                            ArchiveOperation::Remove => None,
+                        })
+                    })
+                    .collect(),
             );
         }
+        if !misses.is_empty() {
+            let hashes: Vec<_> = misses.iter().map(|(_, _, hash)| *hash).collect();
+            let hits = self.account_read_cache.get_many(&hashes);
+            resolve_layer(
+                &mut misses,
+                hits.into_iter()
+                    .map(|hit| hit.map(|(_, a)| Some(Arc::unwrap_or_clone(a))))
+                    .collect(),
+            );
+        }
+        if !misses.is_empty() {
+            let hashes: Vec<_> = misses.iter().map(|(_, _, hash)| *hash).collect();
+            let hits = self.archive.account_written_cache().get_many(&hashes);
+            resolve_layer(
+                &mut misses,
+                hits.into_iter()
+                    .map(|hit| hit.map(|(_, a)| Some(Arc::unwrap_or_clone(a))))
+                    .collect(),
+            );
+        }
+        if !misses.is_empty() {
+            let routings: Vec<_> = misses.iter().map(|(_, routing, _)| *routing).collect();
+            let accounts = self.archive.read_account_operations(&routings)?;
+            // Hash verification lazily decodes TVM bodies. Keep this CPU work
+            // parallel for large batches, but never issue storage I/O there.
+            let resolve = |((index, routing, expected_hash), account): (
+                (usize, AccountRouting, AccountHash),
+                Option<ThreadAccount>,
+            )|
+             -> anyhow::Result<(usize, ThreadAccount)> {
+                let account = account
+                    .filter(|account| account.account_hash() == expected_hash)
+                    .ok_or(AccountHashMismatchError { routing, expected_hash })?;
+                Ok((index, account))
+            };
+            let resolved: anyhow::Result<Vec<_>> =
+                if misses.len() < PARALLEL_PREPARE_UPDATES_THRESHOLD {
+                    misses.into_iter().zip(accounts).map(resolve).collect()
+                } else {
+                    let work = || misses.into_par_iter().zip(accounts).map(resolve).collect();
+                    match pool {
+                        Some(pool) => pool.install(work),
+                        None => work(),
+                    }
+                };
+            let resolved = resolved?;
+            // Batch latency cannot identify an expensive individual account.
+            // These old bodies are used by the current apply window only;
+            // avoid polluting the read LRUs and extending their lifetime.
+            // Single-account reads retain their existing latency policy.
+            for (index, account) in resolved {
+                results[index] = Some(account);
+            }
+        }
+        Ok(results)
+    }
+
+    fn invalidate_account_read_cache_for_operations<'a>(
+        &self,
+        operations: impl Iterator<Item = &'a ArchiveOperation>,
+    ) {
+        let hashes: Vec<_> = operations
+            .filter_map(|op| match op {
+                ArchiveOperation::UpdateOrInsert(account) => Some(account.account_hash()),
+                ArchiveOperation::Remove => None,
+            })
+            .collect();
+        self.account_read_cache.remove_many(&hashes);
     }
 
     pub fn state_split(
@@ -1057,12 +1304,30 @@ impl DurableThreadAccountsRepository {
         accounts: &HashMap<AccountRouting, BlockAccountOperation>,
     ) -> anyhow::Result<(DurableThreadAccountsState, HashMap<AccountRouting, ArchiveOperation>)>
     {
+        self.state_update_with_pool(
+            thread_id,
+            block_height,
+            old_tvm_accounts,
+            state,
+            accounts,
+            None,
+        )
+    }
+
+    pub(crate) fn state_update_with_pool(
+        &self,
+        thread_id: &ThreadIdentifier,
+        block_height: u64,
+        old_tvm_accounts: &tvm_block::ShardAccounts,
+        state: &DurableThreadAccountsState,
+        accounts: &HashMap<AccountRouting, BlockAccountOperation>,
+        pool: Option<&rayon::ThreadPool>,
+    ) -> anyhow::Result<(DurableThreadAccountsState, HashMap<AccountRouting, ArchiveOperation>)>
+    {
         tracing::trace!(target: "monit", "Update accounts in durable state: prepare update: {}", accounts.len());
         let (account_updates, map_updates) =
-            self.prepare_updates(old_tvm_accounts, state, accounts)?;
-        for operation in account_updates.values() {
-            self.invalidate_account_read_cache_for_operation(operation);
-        }
+            self.prepare_updates(old_tvm_accounts, state, accounts, pool)?;
+        self.invalidate_account_read_cache_for_operations(account_updates.values());
 
         self.accumulator.unfinalized_pool_insert(*thread_id, block_height, &account_updates);
         tracing::trace!(target: "monit", "Update accounts in durable maps: {}", account_updates.len());
@@ -1100,9 +1365,7 @@ impl DurableThreadAccountsRepository {
             target: "mem",
             "finalize_thread_transition T:{thread_id} B:{block_id} ops={operations_len} ops_data_bytes={ops_data_bytes}",
         );
-        for operation in account_operations.values() {
-            self.invalidate_account_read_cache_for_operation(operation);
-        }
+        self.invalidate_account_read_cache_for_operations(account_operations.values());
         self.accumulator.push_transition(
             *thread_id,
             *block_id,
@@ -1125,9 +1388,7 @@ impl DurableThreadAccountsRepository {
         state: &DurableThreadAccountsState,
         account_operations: HashMap<AccountRouting, ArchiveOperation>,
     ) -> anyhow::Result<()> {
-        for operation in account_operations.values() {
-            self.invalidate_account_read_cache_for_operation(operation);
-        }
+        self.invalidate_account_read_cache_for_operations(account_operations.values());
         self.accumulator.push_emerge(
             *thread_id,
             *initial_block_id,
@@ -1351,6 +1612,27 @@ impl DurableThreadAccountsRepository {
         old_tvm_accounts: &tvm_block::ShardAccounts,
         state: &DurableThreadAccountsState,
         accounts: &HashMap<AccountRouting, BlockAccountOperation>,
+        pool: Option<&rayon::ThreadPool>,
+    ) -> anyhow::Result<(
+        HashMap<AccountRouting, ArchiveOperation>,
+        Vec<(AccountRouting, Option<(AccountInfo, AccountCapacity)>)>,
+    )> {
+        self.prepare_updates_with_budget(
+            old_tvm_accounts,
+            state,
+            accounts,
+            pool,
+            PREPARE_OLD_ACCOUNTS_BYTES,
+        )
+    }
+
+    fn prepare_updates_with_budget(
+        &self,
+        old_tvm_accounts: &tvm_block::ShardAccounts,
+        state: &DurableThreadAccountsState,
+        accounts: &HashMap<AccountRouting, BlockAccountOperation>,
+        pool: Option<&rayon::ThreadPool>,
+        byte_budget: u64,
     ) -> anyhow::Result<(
         HashMap<AccountRouting, ArchiveOperation>,
         Vec<(AccountRouting, Option<(AccountInfo, AccountCapacity)>)>,
@@ -1362,11 +1644,70 @@ impl DurableThreadAccountsRepository {
             })
             .collect();
 
-        let prepared_updates = if accounts.len() < PARALLEL_PREPARE_UPDATES_THRESHOLD {
-            self.prepare_account_updates_sequential(old_tvm_accounts, state, accounts)?
-        } else {
-            self.prepare_account_updates_parallel(old_tvm_accounts, state, accounts)?
-        };
+        let operations: Vec<_> = accounts.iter().collect();
+        // Resolve each leaf once, retaining its hash, capacity and redirect
+        // target for the actual fetch. Windowing never repeats trie lookups.
+        let old_requests = operations
+            .iter()
+            .map(|(routing, operation)| Self::old_account_request(state, routing, operation))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let sizes: Vec<_> = old_requests
+            .iter()
+            .map(|request| request.as_ref().map_or(0, |request| request.bytes))
+            .collect();
+        let mut prepared_updates = Vec::with_capacity(accounts.len());
+        let mut start = 0;
+        while start < operations.len() {
+            let count = prepare_window_len(&sizes[start..], byte_budget);
+            let window = &operations[start..start + count];
+            // Only this window owns prefetched bodies. Storage I/O stays out
+            // of Rayon; workers apply to resolved bodies before the next read.
+            let requests: Vec<_> = old_requests[start..start + count]
+                .iter()
+                .filter_map(|request| request.as_ref())
+                .map(|request| (request.routing, AccountInfo::AccountHash(request.hash)))
+                .collect();
+            let resolved = self.batch_find_account_with_info(state, &requests, pool)?;
+            let sources = window
+                .iter()
+                .zip(&old_requests[start..start + count])
+                .filter_map(|((routing, _), request)| request.as_ref().map(|_| **routing));
+            let mut old_accounts = HashMap::with_capacity(requests.len());
+            for (routing, account) in sources.zip(resolved) {
+                old_accounts.insert(
+                    routing,
+                    account.ok_or_else(|| {
+                        anyhow::anyhow!("Missing account data for {} in durable state", routing)
+                    })?,
+                );
+            }
+            let updates = if window.len() < PARALLEL_PREPARE_UPDATES_THRESHOLD {
+                self.prepare_account_updates_sequential(
+                    old_tvm_accounts,
+                    state,
+                    window,
+                    &old_accounts,
+                )?
+            } else {
+                let work = || {
+                    self.prepare_account_updates_parallel(
+                        old_tvm_accounts,
+                        state,
+                        window,
+                        &old_accounts,
+                    )
+                };
+                match pool {
+                    Some(pool) => pool.install(work)?,
+                    None => work()?,
+                }
+            };
+            // New states may share cells with old bodies. Release our old
+            // handles now; do not retain the whole block's old bodies here.
+            drop(old_accounts);
+            prepared_updates.extend(updates);
+            start += count;
+        }
 
         self.collect_prepared_updates(prepared_updates, &protected_routings, state)
     }
@@ -1375,14 +1716,21 @@ impl DurableThreadAccountsRepository {
         &self,
         old_tvm_accounts: &tvm_block::ShardAccounts,
         state: &DurableThreadAccountsState,
-        accounts: &HashMap<AccountRouting, BlockAccountOperation>,
+        accounts: &[(&AccountRouting, &BlockAccountOperation)],
+        old_accounts: &HashMap<AccountRouting, ThreadAccount>,
     ) -> anyhow::Result<Vec<PreparedAccountUpdate>> {
         let mut prepared_updates = Vec::with_capacity(accounts.len());
-        for (routing, state_account) in accounts {
+        for &(routing, state_account) in accounts {
             tracing::trace!(target: "builder", "Update account in durable state: {}", routing);
             prepared_updates.push(PreparedAccountUpdate {
                 routing: *routing,
-                update: self.get_account_update(routing, state_account, state, old_tvm_accounts)?,
+                update: self.get_account_update(
+                    routing,
+                    state_account,
+                    state,
+                    old_tvm_accounts,
+                    old_accounts,
+                )?,
             });
         }
         Ok(prepared_updates)
@@ -1392,11 +1740,12 @@ impl DurableThreadAccountsRepository {
         &self,
         old_tvm_accounts: &tvm_block::ShardAccounts,
         state: &DurableThreadAccountsState,
-        accounts: &HashMap<AccountRouting, BlockAccountOperation>,
+        accounts: &[(&AccountRouting, &BlockAccountOperation)],
+        old_accounts: &HashMap<AccountRouting, ThreadAccount>,
     ) -> anyhow::Result<Vec<PreparedAccountUpdate>> {
         accounts
             .par_iter()
-            .map(|(routing, state_account)| {
+            .map(|&(routing, state_account)| {
                 tracing::trace!(target: "builder", "Update account in durable state: {}", routing);
                 Ok(PreparedAccountUpdate {
                     routing: *routing,
@@ -1405,6 +1754,7 @@ impl DurableThreadAccountsRepository {
                         state_account,
                         state,
                         old_tvm_accounts,
+                        old_accounts,
                     )?,
                 })
             })
@@ -1464,6 +1814,7 @@ impl DurableThreadAccountsRepository {
         state_account: &BlockAccountOperation,
         state: &DurableThreadAccountsState,
         old_tvm_accounts: &tvm_block::ShardAccounts,
+        old_accounts: &HashMap<AccountRouting, ThreadAccount>,
     ) -> anyhow::Result<AccountUpdate> {
         Ok(match state_account {
             BlockAccountOperation::UpdateOrInsert(state_account) => {
@@ -1477,16 +1828,13 @@ impl DurableThreadAccountsRepository {
                     AccountUpdate::Skip
                 }
             }
-            BlockAccountOperation::MoveFromTvm => {
-                if let Ok(Some(tvm_acc)) = old_tvm_accounts.account(&routing.account_id().into()) {
-                    Self::state_account_update(routing, &tvm_acc.into())?
-                } else {
-                    AccountUpdate::Skip
-                }
-            }
-            BlockAccountOperation::AccountMerkleUpdate(update_bytes) => {
-                self.apply_account_merkle_update(routing, update_bytes, state, old_tvm_accounts)?
-            }
+            BlockAccountOperation::AccountMerkleUpdate(update_bytes) => self
+                .apply_account_merkle_update(
+                    routing,
+                    update_bytes,
+                    old_accounts,
+                    old_tvm_accounts,
+                )?,
         })
     }
 
@@ -1494,7 +1842,7 @@ impl DurableThreadAccountsRepository {
         &self,
         routing: &AccountRouting,
         update_bytes: &[u8],
-        state: &DurableThreadAccountsState,
+        old_accounts: &HashMap<AccountRouting, ThreadAccount>,
         old_tvm_accounts: &tvm_block::ShardAccounts,
     ) -> anyhow::Result<AccountUpdate> {
         use tvm_block::Deserializable;
@@ -1504,11 +1852,9 @@ impl DurableThreadAccountsRepository {
             "Applying account merkle update: {}, size: {}",
             routing, update_bytes.len(),);
 
-        // Look up the old account state from the durable state first, then TVM
-        let old_shard_acc = if let Some(info) = state.0.map.get(routing) {
-            let account = self.find_account_with_info(state, routing, info)?.ok_or_else(|| {
-                anyhow::anyhow!("Missing account data for {} in durable state", routing)
-            })?;
+        // Durable bodies were resolved before parallel work. TVM remains the
+        // fallback only for routings absent from the durable map.
+        let old_shard_acc = if let Some(account) = old_accounts.get(routing) {
             let shard_account = account.tvm_shard_account()?;
             shard_account.clone()
         } else if let Ok(Some(tvm_acc)) = old_tvm_accounts.account(&routing.account_id().into()) {
@@ -1586,6 +1932,10 @@ impl DurableThreadAccountsRepository {
         Ok(AccountUpdate::Update(AccountInfo::AccountHash(account.account_hash()), account.clone()))
     }
 
+    pub(crate) fn apply_pool(&self) -> anyhow::Result<&'static rayon::ThreadPool> {
+        super::apply_pool::get()
+    }
+
     pub(crate) fn state_apply_diff(
         &self,
         thread_id: &ThreadIdentifier,
@@ -1595,7 +1945,14 @@ impl DurableThreadAccountsRepository {
         diff: &DurableThreadAccountsStateDiff,
     ) -> anyhow::Result<(DurableThreadAccountsState, HashMap<AccountRouting, ArchiveOperation>)>
     {
-        self.state_update(thread_id, block_height, old_tvm_accounts, state, &diff.accounts)
+        self.state_update_with_pool(
+            thread_id,
+            block_height,
+            old_tvm_accounts,
+            state,
+            &diff.accounts,
+            Some(super::apply_pool::get()?),
+        )
     }
 
     // ---- Snapshot export/import ----
@@ -1774,79 +2131,21 @@ impl DurableThreadAccountsRepository {
         W: Write + Seek + Send,
         F: Fn() -> bool,
     {
-        self.export_snapshot_to_writer_checked(state, writer, should_cancel, false)
-    }
-
-    pub fn export_snapshot_v1_to_writer_checked<W, F>(
-        &self,
-        state: &DurableThreadAccountsState,
-        writer: &mut W,
-        should_cancel: &F,
-    ) -> anyhow::Result<()>
-    where
-        W: Write + Seek + Send,
-        F: Fn() -> bool,
-    {
-        self.export_snapshot_to_writer_checked(state, writer, should_cancel, true)
-    }
-
-    fn export_snapshot_to_writer_checked<W, F>(
-        &self,
-        state: &DurableThreadAccountsState,
-        writer: &mut W,
-        should_cancel: &F,
-        legacy: bool,
-    ) -> anyhow::Result<()>
-    where
-        W: Write + Seek + Send,
-        F: Fn() -> bool,
-    {
         let export_started = Instant::now();
-        let _span =
-            tracing::info_span!(target: "monit", "snapshot_account_export", legacy).entered();
+        let _span = tracing::info_span!(target: "monit", "snapshot_account_export").entered();
         tracing::info!(target: "monit", canonical_bytes = state.0.map.capacity().bytes(),
             "Snapshot account export started");
         check_snapshot_cancelled(should_cancel)?;
-        let legacy_layout = if legacy {
-            Some(super::snapshot_v1_export::account_map_layout(&state.0.map, should_cancel)?)
-        } else {
-            None
-        };
-        let serialized_account_count = legacy_layout
-            .map(|(_, count)| count)
-            .unwrap_or_else(|| count_serialized_map_leaves(&state.0.map));
-        check_snapshot_cancelled(should_cancel)?;
-        let legacy_entry_capacity = if legacy { serialized_account_count } else { 0 };
+        let serialized_account_count = count_serialized_map_leaves(&state.0.map);
         let pinned_account_sets = self.archive.pin_current_account_sets();
         let pinned_epoch_id = pinned_account_sets.epoch();
         let pinned_accounts_set = self.archive.set_accounts_a_for_epoch(pinned_epoch_id);
         let mut buffered_writer =
             BufWriter::with_capacity(Self::SNAPSHOT_COPY_BUFFER_CAPACITY, writer);
-
-        // Length headers (maps_len, accounts_count) use explicit
-        // `to_le_bytes` / `from_le_bytes` rather than bincode. Both header
-        // slots are 8 bytes wide, written first as a placeholder and later
-        // overwritten with the real value via seek-back. The seek-back
-        // pattern is only safe if the placeholder and real-value writes
-        // produce the *same* number of bytes; explicit `to_le_bytes` makes
-        // that a compile-time fact (always 8 bytes for u64) and removes
-        // the dependency on bincode's int-encoding config (which silently
-        // changed defaults across major versions and could change again).
-        // See `import_durable_snapshot_from_reader` for the matching read.
         let maps_len_pos = buffered_writer.stream_position()?;
         buffered_writer.write_all(&0u64.to_le_bytes())?;
         let maps_start_pos = buffered_writer.stream_position()?;
-        if let Some((map_bytes, _)) = legacy_layout {
-            // Leave a hole in this unpublished temporary file instead of serializing the
-            // current hashes just to overwrite them. Bodies begin at the exact legacy offset;
-            // the translated map fills this area once, after the body scan has completed.
-            let end = maps_start_pos
-                .checked_add(map_bytes)
-                .ok_or_else(|| anyhow::anyhow!("legacy map file offset overflow"))?;
-            buffered_writer.seek(SeekFrom::Start(end))?;
-        } else {
-            state.0.map.write_checked(&mut buffered_writer, should_cancel)?;
-        }
+        state.0.map.write_checked(&mut buffered_writer, should_cancel)?;
         let maps_end_pos = buffered_writer.stream_position()?;
         let maps_len = maps_end_pos - maps_start_pos;
 
@@ -1858,22 +2157,18 @@ impl DurableThreadAccountsRepository {
         let scan_started = Instant::now();
         tracing::info!(target: "monit", validation_workers = snapshot_export_validation_worker_count(),
             "Snapshot account scan started");
-        let (mut buffered_writer, mut written, mut accounts_count, mut legacy_entries) =
+        let (mut buffered_writer, mut written, mut accounts_count) =
             std::thread::scope(|scope| -> anyhow::Result<_> {
                 let queue_batches = snapshot_export_validation_queue_batches();
                 let (result_tx, result_rx) = crossbeam_channel::bounded::<
                     SnapshotExportValidationBatchResult,
                 >(queue_batches);
-                let mut export_validation = ExportValidationPipeline::new(result_tx, legacy)?;
+                let mut export_validation = ExportValidationPipeline::new(result_tx)?;
                 let writer_handle = scope.spawn({
                     let span = tracing::Span::current();
                     move || {
                         let _span = span.enter();
-                        write_export_validation_results(
-                            buffered_writer,
-                            result_rx,
-                            legacy_entry_capacity,
-                        )
+                        write_export_validation_results(buffered_writer, result_rx)
                     }
                 });
                 let mut validation_batch =
@@ -1938,9 +2233,6 @@ impl DurableThreadAccountsRepository {
                 })?;
             let body_bytes = body.write_bytes()?;
             write_snapshot_account_entry(&mut buffered_writer, &routing, &body_bytes)?;
-            if legacy {
-                legacy_entries.push((routing, legacy_account_info(&body)?));
-            }
             written.insert(routing);
             accounts_count += 1;
         }
@@ -1996,46 +2288,8 @@ impl DurableThreadAccountsRepository {
         );
 
         check_snapshot_cancelled(should_cancel)?;
-        // Coverage is established; do not retain this large deduplication table while rewriting
-        // the map. Legacy hashes live in the compact entries buffer, not in `written`.
         drop(written);
         let fallback_ms = fallback_started.elapsed().as_millis() as u64;
-        tracing::info!(target: "monit", fallback_ms,
-            fallback_accounts = accounts_count - scanned_accounts,
-            "Snapshot account fallback and coverage checks finished");
-        let mut legacy_sort_ms = 0;
-        let mut legacy_write_ms = 0;
-        if legacy {
-            assert_eq!(legacy_entries.len(), expected_len, "Missing legacy account metadata");
-            tracing::info!(target: "monit", entries = legacy_entries.len(),
-                entries_reserved_bytes = legacy_entries.capacity()
-                    * std::mem::size_of::<(AccountRouting, AccountInfo)>(),
-                "Snapshot legacy account metadata sort started");
-            let sort_started = Instant::now();
-            // DFS leaf order is lexicographic full routing (DApp then account). The writer can
-            // consume this list by index rather than building a second Merkle tree or HashMap.
-            legacy_entries.sort_unstable_by_key(|(routing, _)| *routing);
-            legacy_sort_ms = sort_started.elapsed().as_millis() as u64;
-            check_snapshot_cancelled(should_cancel)?;
-            tracing::info!(target: "monit", legacy_sort_ms, "Snapshot legacy account metadata sort finished");
-            let write_started = Instant::now();
-            buffered_writer.seek(SeekFrom::Start(maps_start_pos))?;
-            let stats = super::snapshot_v1_export::write_account_map(
-                &state.0.map,
-                &legacy_entries,
-                &mut buffered_writer,
-                should_cancel,
-            )?;
-            anyhow::ensure!(
-                buffered_writer.stream_position()? == maps_end_pos,
-                "Legacy account-map topology changed while rebuilding hashes"
-            );
-            legacy_write_ms = write_started.elapsed().as_millis() as u64;
-            tracing::info!(target: "monit", legacy_write_ms,
-                hash_buffer_peak_bytes = stats.hash_buffer_peak_bytes,
-                patched_nodes = stats.patched_nodes,
-                "Snapshot legacy account-map rewrite finished");
-        }
         let trailer_started = Instant::now();
         buffered_writer.flush()?;
         buffered_writer.seek(SeekFrom::Start(maps_len_pos))?;
@@ -2046,19 +2300,15 @@ impl DurableThreadAccountsRepository {
         buffered_writer.flush()?;
         let trailer_ms = trailer_started.elapsed().as_millis() as u64;
         let cleanup_started = Instant::now();
-        drop(legacy_entries);
         drop(buffered_writer);
         let cleanup_ms = cleanup_started.elapsed().as_millis() as u64;
         tracing::info!(
             target: "monit",
-            legacy,
             accounts_count,
             scanned_accounts,
             header_ms,
             scan_ms,
             fallback_ms,
-            legacy_sort_ms,
-            legacy_write_ms,
             trailer_ms,
             cleanup_ms,
             total_ms = export_started.elapsed().as_millis() as u64,
@@ -2077,6 +2327,9 @@ impl DurableThreadAccountsRepository {
         expected_hash: AccountHash,
         epoch: u64,
     ) -> Option<ThreadAccount> {
+        if let Some(account) = self.genesis_accounts.read().get(&expected_hash) {
+            return Some(account.clone());
+        }
         if let Some(account) = self.accumulator.unfinalized_pool_get(&expected_hash) {
             return Some(account);
         }
@@ -2183,27 +2436,6 @@ impl DurableThreadAccountsRepository {
         staged: StagedArchiveEpoch,
     ) -> anyhow::Result<DurableThreadAccountsState> {
         self.import_durable_snapshot_from_reader_inner(reader, thread_id, block_id, Some(staged))
-    }
-
-    pub fn import_snapshot_v1_from_reader_staged<R: Read>(
-        &self,
-        reader: &mut R,
-        thread_id: &ThreadIdentifier,
-        block_id: &BlockIdentifier,
-        staged: StagedArchiveEpoch,
-    ) -> anyhow::Result<DurableThreadAccountsState> {
-        let mut reader = BufReader::with_capacity(8 * 1024 * 1024, reader);
-        let map = super::snapshot_v1::read_snapshot_v1_durable(&mut reader, |entries| {
-            self.archive.thread_init_from_raw_entries_at_epoch(
-                thread_id,
-                *block_id,
-                entries,
-                staged.epoch,
-                false,
-            )?;
-            Ok(())
-        })?;
-        Ok(DurableThreadAccountsState::with_map(map))
     }
 
     fn import_durable_snapshot_from_reader_inner<R: Read>(
@@ -2412,6 +2644,13 @@ enum AccountUpdate {
     Update(AccountInfo, ThreadAccount),
 }
 
+// Metadata only: body ownership is acquired later, for the current window.
+struct OldAccountRequest {
+    routing: AccountRouting,
+    hash: AccountHash,
+    bytes: u64,
+}
+
 struct PreparedAccountUpdate {
     routing: AccountRouting,
     update: AccountUpdate,
@@ -2510,6 +2749,320 @@ mod tests {
             Some((AccountInfo::AccountHash(hash), super::AccountCapacity::new(0))),
         )]);
         DurableThreadAccountsState::with_map(map)
+    }
+
+    #[test]
+    fn batch_lookup_resolves_each_memory_level_without_storage() -> anyhow::Result<()> {
+        use crate::thread_accounts::durable::kv_store::KVStore;
+        let dir = tempfile::tempdir()?;
+        let repo = DurableThreadAccountsRepository::new(
+            dir.path().into(),
+            ArchiveStateStore::in_memory(),
+            None,
+        )?;
+        let accounts: Vec<_> = (900..905).map(new_acc).collect();
+        repo.accumulator.unfinalized_pool_insert(
+            ThreadIdentifier::default(),
+            1,
+            &HashMap::from([(
+                accounts[0].0,
+                ArchiveOperation::UpdateOrInsert(accounts[0].1.clone()),
+            )]),
+        );
+        repo.account_read_cache
+            .insert_l1(accounts[1].1.account_hash(), Arc::new(accounts[1].1.clone()));
+        repo.account_read_cache
+            .insert_l2(accounts[2].1.account_hash(), Arc::new(accounts[2].1.clone()));
+        let written = repo.archive.account_written_cache();
+        written.insert_l1(accounts[3].1.account_hash(), Arc::new(accounts[3].1.clone()));
+        written.insert_l2(accounts[4].1.account_hash(), Arc::new(accounts[4].1.clone()));
+        let requests: Vec<_> = [4, 0, 2, 1, 3, 0]
+            .iter()
+            .map(|&i| (accounts[i].0, AccountInfo::AccountHash(accounts[i].1.account_hash())))
+            .collect();
+        let KVStore::InMemory(kv) = repo.archive.store() else { unreachable!() };
+        let before = kv.get_call_count();
+        let results = repo.batch_find_account_with_info(
+            &DurableThreadAccountsRepository::new_state(),
+            &requests,
+            None,
+        )?;
+        assert_eq!(kv.get_call_count(), before, "fully cached batch must not reach storage");
+        for ((_, info), account) in requests.iter().zip(results) {
+            assert_eq!(*info, AccountInfo::AccountHash(account.unwrap().account_hash()));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn batch_invalidation_removes_both_cache_levels() {
+        let cache = AccountReadCache::new();
+        let accounts: Vec<_> = (910..914).map(|i| new_acc(i).1).collect();
+        for account in &accounts {
+            cache.insert_l1(account.account_hash(), Arc::new(account.clone()));
+            cache.insert_l2(account.account_hash(), Arc::new(account.clone()));
+        }
+        let hashes: Vec<_> = accounts.iter().map(ThreadAccount::account_hash).collect();
+        cache.remove_many(&hashes);
+        assert!(cache.l1.lock().is_empty());
+        assert!(cache.l2.lock().is_empty());
+    }
+
+    #[test]
+    fn slow_cold_batch_does_not_fill_read_cache() -> anyhow::Result<()> {
+        use crate::thread_accounts::durable::kv_store::KVRecord;
+        use crate::thread_accounts::durable::kv_store::KVStore;
+
+        let dir = tempfile::tempdir()?;
+        let repo = DurableThreadAccountsRepository::new(
+            dir.path().into(),
+            ArchiveStateStore::in_memory(),
+            None,
+        )?;
+        let KVStore::InMemory(kv) = repo.archive.store() else { unreachable!() };
+        let accounts: Vec<_> = (920..952).map(new_acc).collect();
+        let records = accounts
+            .iter()
+            .map(|(routing, account)| {
+                Ok(KVRecord {
+                    key: super::super::archive::apply::routing_to_key(routing),
+                    generation: 0,
+                    data_epoch: Some(0),
+                    data: bincode::serialize(account)?,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        // Write directly to storage, bypassing all account caches.
+        kv.put(&repo.archive.set_accounts_a(), records, false)?;
+        let requests: Vec<_> = accounts
+            .iter()
+            .map(|(routing, account)| (*routing, AccountInfo::AccountHash(account.account_hash())))
+            .collect();
+        let state = DurableThreadAccountsRepository::new_state();
+        let before = kv.get_call_count();
+        for iteration in 1..=2 {
+            // The previous policy would promote the entire batch to L1.
+            kv.delay_next_get(super::ACCOUNT_READ_CACHE_L1_THRESHOLD + Duration::from_millis(5));
+            let results = repo.batch_find_account_with_info(&state, &requests, None)?;
+            for ((_, expected), actual) in accounts.iter().zip(results) {
+                assert_eq!(actual.unwrap().account_hash(), expected.account_hash());
+            }
+            assert!(repo.account_read_cache.l1.lock().is_empty());
+            assert!(repo.account_read_cache.l2.lock().is_empty());
+            assert_eq!(kv.get_call_count() - before, iteration);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn merkle_apply_300_cold_accounts_uses_one_storage_batch() -> anyhow::Result<()> {
+        check_merkle_apply_cold_accounts(None, 1..=1)
+    }
+
+    #[test]
+    fn merkle_apply_oversized_accounts_use_separate_windows() -> anyhow::Result<()> {
+        check_merkle_apply_cold_accounts(Some(1), 300..=300)
+    }
+
+    #[test]
+    fn merkle_apply_multiple_byte_windows_preserve_all_account_hashes() -> anyhow::Result<()> {
+        check_merkle_apply_cold_accounts(Some(4096), 2..=299)
+    }
+
+    fn check_merkle_apply_cold_accounts(
+        byte_budget: Option<u64>,
+        expected_reads: std::ops::RangeInclusive<usize>,
+    ) -> anyhow::Result<()> {
+        use tvm_block::Serializable;
+
+        use crate::thread_accounts::durable::kv_store::KVRecord;
+        use crate::thread_accounts::durable::kv_store::KVStore;
+
+        let dir = tempfile::tempdir()?;
+        let archive = ArchiveStateStore::in_memory();
+        let repo = DurableThreadAccountsRepository::new(dir.path().into(), archive, None)?;
+        let KVStore::InMemory(kv) = repo.archive.store() else { unreachable!() };
+        let mut records = Vec::new();
+        let mut map_updates = Vec::new();
+        let mut operations = HashMap::new();
+        let mut expected = HashMap::new();
+        for seed in 0..300 {
+            let (routing, account) = new_acc(seed);
+            let cell = account.tvm_shard_account()?.serialize().unwrap();
+            let update = tvm_block::MerkleUpdate::create(&cell, &cell).unwrap();
+            operations.insert(
+                routing,
+                super::BlockAccountOperation::AccountMerkleUpdate(
+                    tvm_types::write_boc(&update.serialize().unwrap()).unwrap(),
+                ),
+            );
+            map_updates.push((
+                routing,
+                Some((
+                    AccountInfo::AccountHash(account.account_hash()),
+                    super::AccountCapacity::new(account.canonical_size()),
+                )),
+            ));
+            records.push(KVRecord {
+                key: super::super::archive::apply::routing_to_key(&routing),
+                generation: 0,
+                data_epoch: Some(0),
+                data: bincode::serialize(&account)?,
+            });
+            expected.insert(routing, account.account_hash());
+        }
+        // Bypass write caches to exercise actual cold-storage misses.
+        kv.put(&repo.archive.set_accounts_a(), records, false)?;
+        let state = DurableThreadAccountsState::with_map(
+            DurableThreadAccountsRepository::new_state().0.map.update(&map_updates),
+        );
+        let before = kv.get_call_count();
+        let (new_state, writes) = if let Some(budget) = byte_budget {
+            let (writes, map_updates) = repo.prepare_updates_with_budget(
+                &tvm_block::ShardAccounts::default(),
+                &state,
+                &operations,
+                None,
+                budget,
+            )?;
+            (DurableThreadAccountsState::with_map(state.0.map.update(&map_updates)), writes)
+        } else {
+            repo.state_apply_diff(
+                &ThreadIdentifier::default(),
+                1,
+                &tvm_block::ShardAccounts::default(),
+                &state,
+                &super::DurableThreadAccountsStateDiff { accounts: operations },
+            )?
+        };
+        let reads = kv.get_call_count() - before;
+        assert!(
+            expected_reads.contains(&reads),
+            "unexpected cold storage batch count: {reads}, expected {expected_reads:?}"
+        );
+        assert_eq!(new_state.0.map.hash(), state.0.map.hash());
+        assert_eq!(writes.len(), 300);
+        for (routing, hash) in expected {
+            assert_eq!(new_state.0.map.get(&routing), Some(AccountInfo::AccountHash(hash)));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preparation_windows_follow_byte_budget_and_isolate_oversized_accounts() {
+        assert_eq!(super::prepare_window_len(&[], 100), 0);
+        assert_eq!(super::prepare_window_len(&[10; 300], 3000), 300);
+        assert_eq!(super::prepare_window_len(&[40, 60, 1], 100), 2);
+        assert_eq!(super::prepare_window_len(&[40, 101, 1], 100), 1);
+        assert_eq!(super::prepare_window_len(&[101, 1], 100), 1);
+        assert_eq!(super::prepare_window_len(&[u64::MAX, 1], 100), 1);
+    }
+
+    #[test]
+    fn preparation_budget_uses_redirect_target_size() -> anyhow::Result<()> {
+        let (routing, account) = new_acc_with_dapp(710, 711);
+        let alias = routing.account_id().redirect();
+        let target_size = super::PREPARE_OLD_ACCOUNTS_BYTES + 1;
+        let state = DurableThreadAccountsState::with_map(ThreadAccountMap::new().update(&[
+            (
+                routing,
+                Some((
+                    AccountInfo::AccountHash(account.account_hash()),
+                    super::AccountCapacity::new(target_size),
+                )),
+            ),
+            (
+                alias,
+                Some((AccountInfo::Redirect(*routing.dapp_id()), super::AccountCapacity::new(1))),
+            ),
+        ]));
+        let update = super::BlockAccountOperation::AccountMerkleUpdate(Vec::new());
+        assert_eq!(
+            DurableThreadAccountsRepository::old_account_request(&state, &alias, &update)?
+                .unwrap()
+                .bytes,
+            target_size
+        );
+        assert_eq!(
+            DurableThreadAccountsRepository::old_account_request(&state, &routing, &update)?
+                .unwrap()
+                .bytes,
+            target_size
+        );
+        assert_eq!(
+            DurableThreadAccountsRepository::old_account_request(
+                &state,
+                &routing,
+                &super::BlockAccountOperation::Remove
+            )?
+            .map(|request| request.bytes),
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn batch_lookup_preserves_cache_redirect_and_hash_checks() -> anyhow::Result<()> {
+        use crate::thread_accounts::durable::kv_store::KVRecord;
+        use crate::thread_accounts::durable::kv_store::KVStore;
+        let dir = tempfile::tempdir()?;
+        let archive = ArchiveStateStore::in_memory();
+        let repo = DurableThreadAccountsRepository::new(dir.path().into(), archive, None)?;
+        let KVStore::InMemory(kv) = repo.archive.store() else { unreachable!() };
+        let (routing, account) = new_acc_with_dapp(710, 711);
+        let (cached_routing, cached) = new_acc(712);
+        let alias = routing.account_id().redirect();
+        let hash = account.account_hash();
+        kv.put(
+            &repo.archive.set_accounts_a(),
+            vec![KVRecord {
+                key: super::super::archive::apply::routing_to_key(&routing),
+                generation: 0,
+                data_epoch: Some(0),
+                data: bincode::serialize(&account)?,
+            }],
+            false,
+        )?;
+        repo.account_read_cache.insert_l1(cached.account_hash(), Arc::new(cached.clone()));
+        let state = DurableThreadAccountsState::with_map(
+            DurableThreadAccountsRepository::new_state().0.map.update(&[
+                (routing, Some((AccountInfo::AccountHash(hash), super::AccountCapacity::new(0)))),
+                (
+                    alias,
+                    Some((
+                        AccountInfo::Redirect(*routing.dapp_id()),
+                        super::AccountCapacity::new(0),
+                    )),
+                ),
+            ]),
+        );
+        let before = kv.get_call_count();
+        let result = repo.batch_find_account_with_info(
+            &state,
+            &[
+                (alias, AccountInfo::Redirect(*routing.dapp_id())),
+                (cached_routing, AccountInfo::AccountHash(cached.account_hash())),
+                (routing, AccountInfo::AccountHash(hash)),
+            ],
+            None,
+        )?;
+        assert_eq!(kv.get_call_count() - before, 1);
+        assert_eq!(
+            result.iter().map(|a| a.as_ref().unwrap().account_hash()).collect::<Vec<_>>(),
+            vec![hash, cached.account_hash(), hash]
+        );
+        // A genuinely unresolved hash must still reject the stored version.
+        let unknown = AccountHash::new(new_u256("unknown", 713));
+        let error = repo
+            .batch_find_account_with_info(
+                &state,
+                &[(routing, AccountInfo::AccountHash(unknown))],
+                None,
+            )
+            .unwrap_err();
+        assert!(error.downcast_ref::<super::AccountHashMismatchError>().is_some());
+        assert!(repo.account_read_cache.get(&unknown).is_none());
+        Ok(())
     }
 
     fn setup_repo() -> (ThreadAccountsRepository, tempfile::TempDir) {
@@ -3223,13 +3776,12 @@ mod tests {
             )),
         )]);
         let state = DurableThreadAccountsState::new(map);
-        for legacy in [false, true] {
+        {
             let mut bytes = Cursor::new(Vec::new());
-            repo.durable_map_repo().export_snapshot_to_writer_checked(
+            repo.durable_map_repo().export_durable_snapshot_to_writer_checked(
                 &state,
                 &mut bytes,
                 &|| false,
-                legacy,
             )?;
             bytes.set_position(0);
             let mut count = [0; 8];
@@ -3242,114 +3794,6 @@ mod tests {
             assert_eq!(body, account.canonical_bytes());
             assert_eq!(bytes.position(), bytes.get_ref().len() as u64);
         }
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_export_translates_hashes_and_preserves_canonical_bodies() -> anyhow::Result<()> {
-        let thread = ThreadIdentifier::default();
-        let block = BlockIdentifier::new(new_u256("legacy_export_block", 1));
-        let (repo, _dir) = setup_repo();
-        let mut builder = repo.state_builder(&thread, 0, &ThreadAccountsRepository::new_state());
-        for index in 1..=8 {
-            let (routing, account) = new_acc(index);
-            builder.insert_account(&routing, &account);
-        }
-        let route = AccountIdentifier::new([9; 32]).routing(DAppIdentifier::new([7; 32]));
-        let redirect = ThreadAccount::redirect(DAppIdentifier::new([8; 32]));
-        builder.insert_account(&route, &redirect);
-        let transition = builder.build(None)?;
-        let state = transition.new_state;
-        repo.finalize_thread_transition(&block, &thread, 0, &state, transition.account_operations)?;
-        assert_drained(&repo);
-        let root = state.durable.map().hash();
-        // The builder also adds derived routing redirects.
-        let mut expected: HashMap<_, _> = repo
-            .durable_map_iter(&state.durable)
-            .map(|(routing, _)| {
-                let account = repo
-                    .durable_map_repo()
-                    .state_account(&state.durable, &routing)
-                    .unwrap()
-                    .unwrap();
-                (routing, account.canonical_bytes().to_vec())
-            })
-            .collect();
-        // Import intentionally ignores the obsolete legacy map, so a roundtrip alone would
-        // miss wrong legacy hashes. Independently rebuild it here and compare the exact region.
-        let legacy_updates: Vec<_> = expected
-            .iter()
-            .map(|(routing, body)| {
-                let account = ThreadAccount::from_canonical_bytes(body.clone().into_boxed_slice());
-                Ok((
-                    *routing,
-                    Some((
-                        super::legacy_account_info(&account)?,
-                        crate::AccountCapacity::default(),
-                    )),
-                ))
-            })
-            .collect::<anyhow::Result<_>>()?;
-        let legacy_map = ThreadAccountMap::new().update(&legacy_updates);
-        let mut expected_map = Vec::new();
-        super::super::snapshot_v1::write_account_map(&legacy_map, &mut expected_map, &|| false)?;
-        // Fail if export writes a provisional map instead of seeking over its region first.
-        struct ReservationWriter {
-            inner: Cursor<Vec<u8>>,
-            map_end: u64,
-            reserved: bool,
-        }
-        impl std::io::Write for ReservationWriter {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                if !self.reserved {
-                    assert!(
-                        self.inner.position() + bytes.len() as u64 <= 8,
-                        "provisional map written before reservation seek"
-                    );
-                }
-                std::io::Write::write(&mut self.inner, bytes)
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        impl std::io::Seek for ReservationWriter {
-            fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
-                let offset = std::io::Seek::seek(&mut self.inner, position)?;
-                if matches!(position, std::io::SeekFrom::Start(_)) && offset == self.map_end {
-                    self.reserved = true;
-                }
-                Ok(offset)
-            }
-        }
-        let mut output = ReservationWriter {
-            inner: Cursor::new(Vec::new()),
-            map_end: 8 + expected_map.len() as u64,
-            reserved: false,
-        };
-        repo.export_snapshot_v1_to_writer_checked(&state, &mut output, &|| false)?;
-        assert!(output.reserved);
-        let mut bytes = output.inner;
-        let map_len = u64::from_le_bytes(bytes.get_ref()[..8].try_into()?) as usize;
-        assert_eq!(map_len, expected_map.len());
-        assert_eq!(&bytes.get_ref()[8..8 + map_len], expected_map);
-        bytes.set_position(0);
-        let restored =
-            super::super::snapshot_v1::read_snapshot_v1_durable(&mut bytes, |entries| {
-                for entry in entries {
-                    let (routing, body) = entry?;
-                    assert_eq!(expected.remove(&routing).as_deref(), Some(body.as_slice()));
-                }
-                Ok(())
-            })?;
-        assert!(expected.is_empty());
-        assert_eq!(restored.hash(), root);
-        assert_eq!(restored.capacity(), state.durable.map().capacity());
-        assert_eq!(state.durable.map().hash(), root);
-        assert!(repo
-            .export_snapshot_v1_to_writer_checked(&state, &mut Cursor::new(Vec::new()), &|| true)
-            .is_err());
         Ok(())
     }
 

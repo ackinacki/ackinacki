@@ -46,7 +46,6 @@ async fn attempt(
             state,
             retained_bytes: 0,
             cancel,
-            admission: None,
             reply,
         })
         .await;
@@ -442,38 +441,6 @@ async fn snapshot_partition_download_no_source_and_precancelled_attempts_return_
     cancel_tx.send(true)?;
     let response = attempt(&worker, None, None, cancel).await;
     assert!(response.result.is_err());
-    assert_eq!(std::fs::read_dir(cache.path())?.count(), 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn snapshot_partition_download_cancel_interrupts_disk_admission_wait() -> anyhow::Result<()> {
-    let cache = tempfile::tempdir()?;
-    let worker = PartitionDownloader::new(cache.path(), limits())?;
-    let (_previous, preceding) = oneshot::channel();
-    let (admission, _following) = DownloadAdmission::next(Some(preceding));
-    let (cancel_tx, cancel) = watch::channel(false);
-    let (reply, mut replies) = mpsc::channel(1);
-    let task = tokio::spawn(async move {
-        worker
-            .run(PartitionDownloaderCommand::Download {
-                task_id: 3,
-                blob_id: [42; 32],
-                source: None,
-                state: None,
-                retained_bytes: 0,
-                cancel,
-                admission: Some(admission),
-                reply,
-            })
-            .await;
-    });
-    tokio::task::yield_now().await;
-    cancel_tx.send(true)?;
-    let response = tokio::time::timeout(Duration::from_secs(1), replies.recv()).await?.unwrap();
-    assert!(matches!(response.result, Err(TransferError::Cancelled)));
-    assert!(response.state.is_none(), "no state existed before disk admission");
-    task.await?;
     assert_eq!(std::fs::read_dir(cache.path())?.count(), 0);
     Ok(())
 }

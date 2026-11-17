@@ -3,6 +3,7 @@ mod live_metrics;
 mod metrics;
 mod thread_accounts;
 
+pub use account::decode_boc_with_canonicality;
 pub use account::ThreadAccount;
 pub use account::VmAccount;
 pub use live_metrics::live_accumulated_updates;
@@ -13,7 +14,6 @@ pub use live_metrics::unfinalized_pool_active_size;
 pub use live_metrics::unfinalized_pool_draining_size;
 pub use metrics::StateAccountsMetrics;
 pub use node_types::u256;
-pub use thread_accounts::ensure_legacy_durable_snapshot_is_empty;
 // Re-exports
 pub use thread_accounts::kv_store::aerospike::AerospikeBackend;
 pub use thread_accounts::kv_store::aerospike::AerospikeKVConfig;
@@ -37,6 +37,7 @@ pub use thread_accounts::DurableThreadAccountsStateDiff;
 pub use thread_accounts::DurableThreadAccountsStateDiffSerDe;
 pub use thread_accounts::KVRecord;
 pub use thread_accounts::KVStore;
+pub use thread_accounts::MapBuilder;
 pub use thread_accounts::PartitionReadLimits;
 pub use thread_accounts::PinHandle;
 pub use thread_accounts::PinRequestGuard;

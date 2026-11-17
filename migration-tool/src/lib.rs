@@ -458,7 +458,7 @@ mod tests {
         let conn = Connection::open(&db.path)?;
         let current_version: u32 =
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        assert_eq!(current_version, 10);
+        assert_eq!(current_version, 11);
 
         Ok(())
     }
@@ -600,6 +600,42 @@ mod tests {
         let conn = Connection::open(&db.path)?;
         assert!(!column_exists(&conn, "transactions", "balance_delta_other")?);
         assert!(!column_exists(&conn, "transactions", "total_fees_other")?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn bm_archive_v11_migration_creates_and_drops_latest_bk_set() -> anyhow::Result<()> {
+        let root = testdir!();
+        let db = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &root);
+        let opts = DbMaintenanceOptions { silent: true, ..Default::default() };
+        let columns = [
+            "signer_index",
+            "pubkey",
+            "thread_id",
+            "seq_no",
+            "block_id",
+            "height",
+            "chain_order",
+            "updated_at",
+        ];
+
+        db.migrate(MigrateTo::Version(10), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!object_exists(&conn, "table", "latest_bk_set")?);
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(11), opts.clone())?;
+        let conn = Connection::open(&db.path)?;
+        assert!(object_exists(&conn, "table", "latest_bk_set")?);
+        for column in columns {
+            assert!(column_exists(&conn, "latest_bk_set", column)?, "missing column {column}");
+        }
+        drop(conn);
+
+        db.migrate(MigrateTo::Version(10), opts)?;
+        let conn = Connection::open(&db.path)?;
+        assert!(!object_exists(&conn, "table", "latest_bk_set")?);
 
         Ok(())
     }

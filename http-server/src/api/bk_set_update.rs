@@ -247,7 +247,7 @@ where
     }
 }
 
-fn render_error_response(res: &mut Response, code: &str, message: Option<&str>) {
+pub(super) fn render_error_response(res: &mut Response, code: &str, message: Option<&str>) {
     res.render(Json(ApiBkSetResponse {
         result: None,
         error: Some(ApiBkSetError {
@@ -255,4 +255,28 @@ fn render_error_response(res: &mut Response, code: &str, message: Option<&str>) 
             message: message.unwrap_or(code).to_string(),
         }),
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bk_set_update_does_not_expose_ttl() {
+        let bk = ApiBk {
+            pubkey: ApiPubKey([1; 48]),
+            epoch_finish_seq_no: None,
+            wait_step: 3,
+            status: ApiBkStatus::Active,
+            address: "0:aa".to_string(),
+            stake: "1".to_string(),
+            owner_address: ApiUInt256([2; 32]),
+            signer_index: 0,
+            owner_pubkey: ApiUInt256([3; 32]),
+            protocol_version_support: "1.0.0".to_string(),
+            ttl_seq_no: Some(5),
+        };
+        let value = serde_json::to_value(bk).unwrap();
+        assert!(!value.as_object().unwrap().contains_key("ttl_seq_no"));
+    }
 }

@@ -7,6 +7,8 @@ use std::sync::mpsc;
 use std::sync::Arc;
 
 use account_state::ThreadAccountsRepository;
+use database::sqlite::history_proofs::HistoryProofsCounters;
+use database::sqlite::history_proofs::HistoryProofsCountersSnapshot;
 use database::sqlite::sqlite_helper::SqliteHelper;
 use database::sqlite::sqlite_helper::SqliteHelperConfig;
 use message_router::message_router::MessageRouter;
@@ -17,10 +19,12 @@ use tokio::sync::watch;
 
 use crate::application::metrics::Metrics;
 use crate::application::quarantine::Quarantine;
+use crate::application::services::bk_set_poller;
 use crate::application::services::block_applier;
 use crate::application::services::block_subscriber;
 use crate::application::services::clickhouse_exporter;
 use crate::application::services::connection_pool;
+use crate::application::services::history_verifier;
 use crate::application::services::http_server;
 use crate::application::services::signal_handler::dispatch_signals;
 use crate::domain::models::AppConfig;
@@ -58,10 +62,20 @@ pub async fn run(
 
     let rest_api_handle = http_server::run(config.rest_api, app_state.clone()).await?;
 
-    let (db_writer, db_helper_handle) = SqliteHelper::from_config(SqliteHelperConfig::new(
+    let mut sqlite_config =
+        SqliteHelperConfig::new(config.sqlite_path.clone().into(), Some("bm-archive.db".into()));
+    sqlite_config.event_filters = config.event_filters.clone();
+    let (db_writer, db_helper_handle) = SqliteHelper::from_config(sqlite_config)?;
+
+    if let Some(metrics) = metrics.clone() {
+        tokio::spawn(report_history_counters(db_writer.history_counters(), metrics));
+    }
+    // Not joined: the verifier logs its errors and keeps running; block ingestion never waits for it.
+    history_verifier::run(
         config.sqlite_path.clone().into(),
-        Some("bm-archive.db".into()),
-    ))?;
+        metrics.clone(),
+        history_verifier::DEFAULT_INTERVAL,
+    )?;
 
     let quarantine = Quarantine::new(config.sqlite_path.into())?;
 
@@ -81,6 +95,16 @@ pub async fn run(
         tracing::info!("ClickHouse export disabled (no CLICKHOUSE_URL)");
         None
     };
+
+    // Not awaited: the poller reports its errors through metrics and keeps running, so it never
+    // holds up block ingestion. It must not panic: the BM panic hook exits the whole process.
+    let poller_db = db_writer.clone();
+    tokio::spawn(bk_set_poller::run(
+        app_state.clone(),
+        poller_db,
+        metrics.clone(),
+        config.bk_set_poll_interval,
+    ));
 
     let blk_apply_handle = block_applier::run(
         bp_resolver,
@@ -229,6 +253,18 @@ pub async fn run(
                 }
             }
         }
+    }
+}
+
+/// Reports the growth of the history proofs store write counters every 10 seconds.
+async fn report_history_counters(counters: HistoryProofsCounters, metrics: Metrics) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+    let mut reported = HistoryProofsCountersSnapshot::default();
+    loop {
+        interval.tick().await;
+        let current = counters.snapshot();
+        metrics.bm.report_history_counters(&current.since(&reported));
+        reported = current;
     }
 }
 

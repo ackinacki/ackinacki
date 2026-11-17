@@ -292,7 +292,7 @@ impl BlockProducer for TVMBlockProducer {
                 block_global_config.tracked_ext_out_account_routings.clone(),
             )
             .metrics(self.metrics.clone())
-            .wasm_cache(self.wasm_cache.for_engine_version(&block_global_config.engine_version))
+            .wasm_cache(self.wasm_cache.clone())
             .is_verifier(false)
             .check_history_proof_hash(self.check_history_proof_hash.clone())
             .build()
@@ -323,8 +323,7 @@ impl BlockProducer for TVMBlockProducer {
             // sees all existing threads and avoids proposing a duplicate mask.
             let merged_threads_table = prepared_block.state.threads_table.clone();
 
-            #[allow(unused_variables)]
-            let mut proposed_action = {
+            let _proposed_action = {
                 match self.shared_services.exec(|e| {
                     let result = e.load_balancing.check(
                         &thread_identifier,
@@ -346,27 +345,8 @@ impl BlockProducer for TVMBlockProducer {
                 }
             };
 
-            // todo: !!! During TVM to durable transition period we disable split/merge
-            // while transition is not completed
-            let _ =
-                prepared_block.state.shard_state.0.tvm.shard_accounts.iterate_accounts(|_, _| {
-                    tracing::trace!(target: "monit", "TVM state is not empty, disable split");
-                    // TVM state is not empty, disable split
-                    proposed_action = ThreadAction::ContinueAsIs;
-                    Ok(false)
-                });
-
-            // todo: !!! Must be removed after split will work
-            proposed_action = ThreadAction::ContinueAsIs;
-
-            let forward_prefab = match proposed_action {
-                ThreadAction::ContinueAsIs => None,
-                ThreadAction::Split(_e) => {
-                    unreachable!("This node version is not meant to process several threads");
-                    // Some(e.proposed_threads_table)
-                }
-                ThreadAction::Collapse(e) => Some(e.proposed_threads_table),
-            };
+            // This node version operates a single thread.
+            let forward_prefab: Option<crate::types::ThreadsTablePrefab> = None;
 
             let active_threads = std::mem::take(&mut prepared_block.active_threads);
             cross_thread_ref_data.set_block_refs(ref_ids.clone());

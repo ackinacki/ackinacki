@@ -69,8 +69,8 @@ impl<'a, V: MultiMapValue, A: MultiMapAugmentation> Iterator for SeekIter<'a, V,
                 }
                 NodeAug::Ext(extension) => {
                     let count = extension.nibble_count as usize;
-                    for i in 0..count {
-                        nibble(&mut key, depth + i, extension.nibbles[i]);
+                    for (i, &value) in extension.nibbles[..count].iter().enumerate() {
+                        nibble(&mut key, depth + i, value);
                     }
                     self.push(&extension.child, key, depth + count);
                 }

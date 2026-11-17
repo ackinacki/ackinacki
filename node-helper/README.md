@@ -3,6 +3,12 @@
 ## node-helper
 
 Node binary requires node config, which can be generated with a helper tool.
+When generating config, `--gossip-seeds`, `--gossip-advertise-addr` and
+`--node-advertise-addr` (including their environment variables) retry hostname
+resolution up to 30 times with a one-second pause between attempts. This lets
+Docker peer names become available during concurrent startup. IP addresses and
+invalid ports are handled immediately.
+
 Example of node config file:
 
 ```yaml

@@ -29,7 +29,6 @@ use snapshot_storage::chunks::MAGIC;
 use snapshot_storage::chunks::{self};
 use tempfile::NamedTempFile;
 use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::sync::watch;
 
 use crate::services::blob_sync::external_fileshares_based::download_cache::CacheLease;
@@ -64,7 +63,6 @@ pub(super) enum PartitionDownloaderCommand {
         /// Other wire representations share the same logical cache reservation.
         retained_bytes: u64,
         cancel: watch::Receiver<bool>,
-        admission: Option<DownloadAdmission>,
         reply: mpsc::Sender<PartitionDownloadResponse>,
     },
 }
@@ -88,31 +86,7 @@ struct DownloadTask {
     state: Option<PartitionDownloadState>,
     retained_bytes: u64,
     cancel: watch::Receiver<bool>,
-    admission: Option<DownloadAdmission>,
     source_etag: Option<String>,
-}
-
-/// Admission is a one-way chain of disk reservations, NOT transfer/import
-/// completion. Once a blob reserves its bytes and validates its map, the next
-/// reservation may proceed while this payload is still downloading. This
-/// prevents ready later-phase files from filling the budget ahead of accounts.
-/// The token moves with resume state across failed attempts before admission.
-pub(super) struct DownloadAdmission {
-    preceding: Option<oneshot::Receiver<()>>,
-    following: Option<oneshot::Sender<()>>,
-}
-
-impl DownloadAdmission {
-    pub fn next(preceding: Option<oneshot::Receiver<()>>) -> (Self, oneshot::Receiver<()>) {
-        let (following, next) = oneshot::channel();
-        (Self { preceding, following: Some(following) }, next)
-    }
-
-    pub fn admitted(&mut self) {
-        if let Some(following) = self.following.take() {
-            let _ = following.send(());
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -145,7 +119,6 @@ pub(super) struct PartitionDownloadState {
     pub verified_chunks: usize,
     pub complete: bool,
     reserved_bytes: u64,
-    admission: Option<DownloadAdmission>,
     // File must be dropped before the last lease releases its disk reservation.
     lease: Arc<CacheLease>,
 }
@@ -160,7 +133,6 @@ impl PartitionDownloadState {
             verified_chunks: 0,
             complete: false,
             reserved_bytes: 0,
-            admission: None,
             lease,
         }
     }
@@ -169,18 +141,8 @@ impl PartitionDownloadState {
         Self::empty(self.lease.clone())
     }
 
-    pub fn new_representation(&mut self) -> Self {
-        let mut next = self.alternative();
-        next.admission = self.take_pending_admission();
-        next
-    }
-
     pub fn has_verified_map(&self) -> bool {
         self.map.is_some()
-    }
-
-    pub fn has_pending_admission(&self) -> bool {
-        self.admission.as_ref().is_some_and(|admission| admission.following.is_some())
     }
 
     pub fn resize_reservation(&self, bytes: u64) -> anyhow::Result<()> {
@@ -190,16 +152,6 @@ impl PartitionDownloadState {
 
     pub fn bytes(&self) -> u64 {
         self.reserved_bytes
-    }
-
-    /// Preserve an ungranted admission token when discarding an untrusted wire
-    /// representation, otherwise the next worker could wait on a lost sender.
-    pub fn take_pending_admission(&mut self) -> Option<DownloadAdmission> {
-        if self.has_pending_admission() {
-            self.admission.take()
-        } else {
-            None
-        }
     }
 
     pub fn path(&self) -> PathBuf {
@@ -278,18 +230,10 @@ impl PartitionDownloader {
             state,
             retained_bytes,
             cancel,
-            admission,
             reply,
         } = command;
-        let mut task = DownloadTask {
-            blob_id,
-            source,
-            state,
-            retained_bytes,
-            cancel,
-            admission,
-            source_etag: None,
-        };
+        let mut task =
+            DownloadTask { blob_id, source, state, retained_bytes, cancel, source_etag: None };
         let started = Instant::now();
         let mut bytes = 0;
         let result = self.attempt(&mut task, &mut bytes).await;
@@ -315,23 +259,6 @@ impl PartitionDownloader {
         if *task.cancel.borrow() || Instant::now() >= self.limits.deadline {
             return Err(TransferError::Cancelled);
         }
-        let admission = task
-            .state
-            .as_mut()
-            .and_then(|state| state.admission.as_mut())
-            .or(task.admission.as_mut());
-        if let Some(admission) = admission {
-            if let Some(preceding) = admission.preceding.as_mut() {
-                let _activity = crate::helper::metrics::ActivityMetric::parallel(
-                    "snapshot_download",
-                    "wait_disk_admission",
-                    &self.activity_slot,
-                )
-                .enter();
-                self.wait(&mut task.cancel, preceding).await?;
-                admission.preceding = None;
-            }
-        }
         if task.state.is_none() {
             // Cache recovery can scan a large existing file or wait for a lease;
             // neither operation belongs on a Tokio scheduler thread.
@@ -339,18 +266,12 @@ impl PartitionDownloader {
             let id = task.blob_id;
             let limits = self.limits;
             let cancellation = task.cancel.clone();
-            let mut state = tokio::task::spawn_blocking(move || {
+            let state = tokio::task::spawn_blocking(move || {
                 probe_cache(&directory, id, limits, cancellation)
             })
             .await
             .map_err(|error| TransferError::Local(error.into()))??;
-            state.admission = task.admission.take();
             let complete = state.complete;
-            if complete {
-                if let Some(admission) = &mut state.admission {
-                    admission.admitted();
-                }
-            }
             task.state = Some(state);
             if complete {
                 return Ok(());
@@ -418,7 +339,7 @@ impl PartitionDownloader {
             let mut response =
                 self.range(source, &state.etag, offset, total - 1, total, cancel).await?;
             // Do not mark unavailable sources (HEAD/GET 404), cache probes or
-            // admission waits as transfers. Only a validated HTTP range starts
+            // cache waits as transfers. Only a validated HTTP range starts
             // activity; RAII ends it on completion, cancellation or body error.
             let _activity = crate::helper::metrics::ActivityMetric::parallel(
                 "snapshot_download",
@@ -465,9 +386,6 @@ impl PartitionDownloader {
             state.map = Some(map);
             state.hashes = hashes;
             state.file = Some(DownloadFile::Private(file));
-            if let Some(admission) = &mut state.admission {
-                admission.admitted();
-            }
         }
         let map = state.map.as_ref().expect("verified chunk map");
         let total = map.offset + map.length + FOOTER_BYTES as u64;

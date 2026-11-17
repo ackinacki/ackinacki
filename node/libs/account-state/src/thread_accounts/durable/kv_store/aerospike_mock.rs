@@ -7,6 +7,8 @@ use parking_lot::RwLock;
 #[derive(Clone, Default)]
 pub struct MockAerospikeBackend {
     sets: Arc<RwLock<HashMap<String, HashMap<Vec<u8>, StoredMockRecord>>>>,
+    #[cfg(test)]
+    get_batch_sizes: Arc<parking_lot::Mutex<Vec<usize>>>,
 }
 
 #[derive(Clone)]
@@ -23,6 +25,8 @@ impl MockAerospikeBackend {
     }
 
     pub fn get(&self, set: &str, keys: &[Vec<u8>]) -> anyhow::Result<Vec<Option<AerospikeRecord>>> {
+        #[cfg(test)]
+        self.get_batch_sizes.lock().push(keys.len());
         let sets = self.sets.read();
         let set_map = sets.get(set);
         Ok(keys
@@ -39,6 +43,11 @@ impl MockAerospikeBackend {
                 })
             })
             .collect())
+    }
+
+    #[cfg(test)]
+    pub(super) fn take_get_batch_sizes(&self) -> Vec<usize> {
+        std::mem::take(&mut *self.get_batch_sizes.lock())
     }
 
     pub fn put(&self, set: &str, records: Vec<AerospikeRecord>, cas: bool) -> anyhow::Result<()> {

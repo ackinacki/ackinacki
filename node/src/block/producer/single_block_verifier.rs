@@ -258,7 +258,7 @@ impl BlockVerifier for TVMBlockVerifier {
                 self.node_global_config.tracked_ext_out_account_routings.clone(),
             )
             .metrics(self.metrics)
-            .wasm_cache(self.wasm_cache.for_engine_version(&self.node_global_config.engine_version))
+            .wasm_cache(self.wasm_cache.clone())
             .is_verifier(true)
             .check_history_proof_hash(self.check_history_proof_hash.clone())
             .build()

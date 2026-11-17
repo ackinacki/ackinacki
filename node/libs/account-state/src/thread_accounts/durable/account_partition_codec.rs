@@ -4,7 +4,6 @@ use std::io::Read;
 use std::io::Write;
 
 use multi_map::MapKeyPath;
-use multi_map::MultiMapAug;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::DAppIdentifier;
@@ -12,11 +11,12 @@ use node_types::ThreadAccountsHash;
 
 use super::account_validation::validate_account;
 use super::account_validation::with_validated_accounts;
+use super::map_builder::MapBuilder;
+use super::map_builder::SNAPSHOT_MAP_WINDOW_RECORDS;
 use super::repository::write_snapshot_account_entry;
 use super::repository::DurableThreadAccountsRepository;
 #[cfg(test)]
 use super::AccountCapacity;
-#[cfg(test)]
 use super::AccountInfo;
 use super::PartitionReadLimits;
 use super::ThreadAccountMap;
@@ -67,7 +67,7 @@ pub fn read_account_partition_checked<R, C, F>(
     expected_root: ThreadAccountsHash,
     should_cancel: &C,
     mut on_account: F,
-) -> anyhow::Result<ThreadAccountMap>
+) -> anyhow::Result<(ThreadAccountMap, u64)>
 where
     R: Read,
     C: Fn() -> bool,
@@ -78,11 +78,15 @@ where
     let mut magic = [0; 7];
     reader.read_exact(&mut magic)?;
     anyhow::ensure!(&magic == ACCOUNT_PARTITION_MAGIC, "invalid account partition marker");
-    let mut map =
-        ThreadAccountMap { dapps: MultiMapAug { root_path: scope, ..MultiMapAug::new() } };
+    // Wire-order checks remain below. The bounded builder can consequently
+    // skip sorting and build each window directly into the same owned trie.
+    let mut map = MapBuilder::new(scope, SNAPSHOT_MAP_WINDOW_RECORDS)?;
     let mut previous = None;
     let mut count = 0u64;
     let mut canonical_payload_bytes = 0u64;
+    // The worker has already classified each leaf. Count it here instead of
+    // decoding it again in the sink or walking the completed map afterwards.
+    let mut accounts_number = 0u64;
     // Framing, untrusted lengths and wire order are checked before submitting
     // owned bodies to the shared import pool. Decoded batches retain wire order
     // so the staged sink and partition boundary checks keep their contract.
@@ -147,7 +151,8 @@ where
             canonical_payload_bytes = canonical_payload_bytes
                 .checked_add(canonical_size)
                 .ok_or_else(|| anyhow::anyhow!("canonical partition capacity overflow"))?;
-            map = map.update_single(&routing, Some((info, capacity)));
+            map.push(routing, info, capacity)?;
+            accounts_number += u64::from(matches!(info, AccountInfo::AccountHash(_)));
             // Already recanonicalized by the worker; do not decode or encode
             // again just to transfer ownership of the canonical allocation.
             on_account(routing, ThreadAccount::from_canonical_bytes(bytes))?;
@@ -155,6 +160,9 @@ where
         Ok(())
     })?;
     anyhow::ensure!(count > 0, "empty account partition");
+    anyhow::ensure!(!should_cancel(), "account partition read cancelled");
+    let map = map.finish()?;
+    anyhow::ensure!(!should_cancel(), "account partition read cancelled");
     anyhow::ensure!(map.hash() == expected_root, "account partition root mismatch");
     tracing::info!(
         accounts = count,
@@ -162,7 +170,7 @@ where
         elapsed_ms = started.elapsed().as_millis() as u64,
         "Account snapshot partition imported"
     );
-    Ok(map)
+    Ok((map, accounts_number))
 }
 
 #[cfg(test)]

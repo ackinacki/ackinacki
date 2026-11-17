@@ -54,7 +54,10 @@ services:
     networks:
       - ackinacki-net
     depends_on:
-      - block_manager
+      # Not just started: block-manager runs its migrations first and creates
+      # bm-history-proofs.db, which gql-server attaches at startup.
+      block_manager:
+        condition: service_healthy
 
   block_manager:
     image: {{ BM_IMAGE }}
@@ -88,6 +91,28 @@ services:
         migration-tool -p ./data/bm-archive.db --block-manager
         && migration-tool -p ./data/bm-schema.db --block-manager
         && exec {{ BM_BINARY }} >> /logsdir/block-manager.log 2>&1
+    healthcheck:
+      # Healthy once block-manager is past its migrations, serves HTTP (it
+      # starts before the databases open) and bm-history-proofs.db exists (it
+      # creates the file on its first start, and the file appears only with its
+      # schema). Any HTTP status counts: /v2/readiness
+      # answers 503 while no fresh blocks arrive, and a stalled network must
+      # not keep gql-server down. bash, not sh: the image has no curl, the
+      # request goes over /dev/tcp.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/{{ BM_REST_API_PORT }}
+          && printf 'GET /v2/readiness HTTP/1.0\r\n\r\n' >&3
+          && read -r -t 3 status <&3
+          && [[ $$status == HTTP/* ]]
+          && test -f /workdir/data/bm-history-proofs.db
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: {{ BM_HEALTHCHECK_START_PERIOD }}
     expose:
       - {{ BM_API_PORT }}
     ports:

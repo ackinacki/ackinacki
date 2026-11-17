@@ -1,0 +1,50 @@
+---
+# One source block-manager for close-history-gaps.yaml
+# (loop_var: history_source = {name, first_height, last_height, gaps,
+# missing_attestations, failed_checks}, a usable source: failed_checks is
+# empty). Skipped once the gaps are closed.
+
+- name: "History gaps | copy from {{ history_source.name }}"
+  when: not history_gaps_done | bool
+  vars:
+    # The target gaps, the heights the source has below the target start, and
+    # the target's missing attestations the source has.
+    ranges: "{{ history_source_ranges }}"
+    chunk: "{{ HISTORY_EXPORT_CHUNK | int }}"
+  block:
+    - name: "History gaps | ranges to copy from {{ history_source.name }}"
+      ansible.builtin.set_fact:
+        # Ranges split into chunks of at most HISTORY_EXPORT_CHUNK heights.
+        history_chunks: >-
+          {%- set out = [] -%}
+          {%- for r in ranges -%}
+          {%- for start in range(r[0] | int, r[1] | int + 1, chunk | int) -%}
+          {%- set _ = out.append([start, [start + chunk | int - 1, r[1] | int] | min]) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "History gaps | copy the chunks from {{ history_source.name }}"
+      ansible.builtin.include_tasks: close-history-gaps-chunk.yaml
+      loop: "{{ history_chunks }}"
+      loop_control:
+        loop_var: history_chunk
+
+    - name: "History gaps | read the store after copying from {{ history_source.name }}"
+      ansible.builtin.shell:
+        chdir: "{{ BM_DIR }}"
+        cmd: "docker compose exec -T block_manager {{ BM_BINARY }} history-proofs gaps --json --sqlite-path /workdir/data"
+      register: history_gaps_after_source
+      changed_when: false
+
+    - name: "History gaps | the store after copying from {{ history_source.name }}"
+      ansible.builtin.set_fact:
+        history_target: "{{ history_gaps_after_source.stdout_lines | last | from_json }}"
+
+    # history_attestation_holders reads the history_target just set.
+    - name: "History gaps | done when nothing is left to close"
+      ansible.builtin.set_fact:
+        history_gaps_done: >-
+          {{ history_target.gaps | length == 0
+             and history_attestation_holders | length == 0
+             and history_target.first_height | int <= history_sources_first | int }}

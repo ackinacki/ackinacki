@@ -2,6 +2,49 @@
 
 All notable changes to `block-manager` are documented in this file.
 
+## [0.11.0] – 2026-11-16
+
+### Added
+- History proofs store `bm-history-proofs.db` next to `bm-archive.db` in
+  `SQLITE_PATH`. For thread 0 it keeps the proof fields of every block, the
+  bridge `WithdrawalInitiated` and RootPN `VoucherGenerated` events, BK set
+  updates and the attestations of key and rotation blocks that the bridge and
+  DEX provers need. The file is never rotated, is not part of the daily
+  archives and grows by about 45 MB a day. It starts empty on upgrade and fills
+  from live blocks only. Back it up with
+  `sqlite3 bm-history-proofs.db "VACUUM INTO '<backup>'"`, not by copying the
+  file. Specification: `specs/block-manager/history_proofs_store.md`.
+- `block-manager history-proofs gaps`, `export` and `import` find and close the
+  gaps that every restart of block-manager or of its node leaves in the store,
+  by copying height ranges from another block-manager you run. Exit codes: `0`
+  complete, `1` heights still missing, `3` bad data, `2` any other error.
+- Flags `--bridge-event-routing` / `BRIDGE_EVENT_ROUTING`,
+  `--bridge-event-dst` / `BRIDGE_EVENT_DST`, `--voucher-event-routing` /
+  `VOUCHER_EVENT_ROUTING` and `--voucher-event-dst` / `VOUCHER_EVENT_DST` select
+  the stored events; the defaults are the Exchange (`eccUSDCBridge`) and RootPN
+  accounts. Use the same values on every block-manager: `import` refuses a file
+  exported with other ones.
+- Archive table `latest_bk_set` with the exact BK set of thread 0, polled from
+  the BK `/v2/bk_set` every `--bk-set-poll-interval-secs` /
+  `BK_SET_POLL_INTERVAL_SECS` seconds (default `60`, range 1–3600). Requires
+  the archive migration `011-latest_bk_set` and BK nodes that serve the new
+  `/v2/bk_set` format: upgrade the BK nodes first. Sets of 300 or more BKs are
+  not stored. Specification: `specs/block-manager/latest_bk_set.md`.
+- Metrics: `bm_latest_bk_set_seqno`; `bm_errors` kinds `bk_set_poll`,
+  `bk_set_invalid`, `bk_set_stalled`, `bk_set_evicted`, `bk_set_anchor`,
+  `bk_set_commitment`, `bk_set_store`, `bk_set_restore`; the `bm_history_*`
+  metrics of the store.
+
+### Changed
+- The Ansible role adds a Docker healthcheck to `block_manager` and starts
+  `q_server_bm` only after it passes. Set `BM_HEALTHCHECK_START_PERIOD`
+  (default `1h`) above the longest startup migration.
+- The Ansible playbooks `upgrade-bm.yaml` and `block-manager-upgrading.yaml`
+  upgrade one block-manager at a time (`bm_update_batch_size` now defaults to
+  `1`) and close its store gaps from the other block-managers of the inventory
+  before the next one stops (`CLOSE_HISTORY_GAPS`, `bm_history_sources`). The
+  hosts and the Ansible controller need `rsync`.
+
 ## [0.10.1] – 2026-10-25
 
 ### Changed

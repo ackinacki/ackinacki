@@ -119,8 +119,6 @@ const BK_SYSTEM_DAPP_ID: &str = "00000000000000000000000000000000000000000000000
 const MINER_CODE_HASH: &str = "7ef9b5bcb1c0e33b339c8b42d53a33dbba8489c74826aec734cfb4fe845b3ae9";
 // const EPOCH_CONTINUE_STAKE_FUNCTION_NAME: &str = "continueStake";
 
-pub(crate) const MOVE_FROM_TVM_LIMIT: usize = 100;
-
 const SUSPICIOUS_EXECUTION_TIME: u64 = 150;
 const HIGH_PRIORITY_EXT_MESSAGES_BEFORE_LOW_PRIORITY: usize = 4;
 
@@ -140,6 +138,14 @@ fn external_message_has_signature(message: &Message) -> bool {
 
 fn is_unsigned_miner_message(code_hash: &AccountCodeHash, message: &Message) -> bool {
     code_hash.to_hex_string() == MINER_CODE_HASH && !external_message_has_signature(message)
+}
+
+#[cfg(feature = "monitor-accounts-number")]
+fn accounts_number_delta(original_status: &AccountStatus, account_exists: bool) -> i64 {
+    // Count account bodies, not activations: Uninit and frozen accounts already
+    // occupy a leaf. A transaction that leaves a missing account missing must
+    // not decrement the counter either.
+    i64::from(account_exists) - i64::from(*original_status != AccountStatus::AccStateNonexist)
 }
 
 #[cfg(test)]
@@ -669,11 +675,12 @@ impl BlockBuilder {
 
         // let initial_account_routing = AccountRouting(thread_result.initial_dapp_id.clone().unwrap_or(DAppIdentifier(account_address.clone())), account_address.clone());
         let save_account_start = std::time::Instant::now();
+        #[cfg(feature = "monitor-accounts-number")]
+        {
+            self.accounts_number_diff +=
+                accounts_number_delta(&transaction.orig_status, !acc_root.is_none());
+        }
         let account_routing = if acc_root.is_none() {
-            #[cfg(feature = "monitor-accounts-number")]
-            {
-                self.accounts_number_diff -= 1;
-            }
             tracing::trace!(target: "builder", "Remove account from shard state: {}", acc_id.to_hex_string());
             self.accounts_builder.remove_account(&acc_addr);
             let account_routing = acc_id.redirect();
@@ -688,10 +695,6 @@ impl BlockBuilder {
                 && (transaction.orig_status == AccountStatus::AccStateNonexist
                     || transaction.orig_status == AccountStatus::AccStateUninit)
             {
-                #[cfg(feature = "monitor-accounts-number")]
-                {
-                    self.accounts_number_diff += 1;
-                }
                 if let Some(header) = thread_result.in_msg.int_header() {
                     result_dapp_id = header.src_dapp_id.as_ref().map(DAppIdentifier::from);
                 } else {
@@ -2131,8 +2134,6 @@ impl BlockBuilder {
 
         tracing::debug!(target: "builder", "finish_block: prepare value flow");
 
-        self.accounts_builder.move_from_tvm(MOVE_FROM_TVM_LIMIT)?;
-
         let transition = trace_span!("generate state update").in_scope(|| {
             let update_time = std::time::Instant::now();
             let transition = self.accounts_builder.build(Some(&self.usage_tree))?;
@@ -3327,6 +3328,30 @@ mod tests {
 
     fn test_stamp(index: u64) -> Stamp {
         Stamp { index, timestamp: chrono::Utc::now() }
+    }
+
+    #[test]
+    #[cfg(feature = "monitor-accounts-number")]
+    fn account_count_tracks_uninit_lifecycle_and_missing_accounts() {
+        use AccountStatus::*;
+
+        // Funding creates an Uninit body; activation reuses that same leaf.
+        let mut count = 0;
+        count += accounts_number_delta(&AccStateNonexist, true);
+        assert_eq!(count, 1);
+        count += accounts_number_delta(&AccStateUninit, true);
+        assert_eq!(count, 1);
+        count += accounts_number_delta(&AccStateActive, true);
+        assert_eq!(count, 1);
+        count += accounts_number_delta(&AccStateFrozen, true);
+        assert_eq!(count, 1);
+        count += accounts_number_delta(&AccStateActive, false);
+        assert_eq!(count, 0);
+
+        assert_eq!(accounts_number_delta(&AccStateUninit, false), -1);
+        assert_eq!(accounts_number_delta(&AccStateFrozen, false), -1);
+        // A bounced message to a nonexistent account creates no body.
+        assert_eq!(accounts_number_delta(&AccStateNonexist, false), 0);
     }
 
     #[test]

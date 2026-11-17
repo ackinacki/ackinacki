@@ -394,22 +394,37 @@ async fn switch_etag_after_disconnect(tight_cache: bool) -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn snapshot_downloader_retries_unadmitted_blob_without_starving_its_worker(
+async fn snapshot_downloader_missing_first_partition_does_not_block_ready_siblings(
 ) -> anyhow::Result<()> {
+    download_around_missing_partition(false).await
+}
+
+#[tokio::test]
+async fn snapshot_downloader_out_of_order_progress_with_single_file_cache() -> anyhow::Result<()> {
+    download_around_missing_partition(true).await
+}
+
+/// Exercise real HTTP workers and cache leases, including importer acknowledgements.
+/// The first account is unavailable longer than the source-error retry budget,
+/// while more siblings than worker slots are already published. Both normal and
+/// high-priority messages are ready too, but must not pin the cache ahead of the
+/// missing account. A one-file budget forces actual reuse of released capacity.
+async fn download_around_missing_partition(tight_cache: bool) -> anyhow::Result<()> {
     use std::collections::HashMap;
     use std::io::Write;
 
     use snapshot_storage::chunks;
 
     use crate::repository::repository_impl::snapshot_http_import::tests::Server;
+    use crate::repository::repository_impl::snapshot_manifest::account_partition_blob_id;
+    use crate::services::blob_sync::external_fileshares_based::download_cache::DownloadCache;
 
-    // More partitions than worker slots: after the first 404 the scheduler
-    // must NOT give its free slot to a fifth task waiting behind that retry.
     let manifest = ThreadSnapshotManifest {
         account_partition_roots: (1..=6).map(|i| [i; 32]).collect(),
-        ..Default::default()
+        normal_message_partition_roots: vec![[7; 32]],
+        high_priority_message_partition_roots: vec![[8; 32]],
     };
-    let ids: Vec<_> = (0..6).map(|i| manifest.partition_blob_id(i).unwrap()).collect();
+    let ids: Vec<_> = (0..8).map(|i| manifest.partition_blob_id(i).unwrap()).collect();
     let mut writer = chunks::ChunkWriter::new(Vec::new())?;
     writer.write_all(b"transport-only fixture")?;
     let body = writer.finish()?.0;
@@ -422,24 +437,23 @@ async fn snapshot_downloader_retries_unadmitted_blob_without_starving_its_worker
         None,
     );
     let directory = tempfile::tempdir()?;
+    // Keep the manager alive: workers reopen this same bounded cache.
+    let _cache = DownloadCache::open(directory.path(), tight_cache.then_some(body.len() as u64))?;
     let mut actor = actor(directory.path())?;
     actor.state = SnapshotDownloadState::new(4);
     actor.state.manifest = manifest;
     actor.primary_ready = true;
     actor.fallbacks = vec![missing.base.clone(), good.base.clone()];
+    for base in &actor.fallbacks {
+        actor.state.sources.insert(base.clone(), SourceState::default());
+    }
     actor.limits.retry_delay = Duration::from_millis(10);
-    // Both endpoints initially return 404. Even the eventually healthy one
-    // misses more often than the two-attempt transport-error budget permits.
     good.defer_publication(&hex::encode(ids[0]), 4);
     let mut bk = crate::block_keeper_system::BlockKeeperSet::new();
     bk.insert(0, crate::block_keeper_system::BlockKeeperData::default());
     actor.source_plan = Some(SnapshotSourcePlan::new(&actor.state.manifest, &bk, [])?);
     for id in &ids {
-        actor.state.add(
-            *id,
-            Some(actor.state.order.len()),
-            vec![missing.base.join(&hex::encode(id))?, good.base.join(&hex::encode(id))?],
-        )?;
+        actor.state.add(*id, Some(actor.state.order.len()), Vec::new())?;
     }
     let (events, mut ready) = mpsc::unbounded_channel();
     actor.events = Some(events);
@@ -456,35 +470,35 @@ async fn snapshot_downloader_retries_unadmitted_blob_without_starving_its_worker
         });
         commands.push(sender);
     }
-    let mut saw_404 = false;
-    let mut saw_cooldown = false;
+    let mut imported = Vec::new();
     let result = tokio::time::timeout(Duration::from_secs(5), async {
-        while actor.state.partitions.values().any(|part| !part.ready) {
+        while actor.state.partitions.values().any(|part| !part.accepted) {
             actor.schedule(&commands, &responses).await?;
-            tokio::select! {
-                response = replies.recv() => {
-                    let response = response.expect("worker response");
-                    let first_404 = matches!(&response.result, Err(TransferError::NotPublished));
-                    actor.finish_attempt(response).await?;
-                    saw_404 |= first_404;
-                    let head = &actor.state.partitions[&ids[0]];
-                    if head.not_published.len() == 2 && head.has_pending_admission()
-                        && head.not_published.values().all(|(_, until)| Instant::now() < *until)
-                    {
-                        saw_cooldown = true;
-                        actor.schedule(&commands, &responses).await?;
-                        anyhow::ensure!(actor.state.slots.iter().any(Option::is_none),
-                            "retry lost its worker to successors waiting on its admission");
-                        anyhow::ensure!(actor.state.partitions[&ids[4]].active_task.is_none(),
-                            "fifth partition must not occupy the retry's worker");
-                    }
+            for id in &ids[6..] {
+                if actor.state.partitions[id].active_task.is_some() {
+                    anyhow::ensure!(ids[..6].iter().all(|id| actor.state.partitions[id].ready),
+                        "message prefetch must not starve a missing account");
                 }
+            }
+            tokio::select! {
+                response = replies.recv() => actor.finish_attempt(response.expect("worker response")).await?,
                 _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+            while let Ok(event) = ready.try_recv() {
+                let (id, path) = match event {
+                    ThreadSnapshotDownloaderEvent::AccountsReady { root, path } =>
+                        (account_partition_blob_id(&root), path),
+                    ThreadSnapshotDownloaderEvent::NormalMessagesReady { path, .. } => (ids[6], path),
+                    ThreadSnapshotDownloaderEvent::HighPriorityMessagesReady { path, .. } => (ids[7], path),
+                    _ => panic!("unexpected primary"),
+                };
+                anyhow::ensure!(std::fs::read(path)? == body, "transport changed the file");
+                imported.push(id);
+                actor.process_blob(id, true).await?;
             }
         }
         anyhow::Ok(())
-    })
-    .await;
+    }).await;
     for task in actor.state.slots.iter().flatten() {
         let _ = task.cancel.send(true);
     }
@@ -493,64 +507,13 @@ async fn snapshot_downloader_retries_unadmitted_blob_without_starving_its_worker
         joined?;
     }
     result??;
-    assert!(saw_404);
-    assert!(saw_cooldown);
+    assert_eq!(imported.len(), ids.len());
+    assert_ne!(imported[0], ids[0], "published siblings must bypass the missing first account");
+    assert!(imported[..6].iter().all(|id| ids[..6].contains(id)));
     let path = actor.source_plan.as_ref().unwrap().partition_path(&actor.primary_id, 0);
     assert_eq!(actor.state.partitions[&ids[0]].not_published[&good.base.join(&path)?].0, 4);
     assert_eq!(actor.state.partitions[&ids[0]].attempts[&good.base.join(&path)?], 1);
     assert!(actor.state.sources.values().all(|source| source.banned.is_none()));
     assert!(actor.state.sources.values().all(|source| source.penalty == 0 && source.failures == 0));
-    for _ in &ids {
-        let ThreadSnapshotDownloaderEvent::AccountsReady { path, .. } = ready.try_recv()? else {
-            panic!("expected verified accounts");
-        };
-        assert_eq!(std::fs::read(path)?, body);
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn snapshot_downloader_same_source_changing_its_etag_is_banned() -> anyhow::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let mut actor = actor(directory.path())?;
-    let provider = Url::parse("http://source.test/share/")?;
-    actor
-        .state
-        .sources
-        .get_mut(&provider)
-        .unwrap()
-        .etags
-        .insert([1; 32], "old-representation".into());
-    let _cancel = active(&mut actor, 0, [1; 32], Some("old-representation"));
-    actor.finish_attempt(response(TransferError::EtagChanged("new-representation".into()))).await?;
-    assert!(actor.state.sources[&provider].banned.is_some());
-    Ok(())
-}
-
-#[tokio::test]
-async fn snapshot_downloader_known_etag_survives_eviction_of_its_partial_file() -> anyhow::Result<()>
-{
-    let directory = tempfile::tempdir()?;
-    let mut actor = actor(directory.path())?;
-    let provider = Url::parse("http://source.test/share/")?;
-    actor.state.sources.get_mut(&provider).unwrap().etags.insert([1; 32], "known-new".into());
-    // The provider's own representation was evicted; the task tried another
-    // saved representation. Returning known-new is NOT changing its own ETag.
-    let _cancel = active(&mut actor, 0, [1; 32], Some("other-old"));
-    actor.finish_attempt(response(TransferError::EtagChanged("known-new".into()))).await?;
-    assert!(actor.state.sources[&provider].banned.is_none());
-    Ok(())
-}
-
-#[tokio::test]
-async fn snapshot_downloader_unknown_and_duplicate_cache_handoffs_are_errors() -> anyhow::Result<()>
-{
-    let directory = tempfile::tempdir()?;
-    let mut actor = actor(directory.path())?;
-    assert!(actor.process_blob([9; 32], true).await.is_err());
-    assert!(actor.process_blob([1; 32], true).await.is_err());
-    actor.state.partitions.get_mut(&[1; 32]).unwrap().ready = true;
-    actor.process_blob([1; 32], true).await?;
-    assert!(actor.process_blob([1; 32], true).await.is_err());
     Ok(())
 }

@@ -12,10 +12,6 @@
   include_tasks: copy-static-configs.yaml
   when: [DO_START, not FAST_UPDATE]
 
-- name: Copy testnet static configs
-  include_tasks: copy-static-testnet-configs.yaml
-  when: [DO_START, not FAST_UPDATE, TESTNET]
-
 - name: Prepare host
   include_tasks: prepare-host.yaml
   when: [DO_START, PREPARE_HOST, not FAST_UPDATE]
@@ -47,6 +43,10 @@
 - name: Ensure required directories exist after deleting something
   include_tasks: ensure-dirs.yaml
   when: DELETE_DATA or DELETE_LOGS
+
+- name: Copy testnet static configs
+  include_tasks: copy-static-testnet-configs.yaml
+  when: [DO_START, not FAST_UPDATE, TESTNET]
 
 - name: Start block keeper
   include_tasks: start-bk.yaml

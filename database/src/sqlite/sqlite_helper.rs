@@ -1,8 +1,11 @@
 // 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::SendError;
@@ -13,10 +16,28 @@ use std::thread;
 use parking_lot::Mutex;
 use rusqlite::OpenFlags;
 
+use super::history_bk_set::BkSetUpdateWrite;
+use super::history_bk_set::MismatchKind;
+use super::history_proofs::decode_hex32;
+use super::history_proofs::events_of;
+use super::history_proofs::BlockWrite;
+use super::history_proofs::EventCounts;
+use super::history_proofs::EventFilters;
+use super::history_proofs::EventKind;
+use super::history_proofs::HistoryProofsCounters;
+use super::history_proofs::HistoryProofsStore;
+use super::history_proofs::StoreResult;
+use super::history_proofs::Written;
+use super::history_proofs::ATTESTATION_WAIT_BLOCKS;
+use super::history_proofs::HISTORY_PROOFS_DB;
+use super::history_proofs::THREAD_ZERO_HEX;
+use super::latest_bk_set::replace_latest_bk_set;
+use super::AnchorLookup;
 use super::ArchAccount;
 use super::ArchAttestation;
 use super::ArchBkSetUpdate;
 use super::ArchBlock;
+use super::ArchLatestBkSet;
 use super::ArchMessage;
 use super::ArchTransaction;
 use super::FlatTransaction;
@@ -38,17 +59,67 @@ fn default_db_file() -> PathBuf {
 pub struct SqliteHelperConfig {
     pub data_dir: PathBuf,
     pub db_file: PathBuf,
+    /// Which ext-out messages of thread-0 blocks go to the history proofs store.
+    pub event_filters: EventFilters,
 }
 
 impl SqliteHelperConfig {
     pub fn new(data_dir: PathBuf, db_file: Option<PathBuf>) -> Self {
-        SqliteHelperConfig { data_dir, db_file: db_file.unwrap_or_else(default_db_file) }
+        SqliteHelperConfig {
+            data_dir,
+            db_file: db_file.unwrap_or_else(default_db_file),
+            event_filters: EventFilters::default(),
+        }
     }
 }
 
 pub struct SqliteHelperContext {
     pub config: SqliteHelperConfig,
     pub conn: Arc<Mutex<Option<rusqlite::Connection>>>,
+    pub latest_bk_set_writes: LatestBkSetWrites,
+    pub history_proofs: HistoryProofsStore,
+    pub history: HistoryWriterState,
+}
+
+/// History store bookkeeping of the writer thread.
+#[derive(Default)]
+pub struct HistoryWriterState {
+    pub counters: HistoryProofsCounters,
+    /// Stored blocks whose attestation has not arrived yet: height -> block id.
+    awaiting_attestation: BTreeMap<u64, [u8; 32]>,
+}
+
+/// Outcome of `latest_bk_set` writes in the writer thread, shared by all clones of the helper.
+/// A record dropped because the connection is absent counts as neither a write nor a failure.
+#[derive(Clone, Default)]
+pub struct LatestBkSetWrites {
+    written_seq_no: Arc<AtomicU64>,
+    failures: Arc<AtomicU64>,
+}
+
+/// A reading of `LatestBkSetWrites`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LatestBkSetWriteCounters {
+    /// `seq_no` of the last snapshot written successfully; 0 when there is none yet.
+    pub written_seq_no: u64,
+    pub failures: u64,
+}
+
+impl LatestBkSetWrites {
+    pub fn get(&self) -> LatestBkSetWriteCounters {
+        LatestBkSetWriteCounters {
+            written_seq_no: self.written_seq_no.load(Ordering::SeqCst),
+            failures: self.failures.load(Ordering::SeqCst),
+        }
+    }
+
+    fn record(&self, seq_no: u64, ok: bool) {
+        if ok {
+            self.written_seq_no.store(seq_no, Ordering::SeqCst);
+        } else {
+            self.failures.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -64,9 +135,55 @@ pub struct SqliteHelper {
     pub config: SqliteHelperConfig,
     pub conn: Arc<parking_lot::Mutex<Option<rusqlite::Connection>>>,
     db_files: DBFiles,
+    rotations: Arc<AtomicU64>,
+    latest_bk_set_writes: LatestBkSetWrites,
+    history_counters: HistoryProofsCounters,
 }
 
 impl SqliteHelper {
+    /// Queues a `latest_bk_set` snapshot for the writer thread. Like every other record, it is
+    /// dropped if the connection is absent (during `rotate_db_file`). The outcome of the write
+    /// is visible through `latest_bk_set_writes`.
+    pub fn put_latest_bk_set(&self, item: ArchLatestBkSet) -> anyhow::Result<()> {
+        self.record_sender
+            .send(DBStoredRecord::LatestBkSet(Box::new(item)))
+            .map_err(|_| anyhow::anyhow!("sqlite writer is gone"))
+    }
+
+    /// Looks up the anchor block; an error when the connection is `None`.
+    pub fn find_anchor_block(&self, thread_id: &str, seq_no: u64) -> anyhow::Result<AnchorLookup> {
+        let guard = self.conn.lock();
+        let Some(conn) = guard.as_ref() else {
+            anyhow::bail!("no database connection");
+        };
+        super::latest_bk_set::find_anchor_block(conn, thread_id, seq_no)
+    }
+
+    /// The snapshot stored in `latest_bk_set`; `Ok(None)` when the table is empty or the
+    /// connection is `None`.
+    pub fn load_latest_bk_set(&self) -> anyhow::Result<Option<ArchLatestBkSet>> {
+        let guard = self.conn.lock();
+        let Some(conn) = guard.as_ref() else {
+            return Ok(None);
+        };
+        super::latest_bk_set::load_latest_bk_set(conn)
+    }
+
+    /// Number of completed `rotate_db_file` reconnects, shared by all clones.
+    pub fn rotation_count(&self) -> u64 {
+        self.rotations.load(Ordering::SeqCst)
+    }
+
+    /// Outcome of `latest_bk_set` writes in the writer thread, shared by all clones.
+    pub fn latest_bk_set_writes(&self) -> LatestBkSetWriteCounters {
+        self.latest_bk_set_writes.get()
+    }
+
+    /// Outcomes of the history proofs store writes.
+    pub fn history_counters(&self) -> HistoryProofsCounters {
+        self.history_counters.clone()
+    }
+
     pub fn reset_connecton(&self) {
         let mut guard = self.conn.lock();
         *guard = None;
@@ -84,7 +201,17 @@ impl SqliteHelper {
 
         let (record_sender, record_receiver) = channel::<DBStoredRecord>();
         let conn = Arc::new(Mutex::new(Some(Self::create_connection(db_path.clone())?)));
-        let mut context = SqliteHelperContext { config: config.clone(), conn: conn.clone() };
+        let latest_bk_set_writes = LatestBkSetWrites::default();
+        let history_proofs = HistoryProofsStore::open(&config.data_dir)?;
+        let history = HistoryWriterState::default();
+        let history_counters = history.counters.clone();
+        let mut context = SqliteHelperContext {
+            config: config.clone(),
+            conn: conn.clone(),
+            latest_bk_set_writes: latest_bk_set_writes.clone(),
+            history_proofs,
+            history,
+        };
         let writer_join_handle = thread::Builder::new()
             .name("sqlite".to_string())
             .spawn(move || Self::put_records_worker(record_receiver, &mut context))?;
@@ -94,7 +221,18 @@ impl SqliteHelper {
             next: config.data_dir.join(SQLITE_NEXT_DB),
             work: config.data_dir.join(&config.db_file),
         };
-        Ok((SqliteHelper { record_sender, config, conn, db_files }, writer_join_handle))
+        Ok((
+            SqliteHelper {
+                record_sender,
+                config,
+                conn,
+                db_files,
+                rotations: Arc::new(AtomicU64::new(0)),
+                latest_bk_set_writes,
+                history_counters,
+            },
+            writer_join_handle,
+        ))
     }
 
     fn create_connection(db_path: PathBuf) -> anyhow::Result<rusqlite::Connection> {
@@ -171,6 +309,7 @@ impl SqliteHelper {
         tracing::info!(target: "sqlite", "Database file created");
 
         self.set_connection(Self::create_connection(self.db_files.work.clone())?);
+        self.rotations.fetch_add(1, Ordering::SeqCst);
 
         // sync wal
         let archive = rusqlite::Connection::open_with_flags(
@@ -195,7 +334,7 @@ impl SqliteHelper {
     fn put_records_worker(receiver: Receiver<DBStoredRecord>, context: &mut SqliteHelperContext) {
         for record in receiver {
             let result = match record {
-                DBStoredRecord::Block(ref block) => Self::store_block(context, block.clone()),
+                DBStoredRecord::Block(ref block) => Self::store_block(context, block),
                 DBStoredRecord::Transactions(ref transactions) => {
                     Self::store_transactions(context, transactions.to_vec())
                 }
@@ -211,6 +350,7 @@ impl SqliteHelper {
                 DBStoredRecord::Attestations(ref attestations) => {
                     Self::store_attestations(context, attestations.to_vec())
                 }
+                DBStoredRecord::LatestBkSet(ref item) => Self::store_latest_bk_set(context, item),
             };
 
             if let Err(err) = result {
@@ -223,6 +363,19 @@ impl SqliteHelper {
             }
         }
         tracing::debug!(target: "sqlite", "receiver dropped");
+    }
+
+    fn store_latest_bk_set(
+        context: &mut SqliteHelperContext,
+        item: &ArchLatestBkSet,
+    ) -> anyhow::Result<()> {
+        let mut guarded = context.conn.lock();
+        let Some(conn) = guarded.as_mut() else {
+            return Ok(());
+        };
+        let result = replace_latest_bk_set(conn, item);
+        context.latest_bk_set_writes.record(item.seq_no, result.is_ok());
+        result
     }
 
     fn store_accounts(
@@ -302,7 +455,202 @@ impl SqliteHelper {
         Ok(())
     }
 
-    fn store_block(context: &mut SqliteHelperContext, block: Box<ArchBlock>) -> anyhow::Result<()> {
+    /// Writes the history proofs store row of a block with its bridge events.
+    /// Only SQLite errors fail; data problems are logged and counted.
+    fn store_history_row(
+        context: &mut SqliteHelperContext,
+        block: &ArchBlock,
+    ) -> anyhow::Result<()> {
+        let counters = &context.history.counters;
+        let add = |counter: &AtomicU64, n: u64| counter.fetch_add(n, Ordering::Relaxed);
+        let height = u64::from_be_bytes(block.height);
+        let thread_zero = block.thread_id.as_deref() == Some(THREAD_ZERO_HEX);
+        if thread_zero && block.seq_no as u64 != height {
+            tracing::error!(
+                target: "sqlite",
+                "thread-0 block {} has seq_no {} at height {height}",
+                block.id,
+                block.seq_no
+            );
+            add(&counters.seq_no_mismatch, 1);
+        }
+        let (events, skipped) = if thread_zero {
+            events_of(block, &context.config.event_filters)
+        } else {
+            (vec![], EventCounts::default())
+        };
+        add(&counters.withdrawal_events_skipped, skipped.withdrawal);
+        add(&counters.voucher_events_skipped, skipped.voucher);
+        match context.history_proofs.store_arch_block(block, &events)? {
+            StoreResult::NotThreadZero => {}
+            StoreResult::Rejected(err) => {
+                tracing::error!(
+                    target: "sqlite",
+                    "block {} at height {height} is not stored in {HISTORY_PROOFS_DB}: {err}",
+                    block.id
+                );
+                add(&counters.rejected, 1);
+            }
+            StoreResult::Stored(BlockWrite::Inserted(written)) => {
+                Self::count_written(counters, &block.id, height, &written);
+                Self::log_skipped_events(counters, &block.id, height, &written);
+                add(&counters.rows_written, 1);
+                Self::count_events(counters, &written.events_inserted);
+                // A stored row has a valid hex id.
+                if let Some(block_id) = decode_hex32(&block.id) {
+                    context.history.awaiting_attestation.insert(height, block_id);
+                }
+                let awaiting = &mut context.history.awaiting_attestation;
+                while let Some((&oldest, _)) = awaiting.first_key_value() {
+                    if oldest + ATTESTATION_WAIT_BLOCKS >= height {
+                        break;
+                    }
+                    awaiting.pop_first();
+                    tracing::warn!(
+                        target: "sqlite",
+                        "no attestation for thread-0 block at height {oldest} within {ATTESTATION_WAIT_BLOCKS} blocks"
+                    );
+                    add(&counters.attestation_missing, 1);
+                }
+            }
+            StoreResult::Stored(BlockWrite::Duplicate(written)) => {
+                Self::count_written(counters, &block.id, height, &written);
+                // A block sent again counts all its skipped events again, also
+                // the ones its first write counted: after a change of the
+                // event flags it can carry new ones, and the alert must not
+                // miss them. Its events stored by this write count too.
+                Self::log_skipped_events(counters, &block.id, height, &written);
+                Self::count_events(counters, &written.events_inserted);
+                add(&counters.duplicates, 1);
+            }
+            StoreResult::Stored(BlockWrite::Conflict { existing_height, existing_block_id }) => {
+                tracing::error!(
+                    target: "sqlite",
+                    "block {} at height {height} conflicts with block {} at height {existing_height} in {HISTORY_PROOFS_DB}; the stored row is kept",
+                    block.id,
+                    hex::encode(existing_block_id)
+                );
+                add(&counters.conflicts, 1);
+            }
+            StoreResult::Stored(BlockWrite::BkSetUpdateConflict { height }) => {
+                tracing::error!(
+                    target: "sqlite",
+                    "block {} at height {height} is not stored in {HISTORY_PROOFS_DB}: another BK set update holds its height or block id",
+                    block.id
+                );
+                add(&counters.conflicts, 1);
+            }
+            StoreResult::Stored(BlockWrite::BkSetUpdateRejected(reason)) => {
+                tracing::error!(
+                    target: "sqlite",
+                    "block {} at height {height} is not stored in {HISTORY_PROOFS_DB}: {reason}",
+                    block.id
+                );
+                add(&counters.rejected, 1);
+            }
+        }
+        Ok(())
+    }
+
+    /// Logs and counts the events of a stored block that are not stored: the
+    /// file holds their message at another height. Nothing else records them:
+    /// the counter starts from zero when block-manager restarts.
+    fn log_skipped_events(
+        counters: &HistoryProofsCounters,
+        block_id: &str,
+        height: u64,
+        w: &Written,
+    ) {
+        for (kind, msg_hash, stored_at) in &w.skipped_events {
+            let conflicts = match kind {
+                EventKind::Withdrawal => &counters.withdrawal_event_conflicts,
+                EventKind::Voucher => &counters.voucher_event_conflicts,
+            };
+            conflicts.fetch_add(1, Ordering::Relaxed);
+            tracing::error!(
+                target: "sqlite",
+                "{} event {} of block {block_id} at height {height} is not stored in {HISTORY_PROOFS_DB}: the event at height {stored_at} holds the message, so the data is damaged or of another chain",
+                kind.as_str(),
+                hex::encode(msg_hash)
+            );
+        }
+    }
+
+    fn count_events(counters: &HistoryProofsCounters, inserted: &EventCounts) {
+        counters.withdrawal_events.fetch_add(inserted.withdrawal, Ordering::Relaxed);
+        counters.voucher_events.fetch_add(inserted.voucher, Ordering::Relaxed);
+    }
+
+    /// Counts the BK set update written with a stored block, and counts and
+    /// logs its attestations. Its skipped events go to `log_skipped_events`.
+    fn count_written(counters: &HistoryProofsCounters, block_id: &str, height: u64, w: &Written) {
+        let add = |counter: &AtomicU64, n: u64| counter.fetch_add(n, Ordering::Relaxed);
+        if w.bk_set_update == Some(BkSetUpdateWrite::Inserted) {
+            add(&counters.bk_set_updates_written, 1);
+        }
+        let attestations = &w.attestations;
+        add(&counters.attestations_written, attestations.inserted);
+        add(&counters.attestations_replaced, attestations.replaced);
+        for (kind, reason) in &attestations.mismatches {
+            tracing::error!(
+                target: "sqlite",
+                "attestation carried in block {block_id} at height {height} is not stored in {HISTORY_PROOFS_DB}: {reason}"
+            );
+            match kind {
+                // Counted by `check_attestations`.
+                MismatchKind::EnvelopeHash => {}
+                MismatchKind::Parent | MismatchKind::BadBlockId | MismatchKind::OtherBlock => {
+                    add(&counters.attestations_rejected, 1);
+                }
+            }
+        }
+        for reason in &attestations.detached {
+            tracing::error!(
+                target: "sqlite",
+                "attestation {reason}: deleted from {HISTORY_PROOFS_DB} when block {block_id} at height {height} was stored"
+            );
+            add(&counters.attestations_rejected, 1);
+        }
+    }
+
+    /// Compares attestations with the stored rows of the blocks they attest.
+    /// A diagnostic: it names the block when an L1 window does not match.
+    fn check_attestations(context: &mut SqliteHelperContext, attestations: &[ArchAttestation]) {
+        for attestation in attestations {
+            let Some(block_id) = decode_hex32(&attestation.block_id) else {
+                continue;
+            };
+            let row = match context.history_proofs.row_by_block_id(&block_id) {
+                Ok(Some(row)) => row,
+                Ok(None) => continue,
+                Err(err) => {
+                    tracing::warn!(target: "sqlite", "attestation check skipped: {err}");
+                    continue;
+                }
+            };
+            if row.envelope_hash != attestation.envelope_hash {
+                tracing::error!(
+                    target: "sqlite",
+                    "attestation of block {} at height {} has envelope_hash {}, {HISTORY_PROOFS_DB} has {}",
+                    attestation.block_id,
+                    row.height,
+                    hex::encode(attestation.envelope_hash),
+                    hex::encode(row.envelope_hash)
+                );
+                context.history.counters.attestation_mismatch.fetch_add(1, Ordering::Relaxed);
+            }
+            if context.history.awaiting_attestation.get(&row.height) == Some(&block_id) {
+                context.history.awaiting_attestation.remove(&row.height);
+            }
+        }
+    }
+
+    fn store_block(context: &mut SqliteHelperContext, block: &ArchBlock) -> anyhow::Result<()> {
+        // Written first and on its own connection: the history proofs store
+        // must get the row even while the archive connection is closed for
+        // rotation. An error here fails the block, which is fatal.
+        Self::store_history_row(context, block)?;
+
         let mut guarded = context.conn.lock();
         let Some(tx) = guarded.as_mut() else {
             return Ok(());
@@ -335,8 +683,8 @@ impl SqliteHelper {
                         status=excluded.status"
                 )?;
 
-                let prev_ref = block.prev_ref.unwrap_or_default();
-                let prev_alt_ref = block.prev_alt_ref.unwrap_or_default();
+                let prev_ref = block.prev_ref.clone().unwrap_or_default();
+                let prev_alt_ref = block.prev_alt_ref.clone().unwrap_or_default();
                 let block_data = zstd_compress(&block.data);
                 let block_merkle_leaves = (block.block_merkle_leaves.len()
                     == BLOCK_MERKLE_LEAVES_SIZE)
@@ -505,6 +853,8 @@ impl SqliteHelper {
         attestations: Vec<ArchAttestation>,
     ) -> anyhow::Result<()> {
         let cnt_attestations = attestations.len();
+        // Before the archive connection check: rotation must not skip it.
+        Self::check_attestations(context, &attestations);
 
         let mut guarded = context.conn.lock();
         let Some(tx) = guarded.as_mut() else {
@@ -969,8 +1319,11 @@ pub fn print_sqlite_info(conn: &rusqlite::Connection) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod test {
+    use std::path::Path;
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::Instant;
 
     use migration_tool::DbInfo;
     use migration_tool::DbMaintenance;
@@ -985,9 +1338,18 @@ mod test {
     use super::SqliteHelperConfig;
     use super::SqliteHelperContext;
     use super::BLOCK_MERKLE_LEAVES_SIZE;
+    use crate::documents_db::DocumentsDb;
     use crate::sqlite::block::ExtBlkRef;
+    use crate::sqlite::history_bk_set::tests as bk_set_tests;
+    use crate::sqlite::history_proofs::tests as history_proofs_tests;
+    use crate::sqlite::history_proofs::EventFilter;
+    use crate::sqlite::history_proofs::HistoryProofsStore;
+    use crate::sqlite::history_proofs::HISTORY_PROOFS_DB;
     use crate::sqlite::sqlite_helper::print_sqlite_info;
+    use crate::sqlite::ArchAttestation;
     use crate::sqlite::ArchBlock;
+    use crate::sqlite::ArchLatestBkSet;
+    use crate::sqlite::ArchMessage;
     use crate::sqlite::ArchTransaction;
 
     #[test]
@@ -1038,6 +1400,9 @@ mod test {
         let mut context = SqliteHelperContext {
             config: SqliteHelperConfig::new(PathBuf::new(), None),
             conn: conn.clone(),
+            latest_bk_set_writes: Default::default(),
+            history_proofs: HistoryProofsStore::open(&db_dir)?,
+            history: Default::default(),
         };
 
         let block_merkle_leaves = vec![0x50; BLOCK_MERKLE_LEAVES_SIZE];
@@ -1083,7 +1448,7 @@ mod test {
             ..Default::default()
         };
 
-        SqliteHelper::store_block(&mut context, Box::new(block))?;
+        SqliteHelper::store_block(&mut context, &block)?;
 
         let guard = conn.lock();
         let db = guard.as_ref().expect("connection is present");
@@ -1150,6 +1515,9 @@ mod test {
         let mut context = SqliteHelperContext {
             config: SqliteHelperConfig::new(PathBuf::new(), None),
             conn: conn.clone(),
+            latest_bk_set_writes: Default::default(),
+            history_proofs: HistoryProofsStore::open(&db_dir)?,
+            history: Default::default(),
         };
 
         let balance_delta_other = r#"[{"currency":1,"value":"-300"}]"#.to_string();
@@ -1189,6 +1557,560 @@ mod test {
         assert_eq!(row.3, "-1000");
         assert_eq!(row.4, Some(balance_delta_other));
 
+        Ok(())
+    }
+
+    #[test]
+    fn dropped_latest_bk_set_counts_as_neither_write_nor_failure() -> anyhow::Result<()> {
+        let mut context = SqliteHelperContext {
+            config: SqliteHelperConfig::new(PathBuf::new(), None),
+            conn: Arc::new(Mutex::new(None)),
+            latest_bk_set_writes: Default::default(),
+            history_proofs: HistoryProofsStore::open(&testdir!())?,
+            history: Default::default(),
+        };
+        let item = ArchLatestBkSet {
+            thread_id: "thread-0".to_string(),
+            seq_no: 10,
+            block_id: "block-10".to_string(),
+            height: [0; 8],
+            chain_order: "order-10".to_string(),
+            updated_at: 1,
+            signers: vec![(0, [1; 48])],
+        };
+        SqliteHelper::store_latest_bk_set(&mut context, &item)?;
+        assert_eq!(context.latest_bk_set_writes.get(), Default::default());
+        Ok(())
+    }
+
+    /// A thread-0 block; layer boundaries get the layer roots their height needs.
+    fn thread_zero_block(height: u64) -> ArchBlock {
+        let layers = proof_data::layers::required_layers(height);
+        let mut block =
+            history_proofs_tests::arch_block(height, history_proofs_tests::proofs(layers));
+        block.status = 2;
+        block.parent = "parent-block".to_string();
+        block
+    }
+
+    fn block_id(height: u64) -> Vec<u8> {
+        history_proofs_tests::id(height).to_vec()
+    }
+
+    fn history_block_ids(db_dir: &Path) -> anyhow::Result<Vec<Vec<u8>>> {
+        let conn = Connection::open(db_dir.join(HISTORY_PROOFS_DB))?;
+        let mut stmt = conn.prepare("SELECT block_id FROM blocks ORDER BY height")?;
+        let mut ids = Vec::new();
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            ids.push(row.get(0)?);
+        }
+        Ok(ids)
+    }
+
+    fn wait_for_history_rows(db_dir: &Path, expected: usize) -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if history_block_ids(db_dir)?.len() >= expected {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "history proofs store did not reach {expected} rows"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn store_block_writes_the_history_proofs_row() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let db_maintenance = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &db_dir);
+        db_maintenance.migrate(
+            MigrateTo::Latest,
+            DbMaintenanceOptions { silent: true, ..Default::default() },
+        )?;
+        let conn = Arc::new(Mutex::new(Some(Connection::open(&db_maintenance.path)?)));
+        let mut context = SqliteHelperContext {
+            config: SqliteHelperConfig::new(PathBuf::new(), None),
+            conn: conn.clone(),
+            latest_bk_set_writes: Default::default(),
+            history_proofs: HistoryProofsStore::open(&db_dir)?,
+            history: Default::default(),
+        };
+
+        SqliteHelper::store_block(&mut context, &thread_zero_block(127))?;
+        SqliteHelper::store_block(&mut context, &thread_zero_block(128))?;
+
+        // Every thread-0 block gets a row, not only layer boundaries.
+        assert_eq!(history_block_ids(&db_dir)?, vec![block_id(127), block_id(128)]);
+        let archived: i64 = conn.lock().as_ref().expect("connection is present").query_row(
+            "SELECT COUNT(*) FROM blocks WHERE id = ?1",
+            [hex::encode(block_id(128))],
+            |row| row.get(0),
+        )?;
+        assert_eq!(archived, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn store_block_writes_history_proofs_while_the_archive_connection_is_closed(
+    ) -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        // `rotate_db_file` drops the archive connection for a moment. Blocks
+        // that arrive meanwhile are skipped by the archive but must still
+        // reach the history proofs store.
+        let mut context = SqliteHelperContext {
+            config: SqliteHelperConfig::new(PathBuf::new(), None),
+            conn: Arc::new(Mutex::new(None)),
+            latest_bk_set_writes: Default::default(),
+            history_proofs: HistoryProofsStore::open(&db_dir)?,
+            history: Default::default(),
+        };
+
+        SqliteHelper::store_block(&mut context, &thread_zero_block(128))?;
+
+        assert_eq!(history_block_ids(&db_dir)?, vec![block_id(128)]);
+        Ok(())
+    }
+
+    #[test]
+    fn store_block_fails_when_the_history_proofs_store_stays_locked() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = SqliteHelperContext {
+            config: SqliteHelperConfig::new(PathBuf::new(), None),
+            conn: Arc::new(Mutex::new(None)),
+            latest_bk_set_writes: Default::default(),
+            history_proofs: HistoryProofsStore::open_with_busy_timeout(
+                &db_dir,
+                Duration::from_millis(100),
+            )?,
+            history: Default::default(),
+        };
+        let locker = Connection::open(db_dir.join(HISTORY_PROOFS_DB))?;
+        locker.execute_batch("BEGIN IMMEDIATE")?;
+
+        let result = SqliteHelper::store_block(&mut context, &thread_zero_block(128));
+
+        locker.execute_batch("ROLLBACK")?;
+        // put_records_worker logs the error with `{err}`: that line alone has
+        // to name the file, or the operator goes looking at bm-archive.db.
+        let message =
+            result.expect_err("a write that cannot get the lock must fail the block").to_string();
+        assert!(message.contains("locked"), "unexpected error: {message}");
+        assert!(message.contains(HISTORY_PROOFS_DB), "the error does not name the file: {message}");
+        Ok(())
+    }
+
+    fn history_context(db_dir: &Path) -> anyhow::Result<SqliteHelperContext> {
+        Ok(SqliteHelperContext {
+            config: SqliteHelperConfig::new(PathBuf::new(), None),
+            conn: Arc::new(Mutex::new(None)),
+            latest_bk_set_writes: Default::default(),
+            history_proofs: HistoryProofsStore::open(db_dir)?,
+            history: Default::default(),
+        })
+    }
+
+    fn bridge_event_message(seed: u8) -> ArchMessage {
+        let filter = EventFilter::withdrawal_default();
+        history_proofs_tests::ext_out(&filter.src(), &filter.dst(), seed)
+    }
+
+    fn attestation(height: u64, envelope_hash: [u8; 32]) -> ArchAttestation {
+        ArchAttestation {
+            block_id: hex::encode(history_proofs_tests::id(height)),
+            envelope_hash,
+            ..Default::default()
+        }
+    }
+
+    /// A message comes in one block only. The block is written, the event is
+    /// not stored a second time, and it counts as a bridge event conflict,
+    /// also when the block is sent again: missing one is worse for the alert
+    /// than counting one twice.
+    #[test]
+    fn store_block_counts_an_event_stored_at_another_height() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        let mut first = thread_zero_block(10);
+        first.ext_out_messages = vec![bridge_event_message(1)];
+        SqliteHelper::store_block(&mut context, &first)?;
+        let mut second = thread_zero_block(11);
+        second.ext_out_messages = vec![bridge_event_message(1), bridge_event_message(2)];
+        SqliteHelper::store_block(&mut context, &second)?;
+
+        assert_eq!(history_block_ids(&db_dir)?, vec![block_id(10), block_id(11)]);
+        assert_eq!(
+            context.history_proofs.events_in_range(0, 20)?,
+            vec![history_proofs_tests::event(10, 1), history_proofs_tests::event(11, 2)]
+        );
+        let counters = context.history.counters.snapshot();
+        assert_eq!((counters.rows_written, counters.withdrawal_events), (2, 2));
+        assert_eq!((counters.withdrawal_event_conflicts, counters.conflicts), (1, 0));
+
+        SqliteHelper::store_block(&mut context, &second)?;
+        let counters = context.history.counters.snapshot();
+        assert_eq!((counters.duplicates, counters.withdrawal_event_conflicts), (1, 2));
+        assert_eq!(
+            context.history_proofs.events_in_range(0, 20)?,
+            vec![history_proofs_tests::event(10, 1), history_proofs_tests::event(11, 2)]
+        );
+        Ok(())
+    }
+
+    /// A block sent again with an event it did not carry before (after a
+    /// change of the event flags) stores the event, and it counts.
+    #[test]
+    fn store_block_counts_events_added_to_a_stored_row() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        let mut block = thread_zero_block(10);
+        block.ext_out_messages = vec![bridge_event_message(1)];
+        SqliteHelper::store_block(&mut context, &block)?;
+        block.ext_out_messages = vec![bridge_event_message(1), bridge_event_message(2)];
+        SqliteHelper::store_block(&mut context, &block)?;
+        SqliteHelper::store_block(&mut context, &block)?;
+
+        assert_eq!(
+            context.history_proofs.events_in_range(10, 10)?,
+            vec![history_proofs_tests::event(10, 1), history_proofs_tests::event(10, 2)]
+        );
+        let counters = context.history.counters.snapshot();
+        assert_eq!((counters.rows_written, counters.duplicates), (1, 2));
+        assert_eq!(counters.withdrawal_events, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn store_block_writes_history_row_and_events() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        let mut block = thread_zero_block(10);
+        block.ext_out_messages = vec![bridge_event_message(1)];
+        SqliteHelper::store_block(&mut context, &block)?;
+
+        assert_eq!(history_block_ids(&db_dir)?, vec![block_id(10)]);
+        assert_eq!(
+            context.history_proofs.events_in_range(10, 10)?,
+            vec![history_proofs_tests::event(10, 1)]
+        );
+        let counters = context.history.counters.snapshot();
+        assert_eq!(counters.rows_written, 1);
+        assert_eq!(counters.withdrawal_events, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn event_without_transaction_id_is_skipped_not_rejected() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        let mut block = thread_zero_block(10);
+        let mut event = bridge_event_message(1);
+        event.transaction_id = None;
+        block.ext_out_messages = vec![event];
+        SqliteHelper::store_block(&mut context, &block)?;
+
+        assert_eq!(history_block_ids(&db_dir)?, vec![block_id(10)]);
+        let counters = context.history.counters.snapshot();
+        assert_eq!(counters.withdrawal_events_skipped, 1);
+        assert_eq!(counters.withdrawal_events, 0);
+        assert_eq!(counters.rejected, 0);
+        Ok(())
+    }
+
+    /// Vouchers count apart from withdrawals: stored, skipped for a body that
+    /// is not `VoucherGenerated`, and not stored a second time at another height.
+    #[test]
+    fn store_block_counts_events_per_kind() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        let mut first = thread_zero_block(10);
+        first.ext_out_messages = vec![
+            bridge_event_message(1),
+            history_proofs_tests::archived_voucher(
+                history_proofs_tests::voucher_boc([0x5c; 32], 2),
+                2,
+            ),
+            history_proofs_tests::archived_voucher(
+                history_proofs_tests::voucher_boc_with_body(
+                    Some(history_proofs_tests::voucher_body(0x1234_5678, [0x5c; 32])),
+                    true,
+                    3,
+                ),
+                3,
+            ),
+        ];
+        SqliteHelper::store_block(&mut context, &first)?;
+        let mut second = thread_zero_block(11);
+        second.ext_out_messages = vec![history_proofs_tests::archived_voucher(
+            history_proofs_tests::voucher_boc([0x5c; 32], 2),
+            2,
+        )];
+        SqliteHelper::store_block(&mut context, &second)?;
+
+        assert_eq!(
+            context.history_proofs.events_in_range(0, 20)?,
+            vec![history_proofs_tests::event(10, 1), history_proofs_tests::voucher(10, 2)]
+        );
+        let c = context.history.counters.snapshot();
+        assert_eq!((c.withdrawal_events, c.voucher_events), (1, 1));
+        assert_eq!((c.withdrawal_events_skipped, c.voucher_events_skipped), (0, 1));
+        assert_eq!((c.withdrawal_event_conflicts, c.voucher_event_conflicts), (0, 1));
+        Ok(())
+    }
+
+    fn table_rows(db_dir: &Path, table: &str) -> anyhow::Result<i64> {
+        let conn = Connection::open(db_dir.join(HISTORY_PROOFS_DB))?;
+        Ok(conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
+    }
+
+    /// Thread-0 rotation block: leaves (from `arch_block`) and its BK set update.
+    fn rotation_block(height: u64) -> ArchBlock {
+        let mut block = thread_zero_block(height);
+        block.bk_set_update = Some(bk_set_tests::update(height));
+        block
+    }
+
+    #[test]
+    fn store_block_writes_bk_set_update_and_counts() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        SqliteHelper::store_block(&mut context, &thread_zero_block(1999))?;
+        SqliteHelper::store_block(&mut context, &rotation_block(2000))?;
+        let mut carrier = thread_zero_block(2001);
+        carrier.attestations = vec![bk_set_tests::attestation(2000, 0, 2001, "00002001")];
+        SqliteHelper::store_block(&mut context, &carrier)?;
+
+        let counters = context.history.counters.snapshot();
+        assert_eq!(counters.bk_set_updates_written, 1);
+        assert_eq!(counters.attestations_written, 1);
+        assert_eq!(counters.attestations_rejected, 0);
+        assert_eq!(table_rows(&db_dir, "bk_set_updates")?, 1);
+        assert_eq!(table_rows(&db_dir, "attestations")?, 1);
+
+        let mut wrong_parent = bk_set_tests::attestation(2000, 1, 2002, "00002002");
+        wrong_parent.parent_block_id = hex::encode(history_proofs_tests::id(9999));
+        let mut carrier = thread_zero_block(2002);
+        carrier.attestations = vec![wrong_parent];
+        SqliteHelper::store_block(&mut context, &carrier)?;
+        assert_eq!(context.history.counters.snapshot().attestations_rejected, 1);
+
+        // Counted by `bm_history_attestation_mismatch` when the archive gets it.
+        let mut wrong_envelope = bk_set_tests::attestation(2000, 1, 2003, "00002003");
+        wrong_envelope.envelope_hash = [0xee; 32];
+        let mut carrier = thread_zero_block(2003);
+        carrier.attestations = vec![wrong_envelope];
+        SqliteHelper::store_block(&mut context, &carrier)?;
+        let counters = context.history.counters.snapshot();
+        assert_eq!(counters.attestations_rejected, 1);
+        assert_eq!(counters.attestations_written, 1);
+        assert_eq!(table_rows(&db_dir, "attestations")?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn resent_carrier_moves_no_attestation_counter() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        SqliteHelper::store_block(&mut context, &thread_zero_block(1999))?;
+        SqliteHelper::store_block(&mut context, &rotation_block(2000))?;
+        let mut carrier = thread_zero_block(2001);
+        carrier.attestations = vec![bk_set_tests::attestation(2000, 0, 2001, "00002001")];
+        SqliteHelper::store_block(&mut context, &carrier)?;
+        let before = context.history.counters.snapshot();
+
+        // The node sends the block again after a block-manager restart.
+        SqliteHelper::store_block(&mut context, &carrier)?;
+        let after = context.history.counters.snapshot();
+        assert_eq!(after.duplicates, before.duplicates + 1);
+        assert_eq!(after.attestations_written, before.attestations_written);
+        assert_eq!(after.attestations_replaced, before.attestations_replaced);
+        assert_eq!(after.attestations_rejected, before.attestations_rejected);
+        assert_eq!(table_rows(&db_dir, "attestations")?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn store_block_writes_bk_set_update_while_archive_connection_is_closed() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = SqliteHelperContext {
+            config: SqliteHelperConfig::new(PathBuf::new(), None),
+            conn: Arc::new(Mutex::new(None)),
+            latest_bk_set_writes: Default::default(),
+            history_proofs: HistoryProofsStore::open(&db_dir)?,
+            history: Default::default(),
+        };
+
+        SqliteHelper::store_block(&mut context, &rotation_block(2000))?;
+
+        assert_eq!(history_block_ids(&db_dir)?, vec![block_id(2000)]);
+        assert_eq!(table_rows(&db_dir, "bk_set_updates")?, 1);
+        assert_eq!(context.history.counters.snapshot().bk_set_updates_written, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_rotation_block_counts_as_rejected() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        let mut block = rotation_block(2000);
+        block.bk_set_update.as_mut().expect("rotation block").block_id =
+            hex::encode(history_proofs_tests::id(2001));
+        SqliteHelper::store_block(&mut context, &block)?;
+
+        let counters = context.history.counters.snapshot();
+        assert_eq!(counters.rejected, 1);
+        assert_eq!(counters.rows_written, 0);
+        assert_eq!(counters.bk_set_updates_written, 0);
+        assert!(!context.history.awaiting_attestation.contains_key(&2000));
+        assert!(history_block_ids(&db_dir)?.is_empty());
+        assert_eq!(table_rows(&db_dir, "bk_set_updates")?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn store_block_counts_conflict_and_keeps_row() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        SqliteHelper::store_block(&mut context, &thread_zero_block(10))?;
+        SqliteHelper::store_block(&mut context, &thread_zero_block(10))?;
+        let mut other = thread_zero_block(10);
+        other.envelope_hash = [0xee; 32];
+        SqliteHelper::store_block(&mut context, &other)?;
+
+        let counters = context.history.counters.snapshot();
+        assert_eq!((counters.rows_written, counters.duplicates, counters.conflicts), (1, 1, 1));
+        assert_eq!(context.history_proofs.row(10)?.map(|row| row.envelope_hash), Some([0xe0; 32]));
+        Ok(())
+    }
+
+    #[test]
+    fn store_block_counts_seq_no_mismatch_and_writes() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        let mut block = thread_zero_block(10);
+        block.seq_no = 11;
+        SqliteHelper::store_block(&mut context, &block)?;
+        // Other threads have their own seq_no.
+        let mut other_thread = thread_zero_block(12);
+        other_thread.thread_id = Some("01".repeat(34));
+        other_thread.seq_no = 1;
+        SqliteHelper::store_block(&mut context, &other_thread)?;
+
+        let counters = context.history.counters.snapshot();
+        assert_eq!(counters.seq_no_mismatch, 1);
+        assert_eq!(counters.rows_written, 1);
+        assert_eq!(history_block_ids(&db_dir)?, vec![block_id(10)]);
+        Ok(())
+    }
+
+    #[test]
+    fn store_block_rejects_layer_mismatch() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        let mut block = thread_zero_block(128);
+        block.history_proofs = vec![0];
+        SqliteHelper::store_block(&mut context, &block)?;
+
+        assert_eq!(context.history.counters.snapshot().rejected, 1);
+        assert!(history_block_ids(&db_dir)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn attestation_mismatch_is_counted() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        SqliteHelper::store_block(&mut context, &thread_zero_block(10))?;
+        SqliteHelper::store_block(&mut context, &thread_zero_block(11))?;
+        SqliteHelper::store_attestations(
+            &mut context,
+            vec![
+                attestation(10, [0xe0; 32]),
+                attestation(11, [0xee; 32]),
+                attestation(99, [0; 32]),
+            ],
+        )?;
+
+        let counters = context.history.counters.snapshot();
+        assert_eq!(counters.attestation_mismatch, 1);
+        assert_eq!(counters.attestation_missing, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn attestation_missing_after_wait() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        for height in 1..=258 {
+            SqliteHelper::store_block(&mut context, &thread_zero_block(height))?;
+        }
+        assert_eq!(context.history.counters.snapshot().attestation_missing, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn attestation_after_window_boundary_is_matched() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        let mut context = history_context(&db_dir)?;
+        SqliteHelper::store_block(&mut context, &thread_zero_block(255))?;
+        SqliteHelper::store_block(&mut context, &thread_zero_block(256))?;
+        SqliteHelper::store_attestations(&mut context, vec![attestation(255, [0xe0; 32])])?;
+        for height in 257..=600 {
+            SqliteHelper::store_block(&mut context, &thread_zero_block(height))?;
+            SqliteHelper::store_attestations(
+                &mut context,
+                vec![attestation(height - 1, [0xe0; 32])],
+            )?;
+        }
+
+        let counters = context.history.counters.snapshot();
+        assert_eq!(counters.attestation_missing, 0);
+        assert_eq!(counters.attestation_mismatch, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn history_proofs_rows_survive_rotation() -> anyhow::Result<()> {
+        let db_dir = testdir!();
+        // `bm-schema.db` is the empty schema that rotation copies into place.
+        let db_maintenance = DbMaintenance::new(&DbInfo::BM_ARCHIVE, &db_dir);
+        db_maintenance.migrate(
+            MigrateTo::Latest,
+            DbMaintenanceOptions { silent: true, ..Default::default() },
+        )?;
+        std::fs::copy(&db_maintenance.path, db_dir.join("bm-archive.db"))?;
+
+        let (mut helper, writer) =
+            SqliteHelper::from_config(SqliteHelperConfig::new(db_dir.clone(), None))?;
+        helper.put_block(thread_zero_block(128))?;
+        wait_for_history_rows(&db_dir, 1)?;
+
+        helper.rotate_db_file()?;
+        helper.put_block(thread_zero_block(256))?;
+        wait_for_history_rows(&db_dir, 2)?;
+
+        drop(helper);
+        writer.join().expect("writer thread");
+
+        assert_eq!(history_block_ids(&db_dir)?, vec![block_id(128), block_id(256)]);
+        // Reopening keeps the rows.
+        let (helper, writer) =
+            SqliteHelper::from_config(SqliteHelperConfig::new(db_dir.clone(), None))?;
+        drop(helper);
+        writer.join().expect("writer thread");
+        assert_eq!(history_block_ids(&db_dir)?, vec![block_id(128), block_id(256)]);
+        let rotated = std::fs::read_dir(&db_dir)?
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.starts_with("bm-archive-")
+                    && name.ends_with(".db")
+                    && name != "bm-archive-next.db"
+            })
+            .count();
+        assert_eq!(rotated, 1, "rotation must leave the history proofs store alone");
         Ok(())
     }
 }

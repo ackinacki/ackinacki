@@ -1,25 +1,29 @@
 //! Immutable snapshot resources shared by publication, HTTP and explicit GC.
 //! No node or protocol codec dependency lives here.
 //!
-//! Primary/legacy bodies remain `<block-id>` beside `<block-id>.header`.
+//! Primary bodies remain `<block-id>` beside `<block-id>.header`.
 //! New partitions live at `<block-id>.partitions/accounts_<id>` or
 //! `messages_<id>`. These are hard links into `.snapshot-resources/blobs/`:
 //! snapshots remain browsable as groups without duplicating shared bodies.
-//! Records and publication leases protect the pool during GC; private pool
+//! Records and active publications protect the pool during GC; private pool
 //! names are never exposed by HTTP. Download-cache storage is independent.
 pub mod chunks;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs::File;
-use std::fs::OpenOptions;
 use std::fs::{self};
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 
+use anyhow::Context;
+use parking_lot::Condvar;
+use parking_lot::Mutex;
+use parking_lot::MutexGuard;
 use serde::Deserialize;
 use serde::Serialize;
 use tempfile::NamedTempFile;
@@ -80,42 +84,37 @@ impl Default for RetentionPolicy {
     }
 }
 
+/// One owner per directory. Clone this handle for publishers, GC and HTTP;
+/// independently opening the same directory while it is in use is unsupported.
 #[derive(Clone)]
 pub struct SnapshotResources {
     directory: PathBuf,
+    state: Arc<StorageState>,
 }
 
-/// An OS file lock keeps GC from retiring this record while publication runs.
-/// Partial/failed attempts retain their record until explicit retirement, so
-/// completed shared resources remain reusable after cancellation or a crash.
+#[derive(Default)]
+struct StorageState {
+    active: Mutex<BTreeSet<ResourceId>>,
+    changed: Condvar,
+}
+
+/// Registration keeps GC from retiring a snapshot while publication runs.
+/// Dropping it on success, error or unwind releases the registration.
 pub struct Publication {
     store: SnapshotResources,
     record: SnapshotRecord,
-    _lease: File,
+}
+
+impl Drop for Publication {
+    fn drop(&mut self) {
+        let mut active = self.store.state.active.lock();
+        active.remove(&self.record.primary);
+        self.store.state.changed.notify_all();
+    }
 }
 
 fn regular(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
-}
-
-fn lock(path: &Path, shared: bool) -> anyhow::Result<File> {
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
-    if shared {
-        file.lock_shared()?;
-    } else {
-        file.lock()?;
-    }
-    Ok(file)
-}
-
-/// Capture a file and its metadata consistently with publication/retirement.
-/// HTTP releases the guard after opening its file, not after streaming it.
-pub fn read_guard(directory: &Path) -> anyhow::Result<Option<File>> {
-    let path = directory.join(PRIVATE).join("lock");
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(Some(lock(&path, true)?))
 }
 
 /// Only ready primary/header pairs participate in discovery. Partitions,
@@ -143,6 +142,8 @@ pub fn valid_id(name: &str) -> bool {
 }
 
 impl SnapshotResources {
+    /// Initialize once, before starting publishers, GC or HTTP. A previous
+    /// process cannot still be using this directory. Recover abandoned staging.
     pub fn open(directory: &Path) -> anyhow::Result<Self> {
         anyhow::ensure!(directory.is_dir(), "snapshot resource directory must exist");
         fs::create_dir_all(directory.join(PRIVATE))?;
@@ -150,27 +151,48 @@ impl SnapshotResources {
             fs::symlink_metadata(directory.join(PRIVATE))?.file_type().is_dir(),
             "invalid private resource directory"
         );
-        for child in ["records", "leases", "staging", "blobs"] {
+        for child in ["records", "staging", "blobs"] {
             fs::create_dir_all(directory.join(PRIVATE).join(child))?;
             anyhow::ensure!(
                 fs::symlink_metadata(directory.join(PRIVATE).join(child))?.file_type().is_dir(),
                 "invalid private resource subdirectory"
             );
         }
-        // Never recreate/remove the lock inode; all independent handles/processes
-        // coordinate through the same file description namespace.
-        drop(lock(&directory.join(PRIVATE).join("lock"), false)?);
         File::open(directory.join(PRIVATE))?.sync_all()?;
         File::open(directory)?.sync_all()?;
-        Ok(Self { directory: directory.to_owned() })
+        let store = Self { directory: directory.to_owned(), state: Arc::default() };
+        for entry in fs::read_dir(directory.join(PRIVATE).join("staging"))? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if valid_id(&name) && entry.file_type()?.is_dir() {
+                let primary = hex::decode(name)?.try_into().expect("validated id");
+                store.clear_staging(&primary)?;
+            }
+        }
+        Ok(store)
+    }
+
+    pub fn directory(&self) -> &Path {
+        &self.directory
     }
 
     fn private(&self, child: &str, id: &ResourceId) -> PathBuf {
         self.directory.join(PRIVATE).join(child).join(format!("{}.json", hex::encode(id)))
     }
 
-    fn guard(&self) -> anyhow::Result<File> {
-        lock(&self.directory.join(PRIVATE).join("lock"), false)
+    fn guard(&self) -> MutexGuard<'_, BTreeSet<ResourceId>> {
+        self.state.active.lock()
+    }
+
+    /// Open/capture a resource under the same mutex as publication and GC.
+    /// Return the open file, then stream it without holding this mutex.
+    pub fn with_read<T>(&self, read: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+        let _guard = self.guard();
+        read()
+    }
+
+    pub fn headers(&self) -> anyhow::Result<Vec<(String, SystemTime)>> {
+        self.with_read(|| snapshot_headers(&self.directory))
     }
 
     pub fn begin(
@@ -201,61 +223,16 @@ impl SnapshotResources {
         )
     }
 
-    /// Adopt a ready monolithic snapshot using its decoded discovery header.
-    /// Existing ownership is never replaced. Preserve publication timestamps so
-    /// periodic discovery does not renew retention of old legacy snapshots.
-    pub fn register_legacy_snapshot(
-        &self,
-        primary: ResourceId,
-        header: &[u8],
-        thread: &[u8],
-        seq_no: u64,
-    ) -> anyhow::Result<()> {
-        anyhow::ensure!(!thread.is_empty(), "empty snapshot retention thread");
-        let _guard = self.guard()?;
-        let record_path = self.private("records", &primary);
-        if record_path.exists() {
-            return Ok(());
-        }
-        let records = self.records()?;
-        anyhow::ensure!(
-            !records.iter().any(|record| record.partitions.contains(&primary)),
-            "legacy snapshot conflicts with a partition"
-        );
-        let body = self.directory.join(hex::encode(primary));
-        let header_path = self.directory.join(format!("{}.header", hex::encode(primary)));
-        anyhow::ensure!(regular(&body) && regular(&header_path), "legacy snapshot is not ready");
-        anyhow::ensure!(fs::read(&header_path)? == header, "legacy snapshot header changed");
-        anyhow::ensure!(
-            chunks::verify_map(&mut File::open(&body)?).is_err(),
-            "cannot adopt a chunked snapshot as legacy"
-        );
-        let published =
-            fs::metadata(&body)?.modified()?.max(fs::metadata(header_path)?.modified()?);
-        let record = SnapshotRecord {
-            version: 1,
-            primary,
-            partitions: BTreeSet::new(),
-            retention: Some(RetentionInfo {
-                thread: thread.to_vec(),
-                seq_no,
-                started_at: published,
-                primary_ready_at: Some(published),
-            }),
-        };
-        atomic_write(&record_path, &serde_json::to_vec(&record)?)
-    }
-
     fn begin_with_retention(
         &self,
         primary: ResourceId,
         partitions: impl IntoIterator<Item = ResourceId>,
         retention: Option<RetentionInfo>,
     ) -> anyhow::Result<Publication> {
-        // Lease before global lock: waiting for another publication must not
-        // prevent it from finishing. GC only try-locks leases, never waits.
-        let lease = lock(&self.private("leases", &primary), false)?;
-        let _guard = self.guard()?;
+        let mut active = self.guard();
+        while active.contains(&primary) {
+            self.state.changed.wait(&mut active);
+        }
         let mut record = SnapshotRecord {
             version: 1,
             primary,
@@ -316,7 +293,8 @@ impl SnapshotResources {
             }
             atomic_write(&path, &serde_json::to_vec(&record)?)?;
         }
-        Ok(Publication { store: self.clone(), record, _lease: lease })
+        active.insert(primary);
+        Ok(Publication { store: self.clone(), record })
     }
 
     fn staging(&self, primary: &ResourceId) -> PathBuf {
@@ -343,10 +321,7 @@ impl SnapshotResources {
 
     /// Explicit mark/sweep, serialized against short publication commits.
     /// Active publications are retained even when omitted from `keep`.
-    /// Never touches untracked legacy snapshots, consumer cache files or leases.
-    /// Legacy snapshots explicitly registered from ready headers are tracked.
-    /// Permanent lease inodes prevent races with waiters; their small files are
-    /// intentionally retained rather than unlinked and recreated.
+    /// Never touches untracked files or consumer cache files.
     pub fn retain(&self, keep: &BTreeSet<ResourceId>) -> anyhow::Result<()> {
         self.retain_where(|_| keep.clone())
     }
@@ -391,26 +366,15 @@ impl SnapshotResources {
         &self,
         choose_keep: impl FnOnce(&[SnapshotRecord]) -> BTreeSet<ResourceId>,
     ) -> anyhow::Result<()> {
-        let _guard = self.guard()?;
+        let _guard = self.guard();
         let records = self.records()?;
         let keep = choose_keep(&records);
         let mut live = BTreeSet::new();
         let mut retired = Vec::new();
         let mut sweep = BTreeSet::new();
-        let mut leases = Vec::new();
         let mut inactive = Vec::new();
         for record in records {
-            let lease = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(self.private("leases", &record.primary))?;
-            let active = match lease.try_lock() {
-                Ok(()) => false,
-                Err(std::fs::TryLockError::WouldBlock) => true,
-                Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
-            };
+            let active = _guard.contains(&record.primary);
             if !active {
                 inactive.push(record.primary);
             }
@@ -422,7 +386,6 @@ impl SnapshotResources {
                 sweep.extend(record.partitions.into_iter().map(hex::encode));
                 retired.push(record.primary);
             }
-            leases.push(lease);
         }
         // Recover orphaned chunked files without a separate per-blob index.
         // Only recognize regular flat resource names with a verified map; never
@@ -470,7 +433,7 @@ impl SnapshotResources {
                 sweep.insert(name);
             }
         }
-        // A process crash releases leases but leaves private temporary files.
+        // A failed publication can leave private temporary files.
         // Their per-primary directories make cleanup independent of other work.
         for primary in inactive {
             self.clear_staging(&primary)?;
@@ -517,7 +480,7 @@ impl SnapshotResources {
             remove_if_exists(&self.private("records", &primary))?;
         }
         // The private content pool is shared by all snapshot directories.
-        // Records/leases, not hard-link counts, determine its live ownership.
+        // Records and active registrations determine live ownership, not link counts.
         let pool = self.directory.join(PRIVATE).join("blobs");
         for entry in fs::read_dir(&pool)? {
             let entry = entry?;
@@ -533,7 +496,7 @@ impl SnapshotResources {
 }
 
 impl Publication {
-    /// Encode outside the global index lock. The lease protects all resources
+    /// Encode outside the storage mutex. Registration protects all resources
     /// while GC runs; only atomic publication is locked.
     pub fn publish(
         &self,
@@ -577,8 +540,16 @@ impl Publication {
             id == self.record.primary || self.record.partitions.contains(&id),
             "resource not registered for snapshot"
         );
-        let mut temporary = NamedTempFile::new_in(self.store.staging(&self.record.primary))?;
-        write(temporary.as_file_mut())?;
+        let staging = self.store.staging(&self.record.primary);
+        let mut temporary = NamedTempFile::new_in(&staging)
+            .with_context(|| format!("create snapshot temporary file in {}", staging.display()))?;
+        write(temporary.as_file_mut()).with_context(|| {
+            format!(
+                "encode snapshot resource {} for {}",
+                hex::encode(id),
+                hex::encode(self.record.primary)
+            )
+        })?;
         temporary.as_file_mut().flush()?;
         temporary.as_file().sync_all()?;
         let bytes = temporary.as_file().metadata()?.len();
@@ -616,27 +587,36 @@ impl Publication {
             None => self.store.directory.join(&name),
         };
         let existing = {
-            let _guard = self.store.guard()?;
+            let _guard = self.store.guard();
             anyhow::ensure!(!should_cancel(), "snapshot resource publication cancelled");
             match temporary.persist_noclobber(&destination) {
                 Ok(_) => None,
                 Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
                     anyhow::ensure!(regular(&destination), "invalid existing resource file");
-                    Some(File::open(&destination)?)
+                    Some(File::open(&destination).with_context(|| {
+                        format!("open existing snapshot resource {}", destination.display())
+                    })?)
                 }
-                Err(error) => return Err(error.error.into()),
+                Err(error) => {
+                    return Err(error.error).with_context(|| {
+                        format!("persist snapshot resource {}", destination.display())
+                    })
+                }
             }
         };
-        // The publication lease protects both this snapshot and its shared
+        // The active registration protects both this snapshot and its shared
         // pool references from GC, so immutable contents can be checked outside
         // the global lock. Other snapshots' GET/HEAD must not wait for that I/O.
         if let Some(file) = existing {
             verify_existing(file)?;
         }
-        let guard = self.store.guard()?;
+        let guard = self.store.guard();
         anyhow::ensure!(!should_cancel(), "snapshot resource publication cancelled");
         if let Some(kind) = kind {
-            File::open(destination.parent().expect("blob parent"))?.sync_all()?;
+            let pool = destination.parent().expect("blob parent");
+            File::open(pool)
+                .and_then(|file| file.sync_all())
+                .with_context(|| format!("sync snapshot blob directory {}", pool.display()))?;
             let name = partition_path(&self.record.primary, &id, kind);
             let alias = self.store.directory.join(&name);
             let directory = alias.parent().expect("partition parent");
@@ -648,7 +628,11 @@ impl Publication {
                         "invalid partition directory"
                     );
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("create snapshot partition directory {}", directory.display())
+                    })
+                }
             }
             let existing_alias = match fs::hard_link(&destination, &alias) {
                 Ok(()) => None,
@@ -662,7 +646,15 @@ impl Publication {
                         Some(alias)
                     }
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "link snapshot partition {} to {}",
+                            destination.display(),
+                            alias.display()
+                        )
+                    })
+                }
             };
             File::open(directory)?.sync_all()?;
             File::open(&self.store.directory)?.sync_all()?;
@@ -678,7 +670,7 @@ impl Publication {
 
     /// Discovery becomes ready after primary, independently of partition readiness.
     pub fn publish_header(&self, bytes: &[u8]) -> anyhow::Result<()> {
-        let _guard = self.store.guard()?;
+        let _guard = self.store.guard();
         anyhow::ensure!(
             regular(&self.store.directory.join(hex::encode(self.record.primary))),
             "primary not published"

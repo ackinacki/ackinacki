@@ -1982,3 +1982,5 @@ ansible-playbook -i your-inventory.yaml ansible/proxy-deployment.yaml
 # This will stop, update compose and config, and restart Proxy WITHOUT regenerating keys
 ansible-playbook -i your-inventory.yaml ansible/proxy-upgrade.yaml
 ```
+
+blocktivity-verify=de13a3d65d56190cdce7722fdffd30f9

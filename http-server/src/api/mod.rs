@@ -1,20 +1,20 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-mod bk_set_summary;
+mod bk_set;
 mod bk_set_update;
 mod boc_by_address;
 mod default_thread_seqno;
 pub(crate) mod ext_messages;
+mod snapshot_file;
 pub(crate) mod storage;
 pub(crate) mod storage_latest;
 pub(crate) mod validation;
 
-pub use bk_set_summary::BkSetSummary;
-pub use bk_set_summary::BkSetSummaryHandler;
-pub use bk_set_summary::BkSetSummaryResult;
-pub use bk_set_summary::BkSetSummarySnapshot;
-pub use bk_set_summary::BkSummary;
+pub use bk_set::ApiExactBkSet;
+pub use bk_set::BkSetHandler;
+pub use bk_set::ExactBkSetSnapshot;
+pub use bk_set::RejectionSeries;
 pub use bk_set_update::ApiBk;
 pub use bk_set_update::ApiBkSet;
 pub use bk_set_update::ApiBkSetHandler;

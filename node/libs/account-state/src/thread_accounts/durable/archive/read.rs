@@ -146,4 +146,32 @@ mod tests {
         // Now read sees the committed value again
         assert!(store.read_account_operation(&routing).unwrap().is_some());
     }
+    #[test]
+    fn batch_read_preserves_active_tombstones_missing_and_duplicate_positions() {
+        let (store, tid, block_0) = setup_idle_thread();
+        let stored = make_routing(10);
+        let deleted = make_routing(11);
+        let active_only = make_routing(12);
+        let missing = make_routing(13);
+        let mut update = AccumulatedUpdate::new();
+        update.transition_thread(tid, block_0, BlockIdentifier::new([1; 32]));
+        for routing in [stored, deleted] {
+            update.insert(routing, ArchiveOperation::UpdateOrInsert(ThreadAccount::default()));
+        }
+        store.apply_update(&update).unwrap();
+        let mut active = AccumulatedUpdate::new();
+        active.insert(deleted, ArchiveOperation::Remove);
+        active.insert(active_only, ArchiveOperation::UpdateOrInsert(ThreadAccount::default()));
+        store.active_updates().write().push(Arc::new(ActiveArchiveUpdate::new(0, active)));
+        let KVStore::InMemory(kv) = store.store() else { unreachable!() };
+        let before = kv.get_call_count();
+        let results = store
+            .read_account_operations(&[missing, stored, deleted, active_only, stored])
+            .unwrap();
+        assert_eq!(kv.get_call_count() - before, 1);
+        assert_eq!(
+            results.iter().map(Option::is_some).collect::<Vec<_>>(),
+            vec![false, true, false, true, true]
+        );
+    }
 }

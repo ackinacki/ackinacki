@@ -46,17 +46,17 @@ mod serialize;
 pub use hash::compare_hashes;
 
 const BLOCK_SUFFIX_LEN: usize = 32;
-pub const BLOCK_MERKLE_LEAF_COUNT: usize = 16;
-pub const BLOCK_MERKLE_HISTORY_PROOFS_LEAF_INDEX: usize = 0;
-pub const BLOCK_MERKLE_COMMON_SECTION_LEAF_INDEX: usize = 1;
-pub const BLOCK_MERKLE_OLD_BK_SET_LEAF_INDEX: usize = 2;
-pub const BLOCK_MERKLE_NEW_BK_SET_LEAF_INDEX: usize = 3;
-pub const BLOCK_MERKLE_TVM_BLOCK_LEAF_INDEX: usize = 4;
-pub const BLOCK_MERKLE_DURABLE_STATE_UPDATE_LEAF_INDEX: usize = 5;
-pub const BLOCK_MERKLE_TX_COUNT_LEAF_INDEX: usize = 6;
-pub const BLOCK_MERKLE_PROOF_BLOCK_REFS_LEAF_INDEX: usize = 7;
-pub const BLOCK_MERKLE_TRACKED_EXT_OUT_MESSAGES_ROOT_LEAF_INDEX: usize = 8;
-pub const BLOCK_MERKLE_PADDING_START_LEAF_INDEX: usize = 9;
+pub use proof_data::merkle::BLOCK_MERKLE_COMMON_SECTION_LEAF_INDEX;
+pub use proof_data::merkle::BLOCK_MERKLE_DURABLE_STATE_UPDATE_LEAF_INDEX;
+pub use proof_data::merkle::BLOCK_MERKLE_HISTORY_PROOFS_LEAF_INDEX;
+pub use proof_data::merkle::BLOCK_MERKLE_LEAF_COUNT;
+pub use proof_data::merkle::BLOCK_MERKLE_NEW_BK_SET_LEAF_INDEX;
+pub use proof_data::merkle::BLOCK_MERKLE_OLD_BK_SET_LEAF_INDEX;
+pub use proof_data::merkle::BLOCK_MERKLE_PADDING_START_LEAF_INDEX;
+pub use proof_data::merkle::BLOCK_MERKLE_PROOF_BLOCK_REFS_LEAF_INDEX;
+pub use proof_data::merkle::BLOCK_MERKLE_TRACKED_EXT_OUT_MESSAGES_ROOT_LEAF_INDEX;
+pub use proof_data::merkle::BLOCK_MERKLE_TVM_BLOCK_LEAF_INDEX;
+pub use proof_data::merkle::BLOCK_MERKLE_TX_COUNT_LEAF_INDEX;
 
 #[derive(Clone, PartialEq, Eq, Getters)]
 pub struct AckiNackiBlock {

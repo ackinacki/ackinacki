@@ -18,7 +18,6 @@ use node_types::ThreadIdentifier;
 
 use super::snapshot_manifest::account_partition_blob_id;
 use super::snapshot_manifest::message_partition_blob_id;
-#[cfg(test)]
 use super::snapshot_partitioned::read_primary_snapshot_checked;
 use super::snapshot_partitioned::PrimaryThreadSnapshot;
 #[cfg(test)]
@@ -38,6 +37,21 @@ pub(crate) struct SnapshotImportLimits {
     pub messages: MessagePartitionImportLimits,
     pub accounts_per_batch: usize,
     pub account_bytes_per_batch: u64,
+}
+
+impl Default for SnapshotImportLimits {
+    fn default() -> Self {
+        Self {
+            roots_per_list: super::snapshot_manifest::MAX_SNAPSHOT_ROOTS_PER_LIST,
+            messages: MessagePartitionImportLimits {
+                max_inboxes: 1_000_000,
+                max_messages_per_inbox: 1_000_000,
+                max_messages: 1_000_000,
+            },
+            accounts_per_batch: 256,
+            account_bytes_per_batch: 8 * 1024 * 1024,
+        }
+    }
 }
 
 /// A provider must call read exactly once, without retrying its side effects.
@@ -165,7 +179,6 @@ impl Drop for StagedPartitionedSnapshot<'_> {
 /// overlap/reordered manifests independently of download completion order.
 /// Complete maps are assembled with checked disjoint merges, not last-write-wins.
 /// Only the supported full-scope single-thread runtime is accepted here.
-#[cfg(test)]
 pub(crate) fn stage_partitioned_snapshot<'a, O, V, C>(
     primary_blob: &mut dyn Read,
     repository: &'a DurableThreadAccountsRepository,
@@ -235,6 +248,7 @@ pub(super) fn stage_verified_snapshot<'a, S: SnapshotPartitionSource, C: Fn() ->
     let accounts_activity = phase("2_accounts");
     let mut account_parts = Vec::new();
     let mut total_account_bytes = 0;
+    let mut accounts_number = 0u64;
     let mut account_bounds = vec![None; primary.manifest.account_partition_roots.len()];
     let mut batch = Vec::new();
     let mut batch_bytes = 0u64;
@@ -256,51 +270,59 @@ pub(super) fn stage_verified_snapshot<'a, S: SnapshotPartitionSource, C: Fn() ->
     let chunks_verified = partitions.chunks_verified();
     while !pending.is_empty() {
         check_cancel(should_cancel)?;
-        let (id, map) = partitions.read_any_partition(&pending, |index, blob| {
-            // Alternate by import order, not manifest index: files arrive in
-            // arbitrary order and adjacent indexes need not alternate parity.
-            let _partition_activity = phase(if account_parts.len() % 2 == 0 {
-                "2_accounts_even"
-            } else {
-                "2_accounts_odd"
-            });
-            let root = &primary.manifest.account_partition_roots[index];
-            let mut first = None;
-            let mut previous_account = None;
-            let map =
-                decode_blob_with_transport(blob, should_cancel, chunks_verified, |mut reader| {
-                    read_account_partition_checked(
-                        &mut reader,
-                        MapKeyPath::default(),
-                        ThreadAccountsHash::new(*root),
-                        should_cancel,
-                        |routing, account| {
-                            check_order(&mut previous_account, routing)?;
-                            first.get_or_insert(routing);
-                            let size = account.canonical_size();
-                            add_bytes(&mut total_account_bytes, size)?;
-                            if !batch.is_empty()
-                                && (batch.len() >= limits.accounts_per_batch
-                                    || size
-                                        > limits
-                                            .account_bytes_per_batch
-                                            .saturating_sub(batch_bytes))
-                            {
-                                flush(&mut batch)?;
-                                batch_bytes = 0;
-                            }
-                            batch.push((routing, account.into_canonical_bytes().into_vec()));
-                            batch_bytes = batch_bytes.checked_add(size).ok_or_else(|| {
-                                anyhow::anyhow!("snapshot batch capacity overflow")
-                            })?;
-                            Ok(())
-                        },
-                    )
-                })?;
-            account_bounds[index] = first.zip(previous_account);
-            Ok(map)
-        })?;
+        let (id, (map, partition_accounts_number)) =
+            partitions.read_any_partition(&pending, |index, blob| {
+                // Alternate by import order, not manifest index: files arrive in
+                // arbitrary order and adjacent indexes need not alternate parity.
+                let _partition_activity = phase(if account_parts.len() % 2 == 0 {
+                    "2_accounts_even"
+                } else {
+                    "2_accounts_odd"
+                });
+                let root = &primary.manifest.account_partition_roots[index];
+                let mut first = None;
+                let mut previous_account = None;
+                let map = decode_blob_with_transport(
+                    blob,
+                    should_cancel,
+                    chunks_verified,
+                    |mut reader| {
+                        read_account_partition_checked(
+                            &mut reader,
+                            MapKeyPath::default(),
+                            ThreadAccountsHash::new(*root),
+                            should_cancel,
+                            |routing, account| {
+                                check_order(&mut previous_account, routing)?;
+                                first.get_or_insert(routing);
+                                let size = account.canonical_size();
+                                add_bytes(&mut total_account_bytes, size)?;
+                                if !batch.is_empty()
+                                    && (batch.len() >= limits.accounts_per_batch
+                                        || size
+                                            > limits
+                                                .account_bytes_per_batch
+                                                .saturating_sub(batch_bytes))
+                                {
+                                    flush(&mut batch)?;
+                                    batch_bytes = 0;
+                                }
+                                batch.push((routing, account.into_canonical_bytes().into_vec()));
+                                batch_bytes = batch_bytes.checked_add(size).ok_or_else(|| {
+                                    anyhow::anyhow!("snapshot batch capacity overflow")
+                                })?;
+                                Ok(())
+                            },
+                        )
+                    },
+                )?;
+                account_bounds[index] = first.zip(previous_account);
+                Ok(map)
+            })?;
         anyhow::ensure!(pending.remove(&id).is_some(), "unexpected account partition");
+        accounts_number = accounts_number
+            .checked_add(partition_accounts_number)
+            .ok_or_else(|| anyhow::anyhow!("snapshot account count overflow"))?;
         account_parts.push(AccountPartition { capacity: map.capacity().bytes(), map });
     }
     check_partition_bounds(&account_bounds)?;
@@ -400,10 +422,7 @@ pub(super) fn stage_verified_snapshot<'a, S: SnapshotPartitionSource, C: Fn() ->
     state.shard_state = source.shard_state.clone();
     #[cfg(feature = "monitor-accounts-number")]
     {
-        state.accounts_number = map
-            .iter()
-            .filter(|(_, info)| matches!(info, account_state::AccountInfo::AccountHash(_)))
-            .count() as u64;
+        state.accounts_number = accounts_number;
     }
     state.shard_state.0.durable = DurableThreadAccountsState::with_map(map);
     state.messages = messages;
@@ -456,7 +475,6 @@ fn add_bytes(total: &mut u64, size: u64) -> anyhow::Result<()> {
 
 /// Require exactly one complete compressed frame per independent blob, including
 /// EOF after it. The codec must consume its whole uncompressed payload.
-#[cfg(test)]
 pub(super) fn decode_blob<T, C: Fn() -> bool>(
     input: &mut dyn Read,
     should_cancel: &C,

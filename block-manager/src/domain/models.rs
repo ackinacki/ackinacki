@@ -39,6 +39,10 @@ pub struct AppConfig {
     pub clickhouse_url: Option<String>,
     pub clickhouse_user: Option<String>,
     pub clickhouse_password: Option<String>,
+    /// How often to poll `/v2/bk_set` for the latest BK set snapshot.
+    pub bk_set_poll_interval: std::time::Duration,
+    /// Which ext-out messages are kept as events in the history proofs store.
+    pub event_filters: database::sqlite::history_proofs::EventFilters,
 }
 
 pub struct AppState {
@@ -66,6 +70,11 @@ impl BkApiPool {
         let mut eps = self.endpoints.write();
         *eps = new_endpoints;
         self.default_idx.store(0, Ordering::Relaxed);
+    }
+
+    /// The configured endpoints in their configured order, independent of `promote`.
+    pub fn endpoints(&self) -> Vec<HostPort> {
+        self.endpoints.read().clone()
     }
 
     /// Returns the ordered list of endpoints to try, starting from the current default.

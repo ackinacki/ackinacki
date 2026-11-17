@@ -30,6 +30,10 @@
   include_tasks: start-bm.yaml
   when: DO_START and (GQL_ARCHIVE is not defined or GQL_ARCHIVE is false)
 
+- name: Close the history proofs store gaps of this block-manager
+  include_tasks: close-history-gaps.yaml
+  when: CLOSE_HISTORY_GAPS | default(false) | bool and DO_START and (GQL_ARCHIVE is not defined or GQL_ARCHIVE is false)
+
 - name: Archive GQL server stop
   include_tasks: stop-archive-gql.yaml
   when: DO_STOP and (GQL_ARCHIVE is defined and GQL_ARCHIVE is true)

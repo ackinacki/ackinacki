@@ -4,6 +4,7 @@
 use sqlx::prelude::FromRow;
 use sqlx::QueryBuilder;
 
+use crate::defaults;
 use crate::helpers::sql_quote;
 use crate::helpers::u64_to_hexed_blob_literal;
 use crate::schema::db::projection::SqlProjection;
@@ -78,12 +79,12 @@ impl BkSetUpdate {
 
         if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
-                where_ops.push(format!("chain_order > {after:?}"));
+                where_ops.push(format!("chain_order > {}", sql_quote(after)));
             }
         }
         if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
-                where_ops.push(format!("chain_order < {before:?}"));
+                where_ops.push(format!("chain_order < {}", sql_quote(before)));
             }
         }
         if let Some(thread_id) = &args.thread_id {
@@ -117,7 +118,13 @@ impl BkSetUpdate {
         let mut projection = projection.clone();
         projection.extend(["chain_order", "block_id"]);
         let select = projection.select_list();
-        let union_sql = db_names
+        let mut sources: Vec<String> = db_names;
+        // The history proofs store keeps thread-0 BK set updates after the
+        // archives rotate; a row in both is removed by `dedup_rank` below.
+        if db_connector.history_store_attached() {
+            sources.push(defaults::HISTORY_PROOFS_DB_ALIAS.to_string());
+        }
+        let union_sql = sources
             .into_iter()
             .map(|name| format!("SELECT {select} FROM \"{name}\".bk_set_updates {where_clause}"))
             .collect::<Vec<_>>()

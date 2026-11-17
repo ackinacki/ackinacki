@@ -1,6 +1,6 @@
 [package]
 name = "gql-server"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version.workspace = true
 license-file.workspace = true
@@ -15,8 +15,10 @@ chrono = "0.4.38"
 clap.workspace = true
 faster-hex.workspace = true
 futures = "0.3.30"
+history-proof.workspace = true
 num = "0.4.1"
 opentelemetry.workspace = true
+proof-data.workspace = true
 rand = "0.8.5"
 rustls = { workspace = true }
 serde.workspace = true
@@ -36,6 +38,7 @@ warp = { version = "0.3.7", features = ["tls"] }
 zstd.workspace = true
 
 [dev-dependencies]
+database.workspace = true
 migration-tool.workspace = true
 reqwest = { version = "0.13.2", features = ["json", "rustls"], default-features = false }
 rusqlite.workspace = true

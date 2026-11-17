@@ -3,7 +3,6 @@
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use account_state::ArchiveOperation;
@@ -296,15 +295,6 @@ impl Repository for RepositoryStub {
     // }
 
     fn is_block_already_applied(&self, _block_id: &BlockIdentifier) -> anyhow::Result<bool> {
-        todo!()
-    }
-
-    fn set_state_from_snapshot(
-        &mut self,
-        _snapshot: Self::StateSnapshot,
-        _thread_id: &ThreadIdentifier,
-        _skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-    ) -> anyhow::Result<()> {
         todo!()
     }
 

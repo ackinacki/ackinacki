@@ -359,6 +359,10 @@ impl OptimisticState for OptimisticStateImpl {
         // since it will require other states to be restored on own restore
         // and it can chain forever.
 
+        // Carry replay's executor into all builders used by preprocessing and
+        // postprocessing, not only the central durable diff application.
+        let apply_accounts = thread_accounts_repository.for_apply()?;
+        let thread_accounts_repository = &apply_accounts;
         let block_id = block_candidate.identifier();
         tracing::trace!("Applying block: {:?}", block_id);
         tracing::trace!("Check parent: {:?} ?= {:?}", self.block_id, block_candidate.parent());

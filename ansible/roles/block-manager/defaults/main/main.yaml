@@ -7,6 +7,20 @@ BM_OWNER_WALLET_PUBKEY: default-public-key
 BM_TOKEN_TTL: 300
 BK_API_TOKEN: my-secret-token
 BM_READINESS_MAX_BLOCK_AGE_SECS: 30
+# gql-server starts only after block-manager is healthy. Health checks that fail
+# within this period after the container starts do not count, so it has to
+# cover the longest migration-tool run at block-manager startup.
+BM_HEALTHCHECK_START_PERIOD: 1h
+
+# Closing history proofs store gaps after a block-manager (re)start
+# (tasks/close-history-gaps.yaml, enabled by CLOSE_HISTORY_GAPS).
+# Block-managers to copy missing heights from.
+bm_history_sources: "{{ groups['block_manager'] | difference([inventory_hostname]) }}"
+# Waits for readiness and for the first new block: retries x delay seconds.
+HISTORY_GAPS_WAIT_RETRIES: 60
+HISTORY_GAPS_WAIT_DELAY: 5
+# Heights per export file (about 350 MB at 2 000 000).
+HISTORY_EXPORT_CHUNK: 2000000
 BM_WALLET_KEYS: "block_manager{{ BM_ID }}.keys.json"
 BM_SIGNER_KEYS: "block_manager{{ BM_ID }}_signing.keys.json"
 

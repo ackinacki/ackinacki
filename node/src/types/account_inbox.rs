@@ -131,7 +131,7 @@ impl AccountInbox {
         Ok(())
     }
 
-    // Legacy/bootstrap input has no chain history: start a new anchored chain.
+    // Bootstrap input has no chain history: start a new anchored chain.
     pub fn rebase(&mut self, db: &MessageDurableStorage) -> anyhow::Result<()> {
         let mut commitment = InboxCommitment::default();
         let mut canonical_size = 0u64;

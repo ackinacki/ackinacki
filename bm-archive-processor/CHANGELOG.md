@@ -2,6 +2,13 @@
 
 All notable changes to `bm-archive-processor` are documented in this file.
 
+## [0.5.1] - 2026-11-16
+
+### Changed
+- Supports BM archive schema v11 (`latest_bk_set`). Upgrade the processor before
+  migrating the full archive DB to v11; an older build cannot migrate older
+  dailies up to v11. The table itself is not merged into the full DB.
+
 ## [0.5.0] - 2026-09-15
 
 ### Added

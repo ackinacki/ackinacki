@@ -1,7 +1,9 @@
 - name: upgrade block manager services
   gather_facts: no
   hosts: block_manager
-  serial: "{{ bm_update_batch_size | default('100%') }}"
+  # One block-manager at a time: each one closes its history proofs store gap
+  # from the others before the next one stops (CLOSE_HISTORY_GAPS).
+  serial: "{{ bm_update_batch_size | default(1) }}"
   become: yes
   # Force handlers is needed for asserts
   force_handlers: True
@@ -12,6 +14,7 @@
     ENABLE_CHECKER: yes
     ENABLE_UPDATE: yes
     GS_WAIT: true
+    CLOSE_HISTORY_GAPS: yes
     UPGRADE:
       - block-manager # grsh + down + up
       - logrotate     # up + lr restart

@@ -520,4 +520,78 @@ mod tests {
             compute_ext_out_messages_root(&reverse)
         );
     }
+
+    /// Writes `node/libs/history-proof/tests/fixtures/history_chain.json`: a
+    /// thread-0 chain of 2^21 blocks with deterministic ids and envelope hashes,
+    /// run through the cursor code the node uses. Takes a few minutes in release.
+    #[test]
+    #[ignore = "regenerates node/libs/history-proof/tests/fixtures/history_chain.json"]
+    fn regenerate_history_chain_fixture() {
+        use sha2::Digest;
+
+        const LAST: u64 = 2_097_152;
+        fn digest(tag: &[u8], h: u64) -> [u8; 32] {
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(tag);
+            hasher.update(h.to_be_bytes());
+            hasher.finalize().into()
+        }
+        let height = |h: u64| {
+            BlockHeight::builder().height(h).thread_identifier(history_proof_thread_id()).build()
+        };
+        let mut wanted = std::collections::BTreeSet::new();
+        for t in [128u64, 256, 16_384, 16_512] {
+            wanted.extend(t - 128..=t);
+        }
+        wanted.extend((128..=16_512).step_by(128));
+        wanted.extend((2_080_768..=LAST).step_by(128));
+        wanted.extend((16_384..=LAST).step_by(16_384));
+
+        let hasher = PoseidonHasher::new();
+        let mut cursor = initial_history_cursor();
+        let mut rows = Vec::new();
+        for h in 1..=LAST {
+            let block_id = digest(b"block", h);
+            let envelope_hash = digest(b"envelope", h);
+            let leaf = history_proof::compute_block_leaf_hash_with(
+                &hasher,
+                &block_id,
+                &envelope_hash,
+                &[0u8; 32],
+            );
+            let (next, proofs) = advance_history_cursor(
+                &cursor,
+                leaf,
+                height(h),
+                height(h - 1),
+                BlockIdentifier::new(digest(b"block", h - 1)),
+            )
+            .unwrap();
+            cursor = next;
+            if wanted.contains(&h) {
+                // Same encoding as `serialize_block`: `n || n * (layer, root)`.
+                let history_proofs = (!proofs.is_empty()).then(|| {
+                    let mut buf = vec![proofs.len() as u8];
+                    for (layer, proof) in &proofs {
+                        buf.push(*layer);
+                        buf.extend_from_slice(proof.root_hash());
+                    }
+                    hex::encode(buf)
+                });
+                rows.push(serde_json::json!({
+                    "height": h,
+                    "block_id": hex::encode(block_id),
+                    "envelope_hash": hex::encode(envelope_hash),
+                    "tracked_ext_out_messages_root": hex::encode([0u8; 32]),
+                    "history_proofs": history_proofs,
+                }));
+            }
+        }
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/libs/history-proof/tests/fixtures/history_chain.json"
+        );
+        let json = serde_json::to_string_pretty(&serde_json::json!({ "rows": rows })).unwrap();
+        std::fs::write(path, json + "\n").unwrap();
+    }
 }

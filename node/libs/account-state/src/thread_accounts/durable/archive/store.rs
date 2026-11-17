@@ -605,6 +605,64 @@ impl ArchiveStateStore {
         }
     }
 
+    /// Resolve a batch through the same active-update overlay as single reads.
+    /// Pin one data epoch across the whole request and batch only the misses;
+    /// an active tombstone must never fall through to an older stored body.
+    pub(crate) fn read_account_operations(
+        &self,
+        routings: &[node_types::AccountRouting],
+    ) -> Result<Vec<Option<ThreadAccount>>, ArchiveStateError> {
+        let epoch = self.pin_current_account_sets();
+        let mut accounts = vec![None; routings.len()];
+        let mut positions = Vec::new();
+        let mut keys = Vec::new();
+        {
+            let active = self.active_updates().read();
+            for (index, routing) in routings.iter().enumerate() {
+                if let Some(operation) = active
+                    .iter()
+                    .filter(|update| update.epoch() == epoch.epoch())
+                    .find_map(|update| update.update().operations.get(routing))
+                {
+                    accounts[index] = match operation {
+                        ArchiveOperation::UpdateOrInsert(account) => Some(account.clone()),
+                        ArchiveOperation::Remove => None,
+                    };
+                } else {
+                    positions.push(index);
+                    keys.push(routing_to_key(routing));
+                }
+            }
+        }
+        if !keys.is_empty() {
+            let records = self
+                .store()
+                .get(&self.set_accounts_a_for_epoch(epoch.epoch()), &keys)
+                .map_err(ArchiveStateError::from)?;
+            if records.len() != keys.len() {
+                return Err(ArchiveStateError::Store(anyhow::anyhow!(
+                    "account batch result length mismatch"
+                )));
+            }
+            for ((index, key), record) in positions.into_iter().zip(keys).zip(records) {
+                if let Some(record) = record {
+                    if record.key != key {
+                        return Err(ArchiveStateError::Store(anyhow::anyhow!(
+                            "account batch returned wrong key"
+                        )));
+                    }
+                    if !record.data.is_empty() {
+                        accounts[index] =
+                            Some(bincode::deserialize(&record.data).map_err(|e| {
+                                ArchiveStateError::Store(anyhow::anyhow!("Deserialize error: {e}"))
+                            })?);
+                    }
+                }
+            }
+        }
+        Ok(accounts)
+    }
+
     pub(crate) fn read_account_operation_at_epoch(
         &self,
         routing: &node_types::AccountRouting,
@@ -660,6 +718,49 @@ impl ArchiveStateStore {
         }
 
         lines.join("\n")
+    }
+
+    /// Initialize a genesis thread before the update service starts. Publishing
+    /// Uninitialized first makes interrupted A/B population safe to retry.
+    /// An archive that has advanced must never be overwritten with genesis.
+    pub(crate) fn bootstrap_zerostate_thread(
+        &self,
+        thread_id: &ThreadIdentifier,
+        block_id: BlockIdentifier,
+        snapshot: &ThreadSnapshot,
+    ) -> Result<(), ArchiveStateError> {
+        {
+            let _control_guard = self.lock_control();
+            let kv = &self.inner.store;
+            let meta = &self.inner.set_meta;
+            if let Some((control, _)) =
+                read_thread_control(kv, meta, thread_id).map_err(ArchiveStateError::from)?
+            {
+                match control.update_phase {
+                    UpdatePhase::Idle if control.last_block_id == Some(block_id) => {}
+                    UpdatePhase::Uninitialized => {}
+                    UpdatePhase::Idle => return Ok(()),
+                    _ => return Err(ArchiveStateError::NotUninitialized(*thread_id)),
+                }
+            }
+            write_thread_control(
+                kv,
+                meta,
+                &ThreadControlState::new_uninitialized(*thread_id),
+                None,
+            )
+            .map_err(ArchiveStateError::from)?;
+            let mut registry = self.inner.thread_registry.write();
+            registry.insert(*thread_id);
+            write_system_record(
+                kv,
+                meta,
+                &SystemState { threads: registry.clone(), data_epoch: self.data_epoch() },
+            )
+            .map_err(ArchiveStateError::from)?;
+            self.inner.thread_write_locks.write().entry(*thread_id).or_default();
+        }
+        self.thread_init(thread_id, block_id, snapshot)
     }
 
     /// Populate both copies of a single thread from a complete snapshot.
@@ -1084,6 +1185,35 @@ mod tests {
     }
 
     // ---- thread_init tests ----
+
+    #[test]
+    fn zerostate_bootstrap_retries_partial_population_after_reopen() -> anyhow::Result<()> {
+        let kv = test_kv();
+        let thread = ThreadIdentifier::default();
+        let block = BlockIdentifier::default();
+        let routing = make_routing(71);
+        let account = ThreadAccount::redirect(node_types::DAppIdentifier::new([72; 32]));
+        let mut snapshot = ThreadSnapshot::new();
+        snapshot.insert(routing, account.clone());
+        let store = ArchiveStateStore::new(kv.clone(), test_config())?;
+        store.bootstrap_zerostate_thread(&thread, block, &snapshot)?;
+        // Simulate an interrupted retry: A has data, B has not been populated.
+        write_thread_control(&kv, META_SET, &ThreadControlState::new_uninitialized(thread), None)?;
+        kv.truncate_set(&store.set_accounts_b())?;
+        drop(store);
+        let reopened = ArchiveStateStore::new(kv.clone(), test_config())?;
+        reopened.bootstrap_zerostate_thread(&thread, block, &snapshot)?;
+        assert_eq!(reopened.get_thread_control_state(&thread)?.unwrap().last_block_id, Some(block));
+        for set in [reopened.set_accounts_a(), reopened.set_accounts_b()] {
+            assert!(kv.get(&set, &[routing_to_key(&routing)])?[0].is_some());
+        }
+        // Initializing another genesis thread preserves the first one's data.
+        let other = ThreadIdentifier::from([1; 34]);
+        reopened.bootstrap_zerostate_thread(&other, block, &ThreadSnapshot::new())?;
+        assert!(reopened.read_account_operation(&routing)?.is_some());
+        assert_eq!(reopened.get_all_thread_control_states()?.len(), 2);
+        Ok(())
+    }
 
     fn make_routing(seed: u8) -> node_types::AccountRouting {
         let mut bytes = [0u8; 32];

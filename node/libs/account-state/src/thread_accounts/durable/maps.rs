@@ -159,9 +159,17 @@ impl ThreadAccountMap {
             .and_then(|dapp_value| dapp_value.0.get(&MapKey(*routing.account_id().as_array())))
     }
 
-    pub fn account_capacity(&self, routing: &AccountRouting) -> Option<AccountCapacity> {
+    /// Return leaf metadata and its byte capacity in a single trie lookup.
+    pub fn get_with_capacity(
+        &self,
+        routing: &AccountRouting,
+    ) -> Option<(AccountInfo, AccountCapacity)> {
         let dapp = self.dapps.get(&MapKey(*routing.dapp_id().as_array()))?;
-        dapp.0.get_aug(&MapKey(*routing.account_id().as_array())).map(|(_, capacity)| capacity)
+        dapp.0.get_aug(&MapKey(*routing.account_id().as_array()))
+    }
+
+    pub fn account_capacity(&self, routing: &AccountRouting) -> Option<AccountCapacity> {
+        self.get_with_capacity(routing).map(|(_, capacity)| capacity)
     }
 
     pub fn dapp_capacity(&self, dapp_id: &DAppIdentifier) -> Option<AccountCapacity> {

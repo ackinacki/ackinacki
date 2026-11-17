@@ -26,6 +26,8 @@ pub mod abi;
 pub mod bk_set;
 pub mod epoch;
 pub mod from_api_bk;
+#[cfg(test)]
+mod poseidon_tests;
 pub mod wallet_config;
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
@@ -205,65 +207,91 @@ impl BlockKeeperSet {
 
     /// Compute Poseidon commitment to this BK set.
     ///
-    /// Algorithm (matching the bridge circuit spec):
-    /// 1. Sort signers by index (ascending)
-    /// 2. For each signer: extract pubkey x-coordinate → 5 CRT limbs (104-bit each)
-    /// 3. Pad to MAX_SIGNERS (300) with sentinel entries (index=0xFFFF, zero x-limbs)
-    /// 4. Feed all Fr elements into Poseidon sponge (T=3, RATE=2, R_F=8, R_P=57)
-    ///
-    /// Returns 32-byte LE Poseidon hash.
+    /// See [`bk_set_poseidon_commitment`] for the algorithm.
     pub fn poseidon_commitment(&self) -> anyhow::Result<[u8; 32]> {
-        use tvm_vm::executor::zk_stuff::bn254::poseidon::PoseidonSponge;
+        let signers: Vec<(SignerIndex, [u8; 48])> = self
+            .by_signer
+            .iter()
+            .map(|(idx, data)| (*idx, data.pubkey.as_ref().to_bytes()))
+            .collect();
+        bk_set_poseidon_commitment(&signers)
+    }
+}
 
-        const LIMB_BITS: usize = 104;
-        const NUM_LIMBS: usize = 5;
-        const MAX_SIGNERS: usize = 300;
-        const PADDING_SIGNER_INDEX: u16 = 0xFFFF;
+/// Check that 48 bytes are a valid compressed BLS12-381 G1 public key
+/// (on curve, in the correct subgroup, not infinity).
+pub fn validate_bls_pubkey(bytes: &[u8; 48]) -> anyhow::Result<()> {
+    gosh_blst::min_pk::PublicKey::key_validate(bytes)
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("Invalid BLS public key: {e:?}"))
+}
 
-        let mut sorted_keys: Vec<SignerIndex> = self.by_signer.keys().cloned().collect();
-        sorted_keys.sort();
-        let actual_size = sorted_keys.len();
+/// Number of signer slots in the BK set commitment; signers past it are ignored.
+pub const MAX_SIGNERS: usize = 300;
+/// Signer index of the padding entries of the BK set commitment.
+pub const PADDING_SIGNER_INDEX: u16 = 0xFFFF;
 
-        let limb_mask = (BigUint::from(1u64) << LIMB_BITS) - 1u64;
-        let mut poseidon_input: Vec<Vec<u8>> = Vec::with_capacity(MAX_SIGNERS * (1 + NUM_LIMBS));
+/// Compute Poseidon commitment to a BK set given as (signer index, compressed pubkey) pairs.
+///
+/// Algorithm (matching `compute_bk_set_poseidon` of `bridge-poseidon` in the bridge repo):
+/// 1. Sort signers by index (ascending); duplicate indices are an error
+/// 2. For each signer: extract pubkey x-coordinate -> 5 CRT limbs (104-bit each)
+/// 3. Pad to MAX_SIGNERS (300) with sentinel entries (index=0xFFFF, zero x-limbs);
+///    signers past the first 300 are ignored
+/// 4. Feed all Fr elements into Poseidon sponge (T=3, RATE=2, R_F=8, R_P=57)
+///
+/// Returns 32-byte LE Poseidon hash.
+pub fn bk_set_poseidon_commitment(signers: &[(SignerIndex, [u8; 48])]) -> anyhow::Result<[u8; 32]> {
+    use tvm_vm::executor::zk_stuff::bn254::poseidon::PoseidonSponge;
 
-        #[allow(clippy::needless_range_loop)]
-        for k in 0..MAX_SIGNERS {
-            if k < actual_size {
-                let idx = sorted_keys[k];
-                // signer_index as Fr (32 bytes LE)
-                let mut idx_buf = [0u8; 32];
-                idx_buf[..2].copy_from_slice(&idx.to_le_bytes());
-                poseidon_input.push(idx_buf.to_vec());
+    const LIMB_BITS: usize = 104;
+    const NUM_LIMBS: usize = 5;
 
-                // Extract x-coordinate from compressed BLS pubkey and split into CRT limbs
-                let pk_bytes = self.by_signer[&idx].pubkey.as_ref().to_bytes();
-                let x_bigint = extract_bls_x_coordinate_be(&pk_bytes);
+    let mut sorted: Vec<&(SignerIndex, [u8; 48])> = signers.iter().collect();
+    sorted.sort_by_key(|(idx, _)| *idx);
+    if let Some(w) = sorted.windows(2).find(|w| w[0].0 == w[1].0) {
+        anyhow::bail!("Duplicate signer index {} in BK set", w[0].0);
+    }
+    let actual_size = sorted.len();
 
-                for i in 0..NUM_LIMBS {
-                    let limb_val = (&x_bigint >> (i * LIMB_BITS)) & &limb_mask;
-                    let limb_bytes = limb_val.to_bytes_le();
-                    let mut buf = [0u8; 32];
-                    let len = limb_bytes.len().min(32);
-                    buf[..len].copy_from_slice(&limb_bytes[..len]);
-                    poseidon_input.push(buf.to_vec());
-                }
-            } else {
-                // Padding entry: sentinel index + zero x-limbs
-                let mut idx_buf = [0u8; 32];
-                idx_buf[..2].copy_from_slice(&PADDING_SIGNER_INDEX.to_le_bytes());
-                poseidon_input.push(idx_buf.to_vec());
-                for _ in 0..NUM_LIMBS {
-                    poseidon_input.push(vec![0u8; 32]);
-                }
+    let limb_mask = (BigUint::from(1u64) << LIMB_BITS) - 1u64;
+    let mut poseidon_input: Vec<Vec<u8>> = Vec::with_capacity(MAX_SIGNERS * (1 + NUM_LIMBS));
+
+    #[allow(clippy::needless_range_loop)]
+    for k in 0..MAX_SIGNERS {
+        if k < actual_size {
+            let (idx, pk_bytes) = sorted[k];
+            // signer_index as Fr (32 bytes LE)
+            let mut idx_buf = [0u8; 32];
+            idx_buf[..2].copy_from_slice(&idx.to_le_bytes());
+            poseidon_input.push(idx_buf.to_vec());
+
+            // Extract x-coordinate from compressed BLS pubkey and split into CRT limbs
+            let x_bigint = extract_bls_x_coordinate_be(pk_bytes);
+
+            for i in 0..NUM_LIMBS {
+                let limb_val = (&x_bigint >> (i * LIMB_BITS)) & &limb_mask;
+                let limb_bytes = limb_val.to_bytes_le();
+                let mut buf = [0u8; 32];
+                let len = limb_bytes.len().min(32);
+                buf[..len].copy_from_slice(&limb_bytes[..len]);
+                poseidon_input.push(buf.to_vec());
+            }
+        } else {
+            // Padding entry: sentinel index + zero x-limbs
+            let mut idx_buf = [0u8; 32];
+            idx_buf[..2].copy_from_slice(&PADDING_SIGNER_INDEX.to_le_bytes());
+            poseidon_input.push(idx_buf.to_vec());
+            for _ in 0..NUM_LIMBS {
+                poseidon_input.push(vec![0u8; 32]);
             }
         }
-
-        let sponge = PoseidonSponge::new();
-        sponge
-            .hash_bytes_axiom(&poseidon_input)
-            .map_err(|e| anyhow::anyhow!("Poseidon hash failed: {:?}", e))
     }
+
+    let sponge = PoseidonSponge::new();
+    sponge
+        .hash_bytes_axiom(&poseidon_input)
+        .map_err(|e| anyhow::anyhow!("Poseidon hash failed: {:?}", e))
 }
 
 /// Extract x-coordinate from a 48-byte big-endian compressed BLS12-381 G1 public key.

@@ -338,11 +338,57 @@ struct Config {
 const DEFAULT_NODE_PORT: u16 = 8500;
 const DEFAULT_GOSSIP_PORT: u16 = 10000;
 fn parse_node_addr(s: &str) -> Result<SocketAddr, String> {
-    try_parse_socket_addr(s, DEFAULT_NODE_PORT).map_err(|err| err.to_string())
+    parse_startup_addr(s, DEFAULT_NODE_PORT)
 }
 
 fn parse_gossip_addr(s: &str) -> Result<SocketAddr, String> {
-    try_parse_socket_addr(s, DEFAULT_GOSSIP_PORT).map_err(|err| err.to_string())
+    parse_startup_addr(s, DEFAULT_GOSSIP_PORT)
+}
+
+fn parse_startup_addr(s: &str, default_port: u16) -> Result<SocketAddr, String> {
+    resolve_startup_addr(
+        s,
+        default_port,
+        |address, port| try_parse_socket_addr(address, port),
+        || std::thread::sleep(Duration::from_secs(1)),
+    )
+}
+
+fn resolve_startup_addr(
+    s: &str,
+    default_port: u16,
+    mut resolve: impl FnMut(&str, u16) -> anyhow::Result<SocketAddr>,
+    mut wait: impl FnMut(),
+) -> Result<SocketAddr, String> {
+    const ATTEMPTS: usize = 30;
+    let address = network::resolve_port(s, default_port);
+    if let Ok(addr) = address.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    // Reject malformed host/port input immediately; only DNS needs retries.
+    let (host, port) = address.rsplit_once(':').ok_or("expected hostname:port")?;
+    if host.is_empty() || host.contains(':') || port.parse::<u16>().is_err() {
+        return Err(format!("invalid socket address: {s}"));
+    }
+    for attempt in 1..=ATTEMPTS {
+        match resolve(s, default_port) {
+            Ok(addr) => return Ok(addr),
+            Err(err) if attempt == ATTEMPTS => {
+                return Err(format!(
+                    "failed to resolve {address} after {ATTEMPTS} attempts: {err}"
+                ));
+            }
+            Err(err) => {
+                if attempt == 1 {
+                    eprintln!(
+                        "Waiting for DNS to resolve {address} (up to {ATTEMPTS} attempts): {err}"
+                    );
+                }
+                wait();
+            }
+        }
+    }
+    unreachable!("address resolution returns on the final attempt")
 }
 
 fn parse_direct_send_mode(s: &str) -> Result<DirectSendMode, String> {
@@ -752,4 +798,72 @@ fn save_keys_map_to_file(
         keys_vec.push(json_map);
     }
     Ok(std::fs::write(path, serde_json::to_string_pretty(&keys_vec)?)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_address_waits_for_dns_registration() {
+        let mut attempts = 0;
+        let mut waits = 0;
+        let expected = "172.18.0.2:10000".parse().unwrap();
+        let addr = resolve_startup_addr(
+            "node0:10000",
+            DEFAULT_GOSSIP_PORT,
+            |host, port| {
+                assert_eq!(host, "node0:10000");
+                assert_eq!(port, DEFAULT_GOSSIP_PORT);
+                attempts += 1;
+                if attempts < 3 {
+                    anyhow::bail!("Name or service not known");
+                }
+                Ok(expected)
+            },
+            || waits += 1,
+        )
+        .unwrap();
+        assert_eq!(addr, expected);
+        assert_eq!(attempts, 3);
+        assert_eq!(waits, 2);
+    }
+
+    #[test]
+    fn startup_address_reports_dns_failure_after_bounded_retries() {
+        let mut waits = 0;
+        let error = resolve_startup_addr(
+            "missing-node",
+            DEFAULT_NODE_PORT,
+            |_, _| anyhow::bail!("Name or service not known"),
+            || waits += 1,
+        )
+        .unwrap_err();
+        assert!(error.contains("missing-node:8500"), "{error}");
+        assert!(error.contains("30 attempts"), "{error}");
+        assert_eq!(waits, 29);
+    }
+
+    #[test]
+    fn startup_address_literals_and_invalid_ports_do_not_wait_for_dns() {
+        for value in ["127.0.0.1:10000", "[::1]:10000", "127.0.0.1"] {
+            let actual = resolve_startup_addr(
+                value,
+                DEFAULT_GOSSIP_PORT,
+                |_, _| panic!("IP literals must not require DNS"),
+                || panic!("IP literals must not wait"),
+            )
+            .unwrap();
+            assert_eq!(actual.port(), DEFAULT_GOSSIP_PORT);
+        }
+        for value in ["node0:invalid", "node0:65536", ":10000", "[::1]:bad"] {
+            assert!(resolve_startup_addr(
+                value,
+                DEFAULT_GOSSIP_PORT,
+                |_, _| panic!("Malformed addresses must not require DNS"),
+                || panic!("Malformed addresses must not wait"),
+            )
+            .is_err());
+        }
+    }
 }

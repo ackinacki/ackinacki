@@ -6,6 +6,8 @@ pub mod attestation;
 pub mod bk_set_update;
 pub mod block;
 pub mod connector;
+pub mod history_store;
+pub mod latest_bk_set;
 pub mod message;
 pub mod projection;
 pub(crate) mod transaction;

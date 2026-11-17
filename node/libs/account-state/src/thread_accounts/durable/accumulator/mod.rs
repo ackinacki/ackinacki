@@ -45,6 +45,8 @@ fn thread_name() -> String {
 }
 
 struct PendingUpdate {
+    accumulation_started_at: Instant,
+    flushed_at: Option<Instant>,
     expected_thread_blocks: HashMap<ThreadIdentifier, BlockIdentifier>,
     archive_update: AccumulatedUpdate,
     merkle_map_update: HashMap<ThreadIdentifier, (BlockIdentifier, ThreadAccountMap)>,
@@ -61,12 +63,23 @@ impl PendingUpdate {
             }
         }
         Self {
+            accumulation_started_at: Instant::now(),
+            flushed_at: None,
             expected_thread_blocks,
             archive_update: AccumulatedUpdate::default(),
             merkle_map_update: HashMap::new(),
             blocks_accumulated: 0,
             _live_counter: LivePendingUpdateCounter::new(),
         }
+    }
+
+    fn flush(&mut self, mut next: Self) -> Self {
+        // Both batches share one boundary: channel backpressure after this point
+        // belongs to the flushed batch's queue time, not its accumulation time.
+        let flushed_at = Instant::now();
+        self.flushed_at = Some(flushed_at);
+        next.accumulation_started_at = flushed_at;
+        std::mem::replace(self, next)
     }
 }
 
@@ -462,7 +475,7 @@ impl ArchiveUpdateAccumulator {
         // let blocks = pending.blocks_accumulated;
         // let ops = pending.archive_update.operations.len();
         let next = build_next_pending_update(pending);
-        let batch = Arc::new(std::mem::replace(pending, next));
+        let batch = Arc::new(pending.flush(next));
         self.in_flight.write().push(Arc::clone(&batch));
         self.report_queue_size(pending.blocks_accumulated);
         // let in_flight_len = self.in_flight.read().len();
@@ -495,6 +508,15 @@ impl ArchiveUpdateAccumulator {
     /// Look up an account in the unfinalized pool by its content hash.
     pub fn unfinalized_pool_get(&self, hash: &AccountHash) -> Option<ThreadAccount> {
         self.unfinalized_pool.read().get(hash)
+    }
+
+    /// One pool read guard for the whole layer; callers pass only misses on.
+    pub(crate) fn unfinalized_pool_get_many(
+        &self,
+        hashes: &[AccountHash],
+    ) -> Vec<Option<ThreadAccount>> {
+        let pool = self.unfinalized_pool.read();
+        hashes.iter().map(|hash| pool.get(hash)).collect()
     }
 
     /// Insert accounts into the unfinalized pool from a state update.
@@ -553,6 +575,34 @@ impl ArchiveUpdateAccumulator {
             }
         }
         None
+    }
+
+    /// Pending and in-flight are separate layers: release the pending guard
+    /// before reading in-flight, preserving the writer's lock ordering.
+    pub(crate) fn find_account_operations(
+        &self,
+        requests: &[(AccountRouting, AccountHash)],
+    ) -> Vec<Option<ArchiveOperation>> {
+        let mut results = {
+            let pending = self.pending.lock();
+            requests
+                .iter()
+                .map(|(routing, hash)| {
+                    Self::find_in_operations(&pending.archive_update.operations, routing, hash)
+                })
+                .collect::<Vec<_>>()
+        };
+        if results.iter().any(Option::is_none) {
+            let in_flight = self.in_flight.read();
+            for ((routing, hash), result) in requests.iter().zip(&mut results) {
+                if result.is_none() {
+                    *result = in_flight.iter().rev().find_map(|batch| {
+                        Self::find_in_operations(&batch.archive_update.operations, routing, hash)
+                    });
+                }
+            }
+        }
+        results
     }
 
     fn find_in_operations(
@@ -1488,8 +1538,19 @@ fn apply_batch_and_track(
     archive: &ArchiveStateStore,
     merkle_map_store: &mut MerkleMapStore,
 ) -> anyhow::Result<()> {
+    // This function is entered only after the snapshot gate allows this batch,
+    // including batches drained from the deferred queue and shutdown flushes.
+    let write_started_at = Instant::now();
     apply_pending_update(pending, archive, merkle_map_store)?;
     track_applied_threads(accumulator, pending);
+    let write_finished_at = Instant::now();
+    if let (Some(metrics), Some(flushed_at)) = (&accumulator.metrics, pending.flushed_at) {
+        metrics.report_batch_durations(
+            flushed_at.duration_since(pending.accumulation_started_at),
+            write_started_at.duration_since(flushed_at),
+            write_finished_at.duration_since(write_started_at),
+        );
+    }
     Ok(())
 }
 
@@ -1782,7 +1843,7 @@ fn update_loop_inner(
             let _drain_guard = accumulator.drained_mutex.lock();
             let mut pending = accumulator.pending.lock();
             // tracing::trace!(target: "lock", "[{}] ACQUIRED pending.lock @ update_loop/final_unsent, blocks_accumulated={}", thread_name(), pending.blocks_accumulated);
-            let remaining = std::mem::replace(&mut *pending, PendingUpdate::new(&[]));
+            let remaining = pending.flush(PendingUpdate::new(&[]));
             if remaining.archive_update.is_empty() {
                 None
             } else {
@@ -1838,6 +1899,114 @@ mod tests {
             anchor_thread_id: thread(seed),
             cross_thread_refs: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn batch_lookup_preserves_pending_precedence_old_versions_and_tombstones() {
+        let accumulator = ArchiveUpdateAccumulator::new(10, &[], None);
+        let a = node_types::AccountIdentifier::new([1; 32]).redirect();
+        let b = node_types::AccountIdentifier::new([2; 32]).redirect();
+        let c = node_types::AccountIdentifier::new([3; 32]).redirect();
+        let missing = node_types::AccountIdentifier::new([4; 32]).redirect();
+        let account =
+            |seed| ThreadAccount::from_synthetic_canonical(vec![seed; 32].into()).unwrap();
+        {
+            let mut pending = accumulator.pending.lock();
+            pending.archive_update.insert(a, ArchiveOperation::UpdateOrInsert(account(2)));
+            pending.archive_update.insert(b, ArchiveOperation::Remove);
+        }
+        let mut old = PendingUpdate::new(&[]);
+        old.archive_update.insert(a, ArchiveOperation::UpdateOrInsert(account(1)));
+        old.archive_update.insert(b, ArchiveOperation::UpdateOrInsert(account(1)));
+        old.archive_update.insert(c, ArchiveOperation::UpdateOrInsert(account(4)));
+        let mut new = PendingUpdate::new(&[]);
+        new.archive_update.insert(a, ArchiveOperation::UpdateOrInsert(account(3)));
+        accumulator.in_flight.write().extend([Arc::new(old), Arc::new(new)]);
+        let requests = [
+            (a, hash(1)),
+            (a, hash(2)),
+            (a, hash(3)),
+            (b, hash(1)),
+            (c, hash(4)),
+            (missing, hash(1)),
+        ];
+        let results = accumulator.find_account_operations(&requests);
+        for i in [0, 1, 2, 4] {
+            let Some(ArchiveOperation::UpdateOrInsert(account)) = &results[i] else {
+                panic!("missing batch account")
+            };
+            assert_eq!(account.account_hash(), requests[i].1);
+        }
+        assert!(matches!(results[3], Some(ArchiveOperation::Remove)));
+        assert!(results[5].is_none());
+    }
+
+    #[test]
+    fn send_batch_preserves_accumulation_start_and_restarts_at_flush() {
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[], None);
+        let receiver = accumulator.take_batch_receiver().unwrap();
+        let mut pending = accumulator.pending.lock();
+        let started_at = Instant::now() - Duration::from_secs(10);
+        pending.accumulation_started_at = started_at;
+        pending.blocks_accumulated = 1;
+
+        accumulator.send_batch(&mut pending);
+
+        let batch = receiver.0.try_recv().unwrap();
+        assert_eq!(batch.accumulation_started_at, started_at);
+        assert_eq!(batch.blocks_accumulated, 1);
+        assert_eq!(batch.flushed_at, Some(pending.accumulation_started_at));
+        assert!(batch.flushed_at.unwrap().duration_since(started_at) >= Duration::from_secs(10));
+        assert!(pending.flushed_at.is_none());
+        assert_eq!(pending.blocks_accumulated, 0);
+    }
+
+    #[test]
+    fn blocked_send_preserves_accumulation_clock_until_actual_flush() {
+        let accumulator = ArchiveUpdateAccumulator::new(1, &[], None);
+        let receiver = accumulator.take_batch_receiver().unwrap();
+        let mut pending = accumulator.pending.lock();
+        let started_at = pending.accumulation_started_at;
+        pending.blocks_accumulated = 1;
+        accumulator.send_blocked.store(true, Ordering::Release);
+
+        accumulator.send_batch(&mut pending);
+
+        assert_eq!(pending.accumulation_started_at, started_at);
+        assert!(pending.flushed_at.is_none());
+        assert!(receiver.0.is_empty());
+
+        accumulator.send_blocked.store(false, Ordering::Release);
+        accumulator.send_batch(&mut pending);
+        let batch = receiver.0.try_recv().unwrap();
+        assert_eq!(batch.accumulation_started_at, started_at);
+        assert!(batch.flushed_at.is_some());
+    }
+
+    #[test]
+    fn snapshot_pin_early_flush_preserves_partial_batch_timing() {
+        let accumulator = Arc::new(ArchiveUpdateAccumulator::new(10, &[], None));
+        let receiver = accumulator.take_batch_receiver().unwrap();
+        let anchor = anchor(5);
+        let started_at = Instant::now() - Duration::from_secs(2);
+        {
+            let mut pending = accumulator.pending.lock();
+            pending.accumulation_started_at = started_at;
+            pending.archive_update.transition_thread(
+                anchor.anchor_thread_id,
+                BlockIdentifier::default(),
+                anchor.anchor_block_id,
+            );
+            pending.blocks_accumulated = 1;
+            assert!(!accumulator.is_full(&pending));
+        }
+
+        let _request = accumulator.request_snapshot_pin(anchor);
+
+        let batch = receiver.0.try_recv().unwrap();
+        assert_eq!(batch.accumulation_started_at, started_at);
+        assert_eq!(batch.blocks_accumulated, 1);
+        assert_eq!(batch.flushed_at, Some(accumulator.pending.lock().accumulation_started_at));
     }
 
     #[test]

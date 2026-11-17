@@ -1,0 +1,11 @@
+[package]
+name = "proof-data"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lib]
+
+[dependencies]
+sha2 = "0.10.9"

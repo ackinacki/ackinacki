@@ -17,6 +17,7 @@ use message::MessageLoader;
 mod account;
 pub mod blockchain_api;
 pub(crate) mod events;
+pub mod history_allowlist;
 
 /// Shared toggle for the deprecated-API fields, stored in schema context data.
 pub struct DeprecatedApiEnabled(pub Arc<AtomicBool>);

@@ -176,7 +176,7 @@ pub struct NetworkConfig {
     #[serde(default = "default_shared_state_retry_download_timeout_millis")]
     pub shared_state_retry_download_timeout_millis: u64,
 
-    /// Wall-clock limit for one primary/legacy snapshot download, independent
+    /// Wall-clock limit for one primary snapshot download, independent
     /// of the retry interval. Defaults to one hour; takes effect on restart.
     #[builder(default = 3_600_000)]
     #[serde(default = "default_shared_state_download_deadline_millis")]

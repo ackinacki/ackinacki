@@ -1,8 +1,6 @@
 // 2022-2025 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use api::ext_messages::ExtMsgError;
@@ -16,11 +14,10 @@ pub use api::ext_messages::ResolvingResult;
 pub use api::ApiBk;
 pub use api::ApiBkSet;
 pub use api::ApiBkStatus;
+pub use api::ApiExactBkSet;
 pub use api::ApiPubKey;
 pub use api::ApiUInt256;
-pub use api::BkSetSummary;
-pub use api::BkSetSummaryResult;
-pub use api::BkSummary;
+pub use api::ExactBkSetSnapshot;
 use ext_messages_auth::auth::AccountRequest;
 use ext_messages_auth::auth::Token;
 use ext_messages_auth::read_keys_from_file;
@@ -38,7 +35,6 @@ use tokio::sync::oneshot;
 use crate::api::ext_messages::render_error;
 pub use crate::api::ext_messages::NotQueuedExtMessage;
 use crate::api::ApiBkSetSnapshot;
-use crate::api::BkSetSummarySnapshot;
 
 mod api;
 mod helpers;
@@ -51,11 +47,11 @@ const AUTHORIZED_BY_BK_KEY: &str = "authorized_by_bk_token";
 #[derive(Clone)]
 pub struct WebServer<TBPResolver, TSeqnoGetter> {
     pub addr: String,
-    pub local_storage_dir: PathBuf,
+    pub snapshot_resources: snapshot_storage::SnapshotResources,
     pub incoming_message_sender:
         InstrumentedSender<(NotQueuedExtMessage, oneshot::Sender<ExtMsgFeedback>)>,
     pub account_request_sender: mpsc::Sender<AccountRequest>,
-    pub bk_set_summary: Arc<parking_lot::RwLock<BkSetSummarySnapshot>>,
+    pub exact_bk_set: Arc<parking_lot::RwLock<ExactBkSetSnapshot>>,
     pub bk_set: Arc<parking_lot::RwLock<ApiBkSetSnapshot>>,
     pub bp_resolver: TBPResolver,
     pub get_default_thread_seqno: TSeqnoGetter,
@@ -72,7 +68,7 @@ where
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         addr: impl AsRef<str>,
-        local_storage_dir: impl AsRef<Path>,
+        snapshot_resources: snapshot_storage::SnapshotResources,
         incoming_message_sender: InstrumentedSender<(
             NotQueuedExtMessage,
             oneshot::Sender<ExtMsgFeedback>,
@@ -88,11 +84,11 @@ where
             signing_keys_path.as_ref().and_then(|path| read_keys_from_file(path).ok());
         Self {
             addr: addr.as_ref().to_string(),
-            local_storage_dir: local_storage_dir.as_ref().to_path_buf(),
+            snapshot_resources,
             incoming_message_sender,
             account_request_sender,
             bp_resolver,
-            bk_set_summary: Arc::new(parking_lot::RwLock::new(BkSetSummarySnapshot::new())),
+            exact_bk_set: Arc::new(parking_lot::RwLock::new(ExactBkSetSnapshot::new())),
             bk_set: Arc::new(parking_lot::RwLock::new(ApiBkSetSnapshot::new())),
             get_default_thread_seqno,
             owner_wallet_pubkey,
@@ -104,15 +100,15 @@ where
     pub fn route(self) -> Router {
         // Returns latest shard state
         let storage_latest_router = Router::with_path("storage_latest")
-            .get(api::StorageLatestHandler::new(self.local_storage_dir.clone()));
+            .get(api::StorageLatestHandler::new(self.snapshot_resources.clone()));
         // Returns selected shard state
         let storage_router = Router::with_path("storage/{*path}")
             .hoop(report_block_request)
-            .get(api::storage::StorageHandler::new(self.local_storage_dir.clone()))
-            .head(api::storage::StorageHandler::new(self.local_storage_dir.clone()));
+            .get(api::storage::StorageHandler::new(self.snapshot_resources.clone()))
+            .head(api::storage::StorageHandler::new(self.snapshot_resources.clone()));
 
-        let bk_set_router = Router::with_path("bk_set")
-            .get(api::BkSetSummaryHandler::<TBPResolver, TSeqnoGetter>::new());
+        let bk_set_router =
+            Router::with_path("bk_set").get(api::BkSetHandler::<TBPResolver, TSeqnoGetter>::new());
 
         let bk_set_update_router = Router::with_path("bk_set_update")
             .get(api::ApiBkSetHandler::<TBPResolver, TSeqnoGetter>::new());
@@ -155,7 +151,11 @@ where
     }
 
     #[must_use = "server run must be awaited twice (first await is to prepare run call)"]
-    pub async fn run(self, mut bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>) {
+    pub async fn run(
+        self,
+        mut bk_set_rx: tokio::sync::watch::Receiver<ApiBkSet>,
+        mut exact_bk_set_rx: tokio::sync::watch::Receiver<ApiExactBkSet>,
+    ) {
         // TODO: turn SSL back when it's ready
         // let tcp_listener = TcpListener::new(self.addr.clone()).rustls(rustls_config);
         let tcp_listener = TcpListener::new(self.addr.clone());
@@ -164,19 +164,55 @@ where
         let acceptor = tcp_listener.bind().await;
 
         let shared_bk_set = self.bk_set.clone();
-        let shared_bk_set_summary = self.bk_set_summary.clone();
+        let shared_exact_bk_set = self.exact_bk_set.clone();
         let bk_set_task = tokio::spawn(async move {
             tracing::info!("BK set handler started");
             let mut bk_set = bk_set_rx.borrow().clone();
             shared_bk_set.write().replace(bk_set.clone());
-            shared_bk_set_summary.write().replace(BkSetSummary::new(&bk_set));
             while bk_set_rx.changed().await.is_ok() {
                 if bk_set.update(&bk_set_rx.borrow_and_update()) {
                     shared_bk_set.write().replace(bk_set.clone());
-                    shared_bk_set_summary.write().replace(BkSetSummary::new(&bk_set));
                 }
             }
             tracing::info!("BK set handler stopped");
+        });
+        // Seed before serving so no request can observe the placeholder snapshot.
+        let initial = exact_bk_set_rx.borrow_and_update().clone();
+        shared_exact_bk_set.write().replace(initial);
+        let exact_bk_set_task = tokio::spawn(async move {
+            tracing::info!("Exact BK set handler started");
+            let mut rejections = api::RejectionSeries::default();
+            while exact_bk_set_rx.changed().await.is_ok() {
+                let update = exact_bk_set_rx.borrow_and_update().clone();
+                let update_seq_no = update.seq_no;
+                let mut snapshot = shared_exact_bk_set.write();
+                let current_seq_no = snapshot.seq_no();
+                if snapshot.replace(update) {
+                    if let Some(run) = rejections.on_accepted() {
+                        tracing::info!(
+                            count = run.count,
+                            first_seq_no = run.first_seq_no,
+                            last_seq_no = run.last_seq_no,
+                            accepted_seq_no = update_seq_no,
+                            "exact BK set updates rejected while catching up"
+                        );
+                    }
+                } else if rejections.on_rejected(update_seq_no) {
+                    tracing::warn!(
+                        update_seq_no,
+                        current_seq_no,
+                        "exact BK set update rejected: seq_no is lower than the served snapshot; \
+                         further rejections are logged at DEBUG until an update is accepted"
+                    );
+                } else {
+                    tracing::debug!(
+                        update_seq_no,
+                        current_seq_no,
+                        "exact BK set update rejected: seq_no is lower than the served snapshot"
+                    );
+                }
+            }
+            tracing::info!("Exact BK set handler stopped");
         });
 
         tracing::info!("Start HTTP server on {}", &self.addr);
@@ -184,6 +220,10 @@ where
         match bk_set_task.await {
             Ok(_) => tracing::info!("BK set update handler stopped"),
             Err(_) => tracing::error!("BK set update handler stopped with error"),
+        }
+        match exact_bk_set_task.await {
+            Ok(_) => tracing::info!("Exact BK set handler stopped"),
+            Err(_) => tracing::error!("Exact BK set handler stopped with error"),
         }
     }
 

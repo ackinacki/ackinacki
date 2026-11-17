@@ -985,7 +985,7 @@ fn try_download_candidate(
         let thread_id_copy = *thread_id;
         let block_id_copy = *block_id;
 
-        // The initial blob can be either a legacy snapshot or partitioned primary;
+        // The initial blob is the SNAP2V2 primary;
         // its format is unknown until import starts. Include queueing, cache
         // admission and HTTP retries. Capturing the guard also closes the phase
         // if submission fails or the callback is discarded without being called.

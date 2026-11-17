@@ -1,3 +1,5 @@
+mod boc;
+
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -22,6 +24,14 @@ use crate::live_metrics::LiveThreadAccountCounter;
 /// Synthetic test accounts must not start with this value, so they can be
 /// distinguished from TVM accounts without decoding.
 const TVM_BOC_MAGIC: [u8; 4] = [0xb5, 0xee, 0x9c, 0x72];
+
+/// Decode exactly one BOC root and report its plain-V1 byte canonicality.
+/// Valid noncanonical encodings return `(root, false)`; malformed BOCs and
+/// multi-root inputs return an error. This does not normalize account fields.
+pub fn decode_boc_with_canonicality(bytes: &[u8]) -> anyhow::Result<(Cell, bool)> {
+    let (boc, canonical) = boc::decode_with_canonicality(bytes)?;
+    Ok((boc.withdraw_single_root()?, canonical))
+}
 
 #[derive(Clone, Debug)]
 // VM agnostic account repr.
@@ -139,23 +149,44 @@ impl ThreadAccount {
         Ok(account)
     }
 
-    /// Snapshot ingress: decode untrusted TVM bytes once, then encode the normalized representation
-    /// once and retain both views. A redirect leaf commits only its target DApp, so discard any
-    /// incidental transaction metadata rather than persisting an arbitrary redirect representation.
-    pub(crate) fn recanonicalize_tvm_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+    /// Snapshot ingress decodes once and retains an already canonical allocation.
+    /// Noncanonical BOCs still use the existing writer, without a second decode.
+    /// BOC canonicality alone does not establish account normalization: redirects
+    /// discard incidental transaction metadata, and the decoded ShardAccount may
+    /// ignore trailing root-cell data. Its fields have fixed encodings, so a
+    /// fully consumed ordinary root plus normalized redirect fields suffices:
+    /// the fast path does not rebuild or hash even the account root.
+    pub(crate) fn recanonicalize_tvm_bytes(bytes: Box<[u8]>) -> anyhow::Result<Self> {
+        let (input_root, canonical_encoding) = decode_boc_with_canonicality(&bytes)?;
+        let ordinary_root = input_root.cell_type() == tvm_types::CellType::Ordinary;
+        let mut slice =
+            tvm_types::SliceData::load_cell(input_root).map_err(|err| anyhow::anyhow!("{err}"))?;
         let mut decoded =
-            ShardAccount::construct_from_bytes(bytes).map_err(|err| anyhow::anyhow!("{err}"))?;
+            ShardAccount::construct_from(&mut slice).map_err(|err| anyhow::anyhow!("{err}"))?;
+        // SliceData::is_empty checks bits only. An unused reference also has
+        // to take the fallback, matching the previous decoder/writer path.
+        let complete_root = slice.remaining_bits() == 0 && slice.remaining_references() == 0;
+        let mut normalized_redirect = true;
         if decoded.is_redirect() {
             let target = decoded
                 .get_dapp_id()
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("redirect without a DApp"))?;
-            decoded = ShardAccount::with_redirect(Default::default(), 0, Some(target))
-                .map_err(|err| anyhow::anyhow!("{err}"))?;
+            normalized_redirect =
+                decoded.last_trans_hash().is_zero() && decoded.last_trans_lt() == 0;
+            if !normalized_redirect {
+                decoded = ShardAccount::with_redirect(Default::default(), 0, Some(target))
+                    .map_err(|err| anyhow::anyhow!("{err}"))?;
+            }
         }
-        let root = decoded.serialize().map_err(|err| anyhow::anyhow!("{err}"))?;
-        let canonical = write_boc(&root).map_err(|err| anyhow::anyhow!("{err}"))?;
-        let account = Self::from_canonical_bytes(canonical.into_boxed_slice());
+        let canonical =
+            if canonical_encoding && ordinary_root && complete_root && normalized_redirect {
+                bytes
+            } else {
+                let root = decoded.serialize().map_err(|err| anyhow::anyhow!("{err}"))?;
+                write_boc(&root).map_err(|err| anyhow::anyhow!("{err}"))?.into_boxed_slice()
+            };
+        let account = Self::from_canonical_bytes(canonical);
         let _ = account.inner.decoded_tvm.set(decoded);
         Ok(account)
     }
@@ -522,9 +553,14 @@ impl<'de> serde::Deserialize<'de> for VmAccount {
 mod tests {
     use std::sync::Arc;
 
+    use node_types::DAppIdentifier;
     use tvm_block::Serializable;
+    use tvm_block::ShardAccount;
     use tvm_types::read_single_root_boc;
+    use tvm_types::write_boc;
+    use tvm_types::IBitstring;
 
+    use super::decode_boc_with_canonicality;
     use super::ThreadAccount;
     use super::VmAccount;
 
@@ -596,6 +632,49 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_ingress_reuses_canonical_accounts_and_redirects() -> anyhow::Result<()> {
+        for source in
+            [ThreadAccount::default(), ThreadAccount::redirect(DAppIdentifier::new([9; 32]))]
+        {
+            let bytes = source.canonical_bytes().to_vec().into_boxed_slice();
+            let allocation = bytes.as_ptr();
+            let account = ThreadAccount::recanonicalize_tvm_bytes(bytes)?;
+            assert_eq!(account.canonical_bytes(), source.canonical_bytes());
+            assert_eq!(account.canonical_bytes().as_ptr(), allocation);
+            assert_eq!(account.account_hash(), source.account_hash());
+            assert_eq!(account.canonical_size(), source.canonical_size());
+            assert!(account.inner.decoded_tvm.get().is_some());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_ingress_normalizes_account_root_even_in_canonical_boc() -> anyhow::Result<()> {
+        // ShardAccount decoding accepts an unread root suffix. The BOC itself
+        // is canonical, but the previous importer discarded this suffix when
+        // serializing the decoded account. The fast path must do the same.
+        let decoded = ShardAccount::default();
+        for (extra_bits, extra_reference) in [(true, false), (false, true), (true, true)] {
+            let mut root = tvm_types::BuilderData::from_cell(&decoded.serialize()?)?;
+            if extra_bits {
+                root.append_bit_one()?;
+            }
+            if extra_reference {
+                root.checked_append_reference(tvm_types::BuilderData::default().into_cell()?)?;
+            }
+            let wire = write_boc(&root.into_cell()?)?;
+            assert!(decode_boc_with_canonicality(&wire)?.1);
+            let account = ThreadAccount::recanonicalize_tvm_bytes(wire.into_boxed_slice())?;
+            assert_eq!(account.canonical_bytes(), decoded.write_to_bytes()?);
+            assert_eq!(
+                account.account_hash(),
+                ThreadAccount::from_tvm(decoded.clone()).account_hash()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn snapshot_ingress_normalizes_once_and_moves_the_canonical_allocation() -> anyhow::Result<()> {
         let decoded = tvm_block::ShardAccount::with_params(
             &tvm_block::Account::default(),
@@ -608,27 +687,35 @@ mod tests {
             .write_ex(&mut wire, true, true, None, None)?;
         let canonical = decoded.write_to_bytes()?;
         assert_ne!(wire, canonical);
-        let account = ThreadAccount::recanonicalize_tvm_bytes(&wire)?;
+        let account = ThreadAccount::recanonicalize_tvm_bytes(wire.into_boxed_slice())?;
         assert_eq!(account.canonical_bytes(), canonical);
         assert_eq!(account.inner.decoded_tvm.get(), Some(&decoded));
         let allocation = account.canonical_bytes().as_ptr();
         let bytes = account.into_canonical_bytes().into_vec();
         assert_eq!(bytes.as_ptr(), allocation);
         assert_eq!(bytes, canonical);
-        assert!(ThreadAccount::recanonicalize_tvm_bytes(&[0xff]).is_err());
+        assert!(ThreadAccount::recanonicalize_tvm_bytes(Box::new([0xff])).is_err());
         Ok(())
     }
 
     #[test]
     fn snapshot_ingress_normalizes_redirect_metadata() -> anyhow::Result<()> {
         let target = node_types::DAppIdentifier::new([9; 32]);
-        let decoded =
-            tvm_block::ShardAccount::with_redirect([7; 32].into(), 42, Some(target.into()))?;
-        let account = ThreadAccount::recanonicalize_tvm_bytes(&decoded.write_to_bytes()?)?;
         let expected = ThreadAccount::redirect(target);
-        assert_eq!(account.canonical_bytes(), expected.canonical_bytes());
-        assert_eq!(account.account_hash(), expected.account_hash());
-        assert_eq!(account.last_trans_lt(), 0);
+        for (hash, lt) in [([7; 32], 0), ([0; 32], 42), ([7; 32], 42)] {
+            let decoded = ShardAccount::with_redirect(hash.into(), lt, Some(target.into()))?;
+            let account = ThreadAccount::recanonicalize_tvm_bytes(
+                decoded.write_to_bytes()?.into_boxed_slice(),
+            )?;
+            assert_eq!(account.canonical_bytes(), expected.canonical_bytes());
+            assert_eq!(account.account_hash(), expected.account_hash());
+            assert_eq!(account.last_trans_lt(), 0);
+        }
+        let missing_target = ShardAccount::with_redirect(Default::default(), 0, None)?;
+        assert!(ThreadAccount::recanonicalize_tvm_bytes(
+            missing_target.write_to_bytes()?.into_boxed_slice()
+        )
+        .is_err());
         Ok(())
     }
 

@@ -8,6 +8,7 @@ license-file.workspace = true
 [dependencies]
 anyhow.workspace = true
 ext-messages-auth.workspace = true
+futures-util = "0.3"
 hex.workspace = true
 httpdate = "1.0.3"
 node-types.workspace = true
@@ -29,10 +30,9 @@ transport-layer.workspace = true
 tvm_block.workspace = true
 tvm_types.workspace = true
 
-message-router.workspace = true
-
 [dev-dependencies]
 actix-rt = "2.10.0"
 actix-web.workspace = true
 lazy_static.workspace = true
+message-router.workspace = true
 tempfile.workspace = true

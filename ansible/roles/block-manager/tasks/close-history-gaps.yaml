@@ -1,0 +1,285 @@
+---
+# Closes the gaps of this block-manager's history proofs store
+# (bm-history-proofs.db) by copying height ranges from other block-managers,
+# right after it was (re)started. See "History proofs store" in
+# block-manager/README.md for the manual procedure this automates.
+#
+# Sources: `bm_history_sources` (default: the other hosts of the
+# `block_manager` group). All block-managers of the inventory are assumed to
+# share BM_DIR and BM_DATA_DIR layouts.
+#
+# A looped include_tasks evaluates its `when` for every item before any
+# included task runs, so the stop flag (history_gaps_done) is checked inside
+# the included file. Sources are tried one after another on the gaps that
+# remain, so sources with partial coverage close a gap together. The same
+# goes for missing attestations of key and BK set rotation blocks: each
+# source copies the heights it has (defaults/main/history_gaps.yaml).
+
+- name: History gaps | wait until block-manager is ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ BM_REST_API_PORT }}/v2/readiness"
+    status_code: 200
+  register: history_bm_readiness
+  retries: "{{ HISTORY_GAPS_WAIT_RETRIES }}"
+  delay: "{{ HISTORY_GAPS_WAIT_DELAY }}"
+  until: history_bm_readiness.status == 200
+
+- name: History gaps | read the store
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: "docker compose exec -T block_manager {{ BM_BINARY }} history-proofs gaps --json --sqlite-path /workdir/data"
+  register: history_gaps_start
+  changed_when: false
+  retries: 3
+  delay: "{{ HISTORY_GAPS_WAIT_DELAY }}"
+  until: history_gaps_start.rc == 0
+
+# Right after readiness the store may not have the first new block yet.
+- name: History gaps | wait until the store receives new blocks
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: "docker compose exec -T block_manager {{ BM_BINARY }} history-proofs gaps --json --sqlite-path /workdir/data"
+  register: history_gaps_now
+  changed_when: false
+  retries: "{{ HISTORY_GAPS_WAIT_RETRIES }}"
+  delay: "{{ HISTORY_GAPS_WAIT_DELAY }}"
+  until: >-
+    history_gaps_now.rc == 0
+    and (history_gaps_now.stdout_lines | last | from_json).last_height is not none
+    and (history_gaps_now.stdout_lines | last | from_json).last_height | int
+        > (history_gaps_start.stdout_lines | last | from_json).last_height | default(0, true) | int
+
+# A task delegated to an unreachable host takes this host out of the play,
+# even with ignore_unreachable, so sources are probed from the controller
+# first, with the SSH settings the transfer uses.
+- name: History gaps | which sources are reachable
+  ansible.builtin.command:
+    argv:
+      - ssh
+      - -o
+      - BatchMode=yes
+      - -o
+      - ConnectTimeout=10
+      - -o
+      - StrictHostKeyChecking=no
+      - -p
+      - "{{ hostvars[item].ansible_port | default(22) }}"
+      - "{{ hostvars[item].ansible_user | default(ansible_user) }}@{{ hostvars[item].ansible_host | default(item) }}"
+      - "true"
+  loop: "{{ bm_history_sources }}"
+  register: history_source_probes
+  delegate_to: localhost
+  become: no
+  changed_when: false
+  failed_when: false
+
+# Every reachable source is asked once, up front: the verdict needs the
+# earliest start among all of them, not only among those tried.
+- name: History gaps | read the stores of the sources
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: "docker compose exec -T block_manager {{ BM_BINARY }} history-proofs gaps --json --sqlite-path /workdir/data"
+  delegate_to: "{{ item }}"
+  loop: "{{ history_source_probes.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
+  register: history_source_reads
+  changed_when: false
+  # Judged below: a source without the store or without the subcommand (an
+  # older block-manager) is skipped; any other failure stops the rollout.
+  failed_when: false
+
+# Every source with a store: {name, first_height, last_height, gaps,
+# missing_attestations, failed_checks} from its `gaps --json`.
+- name: History gaps | stores of the sources
+  ansible.builtin.set_fact:
+    history_target: "{{ history_gaps_now.stdout_lines | last | from_json }}"
+    history_gaps_done: false
+    history_stores: >-
+      {%- set out = [] -%}
+      {%- for r in history_source_reads.results | default([]) -%}
+      {%- if r.rc | default(1) == 0 and (r.stdout_lines | default([]) | length) > 0 -%}
+      {%- set store = r.stdout_lines | last | from_json -%}
+      {%- if store.first_height is not none -%}
+      {%- set _ = out.append({'name': r.item,
+                              'first_height': store.first_height | int,
+                              'last_height': store.last_height | int,
+                              'gaps': store.gaps,
+                              'missing_attestations': store.missing_attestations,
+                              'failed_checks': store.failed_checks | default([])}) -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+# A source with rows that failed their checks (spec 5.7) holds bad data, and
+# its export of those heights exits 3: it is not used, like an unreachable
+# one. It still counts in the verdict by its first height (below) and by the
+# attestations it has (history_attestation_holders): the play stops when this
+# block-manager needs early history or a missing attestation that no usable
+# source has but a source with failed checks has. With serial: 1 and
+# any_errors_fatal that also stops the rollout of the block-managers after it.
+- name: History gaps | usable sources
+  ansible.builtin.set_fact:
+    history_sources: "{{ history_stores | rejectattr('failed_checks') | list }}"
+
+# Every source that is not used, with the reason. Most are only reported
+# here; one with rows that failed their checks also counts in the verdict
+# (see above), and one whose `gaps` failed also stops the play (below).
+# "no such file" is matched with the file name: docker's own errors say
+# "no such file or directory".
+- name: History gaps | skipped sources
+  ansible.builtin.set_fact:
+    history_skipped_sources: >-
+      {%- set out = [] -%}
+      {%- for p in history_source_probes.results | default([]) -%}
+      {%- if p.rc | default(1) != 0 -%}
+      {%- set _ = out.append(p.item ~ ': unreachable over SSH') -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- for r in history_source_reads.results | default([]) -%}
+      {%- set stderr = r.stderr | default('') | trim -%}
+      {%- set lines = r.stdout_lines | default([]) -%}
+      {%- if r.rc | default(1) != 0 -%}
+      {%- if 'bm-history-proofs.db: no such file' in stderr -%}
+      {%- set _ = out.append(r.item ~ ': no history proofs store') -%}
+      {%- elif "unexpected argument 'history-proofs'" in stderr -%}
+      {%- set _ = out.append(r.item ~ ': block-manager without history-proofs') -%}
+      {%- else -%}
+      {#- A module error (no stderr) has its reason in msg. -#}
+      {%- set reason = (stderr.split('\n') | last) if stderr else (r.msg | default('')) -%}
+      {%- set _ = out.append(r.item ~ ': gaps failed (rc ' ~ r.rc | default('?') ~ '): '
+                             ~ reason) -%}
+      {%- endif -%}
+      {%- elif lines | length == 0 -%}
+      {%- set _ = out.append(r.item ~ ': gaps printed nothing') -%}
+      {%- else -%}
+      {%- set store = lines | last | from_json -%}
+      {%- if store.first_height is none -%}
+      {%- set _ = out.append(r.item ~ ': empty store') -%}
+      {%- elif store.failed_checks | default([]) | length > 0 -%}
+      {%- set _ = out.append(r.item ~ ': rows that failed their checks '
+                             ~ store.failed_checks | to_json ~ ', restore its store') -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: History gaps | sources not used
+  ansible.builtin.debug:
+    msg: "{{ history_skipped_sources }}"
+  when: history_skipped_sources | length > 0
+
+# Sources that run history-proofs and have a store but whose `gaps` failed (a
+# locked or unreadable file, a stopped container): they may hold what this
+# block-manager lacks, so the rollout stops after the other sources are
+# copied (below).
+- name: History gaps | failed sources
+  ansible.builtin.set_fact:
+    history_failed_sources: >-
+      {%- set out = [] -%}
+      {%- for r in history_source_reads.results | default([]) -%}
+      {%- set stderr = r.stderr | default('') -%}
+      {%- if r.rc | default(1) != 0
+            and 'bm-history-proofs.db: no such file' not in stderr
+            and "unexpected argument 'history-proofs'" not in stderr -%}
+      {%- set _ = out.append(r.item) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+# Of every source with a store, also the ones not used for their failed checks.
+- name: History gaps | earliest source start
+  ansible.builtin.set_fact:
+    history_sources_first: >-
+      {{ (history_stores | map(attribute='first_height') | min)
+         if history_stores | length > 0 else none }}
+
+# Rows that failed a check of a bad row (spec 5.7: every check but
+# event_in_tree, an alert only) are bad data: copying the gaps would
+# not change that. Checked again after copying.
+- name: History gaps | stop on rows that failed their checks, before copying
+  ansible.builtin.fail:
+    msg: &history_failed_checks_msg >-
+      bm-history-proofs.db on {{ inventory_hostname }} has rows that failed their
+      checks: {{ history_target.failed_checks }}. Take the block-manager out of the
+      public address and restore its store: block-manager README, "History proofs
+      store". To roll out without closing the gaps: -e CLOSE_HISTORY_GAPS=false.
+  when: history_target.failed_checks | default([]) | length > 0
+
+- name: History gaps | close them from the sources one by one
+  ansible.builtin.include_tasks: close-history-gaps-from-source.yaml
+  loop: "{{ history_sources }}"
+  loop_control:
+    loop_var: history_source
+
+- name: History gaps | read the store after closing
+  ansible.builtin.shell:
+    chdir: "{{ BM_DIR }}"
+    cmd: "docker compose exec -T block_manager {{ BM_BINARY }} history-proofs gaps --json --sqlite-path /workdir/data"
+  register: history_gaps_final
+  changed_when: false
+
+- name: History gaps | the store after closing
+  ansible.builtin.set_fact:
+    history_target: "{{ history_gaps_final.stdout_lines | last | from_json }}"
+
+# Missing attestations that no source read has are reported, not failed on:
+# when every BM lacks them it is a network-wide loss, and every BM shows them
+# in bm_history_missing_attestations. A source that is not read may still
+# have one: an unreachable one or one whose gaps failed (both in the sources
+# not used), or one left out with -e bm_history_sources (not listed).
+- name: History gaps | report
+  ansible.builtin.debug:
+    msg: >-
+      history proofs store of {{ inventory_hostname }}: {{ history_gaps_final.stdout_lines | last }};
+      earliest source start: {{ history_sources_first }};
+      missing attestations no source read has (see sources not used; one left
+      out with -e bm_history_sources is not read):
+      {{ history_target.missing_attestations | default([])
+         | difference(history_attestation_holders | map(attribute='height')) }};
+      heights with an unprovable event (an alert only):
+      {{ (history_target.unprovable_events | default({})).heights | default('unknown') }};
+      sources not used: {{ history_skipped_sources }}
+
+# Rows that failed their checks stay in the store, whatever an import
+# reports later: an import stopped on them (exit code 3), or the verifier
+# found them.
+- name: History gaps | stop on rows that failed their checks
+  ansible.builtin.fail:
+    msg: *history_failed_checks_msg
+  when: history_target.failed_checks | default([]) | length > 0
+
+- name: History gaps | stop when a source failed
+  ansible.builtin.fail:
+    msg: >-
+      history-proofs gaps failed on {{ history_failed_sources }}, so their stores
+      were not used: {{ history_skipped_sources }}. Fix them and run the play
+      again, leave them out for this host with --limit {{ inventory_hostname }}
+      -e '{"bm_history_sources":
+      {{ bm_history_sources | reject('in', history_failed_sources) | list | to_json }}}', or
+      close the gaps of {{ inventory_hostname }} by hand: block-manager README,
+      "History proofs store".
+  when: history_failed_sources | length > 0
+
+# Success: no gaps, no missing attestation that a reachable source with a
+# store has, and no such source starts earlier, also one not used for its
+# failed checks (on the first rollout no source has a store yet). Otherwise
+# stop the rollout. `history_stores | length`, not `history_sources_first is
+# not none`: before ansible-core 2.19 the `none` of history_sources_first
+# becomes "", which passes `is not none`. A source left out with
+# `-e bm_history_sources` is not read, so it is not in the verdict.
+- name: History gaps | stop when gaps remain
+  ansible.builtin.fail:
+    msg: >-
+      bm-history-proofs.db on {{ inventory_hostname }} still has gaps
+      {{ history_target.gaps }}, missing attestations that sources have
+      {{ history_attestation_holders }}, or starts at {{ history_target.first_height }},
+      later than a source ({{ history_sources_first }}), and no source in
+      {{ bm_history_sources }} could close that; sources not used:
+      {{ history_skipped_sources }}. Close it by hand: block-manager README,
+      "History proofs store".
+  when: >-
+    history_target.gaps | length > 0
+    or history_attestation_holders | length > 0
+    or (history_stores | length > 0
+        and history_target.first_height is not none
+        and history_sources_first | int < history_target.first_height | int)

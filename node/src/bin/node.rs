@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::io::Read;
 use std::num::NonZero;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -22,10 +21,10 @@ use ::node::bls::GoshBLS;
 use ::node::helper::init_tracing;
 use ::node::helper::key_handling::key_pairs_from_file;
 use ::node::node::services::block_processor::chain_pulse::events::ChainPulseEvent;
-use ::node::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
 use ::node::node::Node;
 use ::node::protocol::authority_switch::round_time::RoundTime;
 use ::node::repository::optimistic_state::OptimisticState;
+use ::node::repository::repository_impl::exact_bk_set_from_start_set;
 use ::node::repository::repository_impl::scan_snapshot_headers;
 use ::node::repository::repository_impl::FinalizedBlockStorage;
 use ::node::repository::repository_impl::RepositoryImpl;
@@ -37,6 +36,7 @@ use gossip::run_gossip_with_reload;
 use gossip::GossipReloadConfig;
 use history_proof::HISTORY_PROOF_WINDOW_SIZE;
 use http_server::ApiBkSet;
+use http_server::ApiExactBkSet;
 use http_server::ResolvingResult;
 use network::config::NetworkConfig;
 use network::network::BasicNetwork;
@@ -565,7 +565,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     let zerostate_path = config.local.zerostate_path.clone();
     let zerostate = if let Some(zs_path) = zerostate_path.as_ref() {
-        let zerostate = ZeroState::load_from_file(zs_path).expect("Failed to open zerostate");
+        let zerostate = ZeroState::load_for_execution(zs_path, &thread_accounts_repository)
+            .expect("Failed to open zerostate");
 
         let zerostate_hash = calc_file_hash(zs_path).expect("Failed to calculate zerostate hash");
         tracing::info!(target: "monit", "zerostate hash: {zerostate_hash}");
@@ -600,6 +601,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let (bk_set_update_async_tx, bk_set_update_async_rx) =
         tokio::sync::watch::channel(bk_set.clone());
+    let (exact_bk_set_tx, exact_bk_set_rx) =
+        tokio::sync::watch::channel(exact_bk_set_from_start_set(&bk_set));
 
     // Signals from `dispatch_hot_reload` to `network` module
     let (watch_gossip_config_tx, watch_gossip_config_rx) =
@@ -985,6 +988,8 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
     // Apply saved ThreadSnapshots if they are newer than the last finalized block.
     let snapshot_dir = config.local.external_state_share_local_base_dir.clone();
+    std::fs::create_dir_all(&snapshot_dir)?;
+    let snapshot_resources = snapshot_storage::SnapshotResources::open(&snapshot_dir)?;
     if snapshot_dir.is_dir() {
         tracing::trace!(target: "node", "parse snapshot dir");
         let mut last_finalized_seq_no: HashMap<ThreadIdentifier, BlockSeqNo> = HashMap::new();
@@ -1026,59 +1031,28 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
                 continue;
             }
 
-            match std::fs::File::open(&snapshot_path) {
-                Ok(mut snapshot_file) => {
+            tracing::info!(
+                "Applying ThreadSnapshot for thread {:?}, block {:?}, seq_no={:?}",
+                header.thread_id,
+                header.block_id,
+                header.seq_no,
+            );
+            match repository
+                .import_local_snapshot(&snapshot_path, (header.thread_id, header.block_id))
+            {
+                Ok(::node::repository::repository_impl::SnapshotImportStatus::Imported) => {
+                    applied_threads.insert(header.thread_id);
                     tracing::info!(
-                        "Applying ThreadSnapshot for thread {:?}, block {:?}, seq_no={:?}",
-                        header.thread_id,
-                        header.block_id,
-                        header.seq_no,
+                        "Successfully applied ThreadSnapshot for thread {:?}",
+                        header.thread_id
                     );
-                    let skipped_attestation_ids =
-                        Arc::new(Mutex::new(HashSet::<BlockIdentifier>::new()));
-                    let mut magic = [0u8; COMPRESSED_SNAPSHOT_MAGIC.len()];
-                    let result = match std::io::Read::read_exact(&mut snapshot_file, &mut magic) {
-                        Ok(()) if &magic == COMPRESSED_SNAPSHOT_MAGIC => {
-                            match zstd::Decoder::new(snapshot_file) {
-                                Ok(mut decoder) => repository.set_state_from_snapshot_reader(
-                                    &mut decoder,
-                                    &header.thread_id,
-                                    skipped_attestation_ids,
-                                ),
-                                Err(e) => Err(e.into()),
-                            }
-                        }
-                        Ok(()) => {
-                            let mut reader = std::io::Cursor::new(magic).chain(snapshot_file);
-                            repository.set_state_from_snapshot_reader(
-                                &mut reader,
-                                &header.thread_id,
-                                skipped_attestation_ids,
-                            )
-                        }
-                        Err(e) => Err(e.into()),
-                    };
-
-                    match result {
-                        Ok(()) => {
-                            applied_threads.insert(header.thread_id);
-                            tracing::info!(
-                                "Successfully applied ThreadSnapshot for thread {:?}",
-                                header.thread_id,
-                            );
-                            break;
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                "Failed to apply ThreadSnapshot for thread {:?}: {err}",
-                                header.thread_id,
-                            );
-                        }
-                    }
+                    break;
                 }
-                Err(err) => {
-                    tracing::error!("Failed to read snapshot file {:?}: {err}", snapshot_path,);
-                }
+                Ok(status) => tracing::debug!(?status, "Local snapshot was skipped"),
+                Err(err) => tracing::error!(
+                    "Failed to apply ThreadSnapshot for thread {:?}: {err}",
+                    header.thread_id
+                ),
             }
         }
     }
@@ -1193,6 +1167,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
     let optimistic_save_tx_clone = optimistic_save_tx.clone();
     let state_sync_services = Arc::new(Mutex::new(Vec::<ExternalFileSharesBased>::new()));
     let state_sync_services_clone = state_sync_services.clone();
+    let publisher_resources = snapshot_resources.clone();
     let (routing, _inner_service_thread) = RoutingService::start(
         (routing, routing_rx),
         metrics.as_ref().map(|m| m.node.clone()),
@@ -1277,11 +1252,10 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
 
             let file_saving_service = FileSavingService::builder()
                 .publisher(config.local.node_id.clone())
-                .root_path(config.local.external_state_share_local_base_dir.clone())
+                .resources(publisher_resources.clone())
                 .repository(repository.clone())
                 .block_state_repository(block_state_repo.clone())
                 .shared_services(node_shared_services.clone())
-                .message_db(message_db.clone())
                 .build();
 
             let mut sync_state_service = ExternalFileSharesBased::new(
@@ -1533,6 +1507,13 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             tracing::info!("BK set update handler started");
             let mut bk_set = bk_set;
             while let Ok(update) = bk_set_update_rx.recv() {
+                if update.current.is_none() {
+                    tracing::warn!(
+                        seq_no = update.seq_no,
+                        "BK set update has no current BK set; the exact BK set snapshot will be empty"
+                    );
+                }
+                exact_bk_set_tx.send_replace(ApiExactBkSet::from(&update));
                 if bk_set.update(&ApiBkSet::from(update)) {
                     tracing::trace!(target: "bk_set_update", "new bk set update: {:?}", bk_set);
                     bk_set_update_async_tx.send_replace(bk_set.clone());
@@ -1552,7 +1533,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
         let repo_clone_1 = repo_clone_0.clone();
         let server = http_server::WebServer::new(
             config.network.api_addr,
-            config.local.external_state_share_local_base_dir,
+            snapshot_resources,
             ext_messages_sender,
             account_request_tx,
             {
@@ -1574,7 +1555,7 @@ async fn execute(args: Args, metrics: Option<Metrics>) -> anyhow::Result<()> {
             config.local.signing_keys,
             metrics.as_ref().map(|x| x.routing.clone()),
         );
-        let _ = server.run(bk_set_update_async_rx).await;
+        let _ = server.run(bk_set_update_async_rx, exact_bk_set_rx).await;
         anyhow::bail!("HTTP server supposed to work forever");
     });
 
@@ -2415,6 +2396,11 @@ async fn test_execute() -> anyhow::Result<()> {
         .set_metrics(metrics.as_ref().map(|m| m.state_accounts.clone()))
         .build()?;
 
+    let zerostate = ZeroState::load_for_execution(
+        config.local.zerostate_path.as_ref().unwrap(),
+        &thread_accounts_repository,
+    )?;
+
     // Ensure archive threads exist before the repository is moved
     for tid in zerostate.list_threads() {
         let block_id = *zerostate.state(tid)?.get_block_id();
@@ -2618,11 +2604,15 @@ async fn test_execute() -> anyhow::Result<()> {
 
     let file_saving_service = FileSavingService::builder()
         .publisher(config.local.node_id.clone())
-        .root_path(config.local.external_state_share_local_base_dir.clone())
+        .resources({
+            std::fs::create_dir_all(&config.local.external_state_share_local_base_dir)?;
+            snapshot_storage::SnapshotResources::open(
+                &config.local.external_state_share_local_base_dir,
+            )?
+        })
         .repository(repository.clone())
         .block_state_repository(block_state_repo.clone())
         .shared_services(node_shared_services.clone())
-        .message_db(message_db.clone())
         .build();
 
     let mut sync_state_service = ExternalFileSharesBased::new(

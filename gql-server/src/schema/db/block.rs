@@ -307,12 +307,12 @@ impl Block {
 
         if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
-                where_ops.push(format!("chain_order > {after:?}"));
+                where_ops.push(format!("chain_order > {}", sql_quote(after)));
             }
         }
         if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
-                where_ops.push(format!("chain_order < {before:?}"));
+                where_ops.push(format!("chain_order < {}", sql_quote(before)));
             }
         }
 

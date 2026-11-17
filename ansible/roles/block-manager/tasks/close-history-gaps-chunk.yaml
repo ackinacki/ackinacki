@@ -1,0 +1,118 @@
+---
+# One chunk [from, to] (loop_var: history_chunk) from history_source to this
+# host: export on the source, two streaming hops through the controller,
+# import here. The export files are named history-export-<from>-<to>.db, never
+# bm-archive*, and are removed from all three places afterwards (with their
+# SQLite -wal/-shm files). A source with gaps in the chunk still gives the rows
+# it has; the next source gets the target's gaps that remain.
+
+- name: "History gaps | chunk {{ history_chunk }} from {{ history_source.name }}"
+  vars:
+    history_file: "history-export-{{ history_chunk[0] }}-{{ history_chunk[1] }}.db"
+    history_transfer_dir: "{{ HISTORY_TRANSFER_DIR | default('/tmp/bm-history-transfer') }}"
+  block:
+    - name: History gaps | export on the source
+      ansible.builtin.shell:
+        chdir: "{{ BM_DIR }}"
+        cmd: >-
+          docker compose exec -T block_manager {{ BM_BINARY }} history-proofs export
+          --from-height {{ history_chunk[0] }} --to-height {{ history_chunk[1] }}
+          --out /workdir/data/{{ history_file }} --source-id {{ history_source.name }}
+          --json --sqlite-path /workdir/data
+      delegate_to: "{{ history_source.name }}"
+      register: history_export
+      # 1: the source lacks some of the chunk; the next source gets the rest.
+      # 3: bad data; the failed task shows the refused rows in its stderr.
+      # docker compose exec also exits 1 (a restarting container, no daemon),
+      # without the JSON line on stdout.
+      failed_when: >-
+        history_export.rc not in [0, 1]
+        or history_export.stdout_lines | default([]) | length == 0
+
+    - name: History gaps | does the export hold rows
+      ansible.builtin.set_fact:
+        history_chunk_rows: "{{ (history_export.stdout_lines | last | from_json).rows | int }}"
+
+    - name: History gaps | copy the export to the controller
+      when: history_chunk_rows | int > 0
+      delegate_to: localhost
+      become: no
+      block:
+        - name: History gaps | controller directory
+          ansible.builtin.file:
+            path: "{{ history_transfer_dir }}"
+            state: directory
+            mode: "0700"
+
+        # Not ansible.posix.synchronize: its remote side is always the play
+        # host (the target here); delegate_to only changes the local side.
+        - name: History gaps | source -> controller
+          ansible.builtin.command:
+            argv:
+              - rsync
+              - --timeout=300
+              - --partial
+              - -e
+              - >-
+                ssh -p {{ hostvars[history_source.name].ansible_port | default(22) }}
+                -o StrictHostKeyChecking=no -o ServerAliveInterval=30
+              - --rsync-path=sudo rsync
+              - "{{ hostvars[history_source.name].ansible_user | default(ansible_user) }}@{{ hostvars[history_source.name].ansible_host | default(history_source.name) }}:{{ BM_DATA_DIR }}/workdir/{{ history_file }}"
+              - "{{ history_transfer_dir }}/"
+
+        - name: History gaps | controller -> target
+          ansible.posix.synchronize:
+            mode: push
+            src: "{{ history_transfer_dir }}/{{ history_file }}"
+            dest: "{{ BM_DATA_DIR }}/workdir/"
+            rsync_path: "sudo -u root rsync"
+            rsync_opts:
+              - "--timeout=300"
+              - "--partial"
+
+    - name: History gaps | import on the target
+      ansible.builtin.shell:
+        chdir: "{{ BM_DIR }}"
+        cmd: >-
+          docker compose exec -T block_manager {{ BM_BINARY }} history-proofs import
+          --from /workdir/data/{{ history_file }} --json --sqlite-path /workdir/data
+      register: history_import
+      # 1: heights or attestations of the chunk are still missing. 3: bad data
+      # (rejected rows, conflicts, failed checks, rejected or deleted
+      # attestations); the failed task shows each in its stderr, and the play
+      # stops before the next BM takes this one as a source. docker compose
+      # exec also exits 1, without the JSON line on stdout.
+      failed_when: >-
+        history_import.rc not in [0, 1]
+        or history_import.stdout_lines | default([]) | length == 0
+      when: history_chunk_rows | int > 0
+
+    - name: History gaps | import result
+      ansible.builtin.debug:
+        msg: "{{ history_import.stdout_lines | last }}"
+      when: history_chunk_rows | int > 0
+
+  always:
+    - name: History gaps | remove the export on the source
+      ansible.builtin.file:
+        path: "{{ BM_DATA_DIR }}/workdir/{{ history_file }}{{ suffix }}"
+        state: absent
+      delegate_to: "{{ history_source.name }}"
+      loop: ["", "-wal", "-shm"]
+      loop_control:
+        loop_var: suffix
+
+    - name: History gaps | remove the export on the controller
+      ansible.builtin.file:
+        path: "{{ history_transfer_dir }}/{{ history_file }}"
+        state: absent
+      delegate_to: localhost
+      become: no
+
+    - name: History gaps | remove the export on the target
+      ansible.builtin.file:
+        path: "{{ BM_DATA_DIR }}/workdir/{{ history_file }}{{ suffix }}"
+        state: absent
+      loop: ["", "-wal", "-shm"]
+      loop_control:
+        loop_var: suffix

@@ -9,7 +9,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::hash::Hash;
-use std::io::Cursor;
 use std::io::Read;
 use std::io::Write;
 use std::ops::Add;
@@ -31,6 +30,7 @@ use chrono::Utc;
 use derive_getters::Getters;
 use http_server::ApiBk;
 use http_server::ApiBkSet;
+use http_server::ApiExactBkSet;
 use node_types::AccountIdentifier;
 use node_types::AccountRouting;
 use node_types::BlockIdentifier;
@@ -41,7 +41,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use telemetry_utils::mpsc::InstrumentedSender;
 use telemetry_utils::now_ms;
-use tempfile::NamedTempFile;
 use tvm_types::UInt256;
 use typed_builder::TypedBuilder;
 
@@ -240,6 +239,7 @@ impl FinalizedBlockStorage {
 
 pub struct BkSetUpdate {
     pub seq_no: u32,
+    pub thread_id: ThreadIdentifier,
     pub current: Option<Arc<BlockKeeperSet>>,
     pub future: Option<Arc<BlockKeeperSet>>,
     pub added_nodes: (HashSet<NodeIdentifier>, HashSet<NodeIdentifier>),
@@ -260,6 +260,35 @@ impl From<BkSetUpdate> for ApiBkSet {
             current: bk_set_from(value.current),
             future: bk_set_from(value.future),
         }
+    }
+}
+
+fn sorted_by_signer(mut bks: Vec<ApiBk>) -> Vec<ApiBk> {
+    bks.sort_by_key(|bk| bk.signer_index);
+    bks
+}
+
+impl From<&BkSetUpdate> for ApiExactBkSet {
+    fn from(value: &BkSetUpdate) -> Self {
+        let bk_set_from = |set: &Option<Arc<BlockKeeperSet>>| {
+            sorted_by_signer(set.as_deref().map(Vec::<ApiBk>::from).unwrap_or_default())
+        };
+        Self {
+            thread_id: hex::encode(value.thread_id),
+            bk_set: bk_set_from(&value.current),
+            future_bk_set: bk_set_from(&value.future),
+            seq_no: value.seq_no as u64,
+        }
+    }
+}
+
+/// Initial `/v2/bk_set` content, served until the first finalization after node start.
+pub fn exact_bk_set_from_start_set(set: &ApiBkSet) -> ApiExactBkSet {
+    ApiExactBkSet {
+        thread_id: hex::encode(ThreadIdentifier::default()),
+        bk_set: sorted_by_signer(set.current.clone()),
+        future_bk_set: sorted_by_signer(set.future.clone()),
+        seq_no: set.seq_no,
     }
 }
 
@@ -541,52 +570,12 @@ pub struct ThreadSnapshotHeader {
     pub round: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SnapshotCompression {
-    Plain,
-    ZstdWithMagic,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SnapshotFormat {
-    Streamed { durable_bytes: Vec<u8> },
-}
-
-pub struct SnapshotFile {
-    snapshot: ThreadSnapshot,
-    format: SnapshotFormat,
-    compression: SnapshotCompression,
-}
-
-impl SnapshotFile {
-    pub fn snapshot(&self) -> &ThreadSnapshot {
-        &self.snapshot
-    }
-
-    pub fn snapshot_mut(&mut self) -> &mut ThreadSnapshot {
-        &mut self.snapshot
-    }
-
-    pub fn into_snapshot(self) -> ThreadSnapshot {
-        self.snapshot
-    }
-
-    pub fn format(&self) -> &SnapshotFormat {
-        &self.format
-    }
-
-    pub fn compression(&self) -> SnapshotCompression {
-        self.compression
-    }
-}
-
-fn serialize_into_writer<W: Write + ?Sized, T: Serialize>(
-    writer: &mut W,
-    value: &T,
-) -> anyhow::Result<()> {
-    bincode::serialize_into(writer, value)
-        .map_err(|e| anyhow::format_err!("Failed to serialize snapshot field: {e}"))
-}
+mod snapshot_files;
+pub use snapshot_files::read_snapshot_file;
+pub use snapshot_files::read_snapshot_metadata;
+pub use snapshot_files::rewrite_snapshot_file;
+pub use snapshot_files::write_snapshot_file;
+pub use snapshot_files::SnapshotFile;
 
 pub(crate) mod snapshot_consumption;
 pub(crate) mod snapshot_http_import;
@@ -597,38 +586,6 @@ pub(crate) mod snapshot_publication;
 pub(crate) mod snapshot_schedule;
 pub(crate) mod snapshot_sources;
 pub(crate) mod thread_snapshot_import;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SnapshotVersion {
-    Legacy,
-    Current,
-}
-
-impl SnapshotVersion {
-    pub(crate) fn for_block(
-        version: &BlockProtocolVersionState,
-        configs: &ConfigRead,
-    ) -> anyhow::Result<Self> {
-        let config = configs.get(version.to_use()).ok_or_else(|| {
-            anyhow::anyhow!("No configuration for snapshot block protocol {}", version.to_use())
-        })?;
-        Ok(if config.engine_version < semver::Version::new(1, 0, 8) {
-            Self::Legacy
-        } else {
-            Self::Current
-        })
-    }
-
-    pub(crate) fn serialize_state(self, state: OptimisticStateImpl) -> anyhow::Result<Vec<u8>> {
-        match self {
-            Self::Legacy => snapshot_v1::encode_state(state),
-            Self::Current => Ok(bincode::serialize(&state)?),
-        }
-    }
-}
-
-#[path = "repository_impl/snapshot_v1.rs"]
-pub(crate) mod snapshot_v1;
 
 #[cfg(test)]
 #[path = "repository_impl/snapshot_runtime_tests.rs"]
@@ -809,13 +766,6 @@ mod inbox_snapshot_tests {
     }
 
     #[test]
-    fn legacy_file_reader_rejects_partitioned_and_intermediate_markers() {
-        for marker in [b"SNAP2V2", b"SNAP2V3", b"SNAP2V4"] {
-            assert!(read_thread_snapshot_from_payload(marker, SnapshotCompression::Plain).is_err());
-        }
-    }
-
-    #[test]
     fn snapshot_rejects_wrong_dapp_placement_and_empty_leaves() {
         use node_types::DAppIdentifier;
 
@@ -852,19 +802,15 @@ mod inbox_snapshot_tests {
     }
 }
 
+// Local import recovery metadata, retained for interrupted-import recovery.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DurableSnapshotHeader {
+struct DurableSnapshotHeader {
     pub tag: u8,
     pub len: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct StreamedThreadSnapshotHeader {
-    prefix_len: u64,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
-struct StreamedThreadSnapshot {
+struct SnapshotInstallData {
     optimistic_state: Vec<u8>,
     ancestor_blocks_data: Vec<AncestorBlockData>,
     db_messages: Vec<Vec<Arc<WrappedMessage>>>,
@@ -893,44 +839,11 @@ struct SnapshotImportRecovery {
     cur_thread_id: ThreadIdentifier,
     snapshot_thread_id: ThreadIdentifier,
     snapshot_block_id: BlockIdentifier,
-    prefix: StreamedThreadSnapshot,
+    prefix: SnapshotInstallData,
     staged: account_state::StagedArchiveEpoch,
 }
 
-impl StreamedThreadSnapshot {
-    fn from_snapshot(snapshot: &ThreadSnapshot, durable_len: u64) -> Self {
-        Self {
-            optimistic_state: snapshot.optimistic_state.clone(),
-            ancestor_blocks_data: snapshot.ancestor_blocks_data.clone(),
-            db_messages: snapshot.db_messages.clone(),
-            finalized_block: snapshot.finalized_block.clone(),
-            bk_set: snapshot.bk_set.clone(),
-            descendant_bk_set: snapshot.descendant_bk_set.clone(),
-            future_bk_set: snapshot.future_bk_set.clone(),
-            descendant_future_bk_set: snapshot.descendant_future_bk_set.clone(),
-            finalized_block_stats: snapshot.finalized_block_stats.clone(),
-            attestation_target: snapshot.attestation_target,
-            producer_selector: snapshot.producer_selector.clone(),
-            block_height: snapshot.block_height,
-            prefinalization_proof: snapshot.prefinalization_proof.clone(),
-            ancestor_blocks_finalization_checkpoints: snapshot
-                .ancestor_blocks_finalization_checkpoints
-                .clone(),
-            finalizes_blocks: snapshot.finalizes_blocks.clone(),
-            parent_ancestor_blocks_finalization_checkpoints: snapshot
-                .parent_ancestor_blocks_finalization_checkpoints
-                .clone(),
-            block_protocol_version_state: snapshot.block_protocol_version_state.clone(),
-            history_data_snapshot: snapshot.history_data_snapshot.clone(),
-            history_cursor: snapshot.history_cursor.clone(),
-            durable_snapshot_header: DurableSnapshotHeader {
-                tag: u8::from(durable_len > 0),
-                len: durable_len,
-            },
-            finalization_chain: snapshot.finalization_chain.clone(),
-        }
-    }
-
+impl SnapshotInstallData {
     fn into_snapshot(self) -> ThreadSnapshot {
         let builder = ThreadSnapshot::builder()
             .optimistic_state(self.optimistic_state)
@@ -959,207 +872,6 @@ impl StreamedThreadSnapshot {
             .history_cursor(self.history_cursor);
         builder.build()
     }
-}
-
-fn read_thread_snapshot_from_payload(
-    payload: &[u8],
-    compression: SnapshotCompression,
-) -> anyhow::Result<SnapshotFile> {
-    anyhow::ensure!(
-        payload.starts_with(snapshot_v1::MAGIC),
-        "Unsupported thread snapshot format: missing streamed snapshot magic",
-    );
-    let mut reader = Cursor::new(&payload[snapshot_v1::MAGIC.len()..]);
-    let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut reader)
-        .map_err(|e| anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}"))?;
-    let prefix_len = usize::try_from(header.prefix_len).map_err(|_| {
-        anyhow::format_err!("Streamed snapshot prefix is too large: {}", header.prefix_len)
-    })?;
-    let header_len = usize::try_from(reader.position())
-        .map_err(|_| anyhow::format_err!("Streamed snapshot header offset is too large"))?;
-    let prefix_start = snapshot_v1::MAGIC
-        .len()
-        .checked_add(header_len)
-        .ok_or_else(|| anyhow::format_err!("Streamed snapshot prefix offset overflow"))?;
-    let prefix_end = prefix_start
-        .checked_add(prefix_len)
-        .ok_or_else(|| anyhow::format_err!("Streamed snapshot prefix length overflow"))?;
-    anyhow::ensure!(
-        prefix_end <= payload.len(),
-        "Streamed snapshot prefix exceeds payload bounds: prefix_end={} payload_len={}",
-        prefix_end,
-        payload.len()
-    );
-
-    let prefix_bytes = &payload[prefix_start..prefix_end];
-    let mut prefix = snapshot_v1::decode_prefix(prefix_bytes)?;
-    // Helpers expose the current in-memory model while preserving legacy bodies.
-    snapshot_v1::convert_state(&mut prefix)?;
-
-    let durable_tag = prefix.durable_snapshot_header.tag;
-    let durable_len = prefix.durable_snapshot_header.len;
-    anyhow::ensure!(durable_tag <= 1, "Invalid legacy durable header");
-    if durable_tag == 0 {
-        anyhow::ensure!(
-            durable_len == 0,
-            "Invalid streamed durable snapshot header: tag={durable_tag}, len={durable_len}"
-        );
-    } else {
-        anyhow::ensure!(
-            durable_len > 0,
-            "Invalid streamed durable snapshot header: tag={durable_tag}, len={durable_len}"
-        );
-    }
-
-    let durable_len = usize::try_from(durable_len).map_err(|_| {
-        anyhow::format_err!("Streamed durable snapshot is too large: {durable_len}")
-    })?;
-    let durable_bytes = payload[prefix_end..].to_vec();
-    anyhow::ensure!(
-        durable_bytes.len() == durable_len,
-        "Streamed durable snapshot length mismatch: expected {durable_len}, got {}",
-        durable_bytes.len()
-    );
-
-    Ok(SnapshotFile {
-        snapshot: prefix.into_snapshot(),
-        format: SnapshotFormat::Streamed { durable_bytes },
-        compression,
-    })
-}
-
-fn write_legacy_snapshot_prefix<W: Write + ?Sized>(
-    prefix: &StreamedThreadSnapshot,
-    writer: &mut W,
-) -> anyhow::Result<()> {
-    let prefix_bytes = snapshot_v1::encode_prefix(prefix)?;
-    writer.write_all(snapshot_v1::MAGIC)?;
-    serialize_into_writer(
-        writer,
-        &StreamedThreadSnapshotHeader { prefix_len: prefix_bytes.len() as u64 },
-    )?;
-    writer.write_all(&prefix_bytes)?;
-    Ok(())
-}
-
-fn write_legacy_snapshot_bytes_to_writer<W: Write + ?Sized>(
-    snapshot: &ThreadSnapshot,
-    durable_bytes: &[u8],
-    writer: &mut W,
-) -> anyhow::Result<()> {
-    let durable_len = u64::try_from(durable_bytes.len()).map_err(|_| {
-        anyhow::format_err!("Durable snapshot is too large: {}", durable_bytes.len())
-    })?;
-    // SnapshotFile is a helper-facing current model; only its wire state is legacy.
-    let mut prefix = StreamedThreadSnapshot::from_snapshot(snapshot, durable_len);
-    let state: OptimisticStateImpl = bincode::deserialize(snapshot.optimistic_state())?;
-    prefix.optimistic_state = snapshot_v1::encode_state(state)?;
-    write_legacy_snapshot_prefix(&prefix, writer)?;
-    writer.write_all(durable_bytes)?;
-    Ok(())
-}
-
-fn write_snapshot_payload_to_writer<W: Write + ?Sized>(
-    snapshot_file: &SnapshotFile,
-    writer: &mut W,
-) -> anyhow::Result<()> {
-    match snapshot_file.format() {
-        SnapshotFormat::Streamed { durable_bytes } => {
-            write_legacy_snapshot_bytes_to_writer(snapshot_file.snapshot(), durable_bytes, writer)
-        }
-    }
-}
-
-/// Reads a legacy SNAP2V1 helper file, preserving its compression envelope and
-/// account segment. The exposed optimistic state uses the current in-memory model.
-pub fn read_snapshot_file(path: &Path) -> anyhow::Result<SnapshotFile> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("Failed to read snapshot file: {}", path.display()))?;
-
-    let (compression, payload) = if bytes
-        .starts_with(crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC)
-    {
-        let decompressed = zstd::decode_all(
-            &bytes[crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC
-                .len()..],
-        )
-        .with_context(|| format!("Failed to decompress snapshot file: {}", path.display()))?;
-        (SnapshotCompression::ZstdWithMagic, decompressed)
-    } else {
-        (SnapshotCompression::Plain, bytes)
-    };
-
-    read_thread_snapshot_from_payload(&payload, compression)
-        .with_context(|| format!("Failed to parse snapshot file: {}", path.display()))
-}
-
-/// Writes a snapshot helper file back using the legacy SNAP2V1 format
-/// and preserved compression envelope.
-pub fn write_snapshot_file(path: &Path, snapshot_file: &SnapshotFile) -> anyhow::Result<()> {
-    let parent_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temp = NamedTempFile::new_in(parent_dir).with_context(|| {
-        format!("Failed to create temporary snapshot file in {}", parent_dir.display())
-    })?;
-
-    match snapshot_file.compression() {
-        SnapshotCompression::Plain => {
-            let writer = temp.as_file_mut();
-            write_snapshot_payload_to_writer(snapshot_file, writer)?;
-            writer.sync_all()?;
-        }
-        SnapshotCompression::ZstdWithMagic => {
-            let writer = temp.as_file_mut();
-            writer.write_all(
-                crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC,
-            )?;
-            let mut encoder = zstd::Encoder::new(
-                writer,
-                crate::node::services::sync::snapshot_compression::ZSTD_COMPRESSION_LEVEL,
-            )
-            .map_err(|e| anyhow::format_err!("Failed to create snapshot zstd encoder: {e}"))?;
-            write_snapshot_payload_to_writer(snapshot_file, &mut encoder)?;
-            let writer = encoder
-                .finish()
-                .map_err(|e| anyhow::format_err!("Failed to finish snapshot zstd encoder: {e}"))?;
-            writer.sync_all()?;
-        }
-    }
-
-    temp.persist(path).map_err(|err| {
-        anyhow::anyhow!("Failed to persist snapshot file {}: {}", path.display(), err.error)
-    })?;
-    Ok(())
-}
-
-/// Reads a snapshot file, applies a mutation to the logical ThreadSnapshot,
-/// then writes it back preserving the compression envelope.
-pub fn rewrite_snapshot_file<F>(input: &Path, output: &Path, f: F) -> anyhow::Result<()>
-where
-    F: FnOnce(&mut ThreadSnapshot) -> anyhow::Result<()>,
-{
-    let mut snapshot_file = read_snapshot_file(input)?;
-    f(snapshot_file.snapshot_mut())?;
-    write_snapshot_file(output, &snapshot_file)
-}
-
-/// Writes the legacy monolithic wire format. The caller supplies a legacy-encoded
-/// optimistic state and legacy account segment; current snapshots use partitions.
-pub(crate) fn write_legacy_thread_snapshot<W: Write + ?Sized>(
-    snapshot: &ThreadSnapshot,
-    durable_snapshot_path: Option<&Path>,
-    writer: &mut W,
-) -> anyhow::Result<()> {
-    let durable_len = match durable_snapshot_path {
-        Some(path) => std::fs::metadata(path)?.len(),
-        None => 0,
-    };
-    let prefix = StreamedThreadSnapshot::from_snapshot(snapshot, durable_len);
-    write_legacy_snapshot_prefix(&prefix, writer)?;
-    if let Some(path) = durable_snapshot_path {
-        let mut durable_file = File::open(path)?;
-        std::io::copy(&mut durable_file, writer)?;
-    }
-    Ok(())
 }
 
 impl RepositoryImpl {
@@ -1201,230 +913,9 @@ impl RepositoryImpl {
         snapshot_path.with_extension("header")
     }
 
-    pub fn set_state_from_snapshot_reader<R: Read>(
-        &mut self,
-        reader: &mut R,
-        cur_thread_id: &ThreadIdentifier,
-        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-    ) -> anyhow::Result<()> {
-        let _ = self.set_state_from_snapshot_reader_checked(
-            reader,
-            cur_thread_id,
-            skipped_attestation_ids,
-        )?;
-        Ok(())
-    }
-
-    pub fn set_state_from_snapshot_reader_checked<R: Read>(
-        &mut self,
-        reader: &mut R,
-        cur_thread_id: &ThreadIdentifier,
-        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-    ) -> anyhow::Result<SnapshotImportStatus> {
-        tracing::debug!(target: "monit", "set_state_from_snapshot_reader");
-        let snapshot_import_start = Instant::now();
-        let mut probe = Vec::with_capacity(snapshot_v1::MAGIC.len());
-        let mut byte = [0u8; 1];
-        while probe.len() < snapshot_v1::MAGIC.len() {
-            match reader.read(&mut byte)? {
-                0 => break,
-                _ => probe.push(byte[0]),
-            }
-        }
-
-        anyhow::ensure!(
-            probe.as_slice() == snapshot_v1::MAGIC,
-            "Unsupported thread snapshot format: missing streamed snapshot magic",
-        );
-        let status = self.set_state_from_streamed_snapshot_reader(
-            reader,
-            cur_thread_id,
-            skipped_attestation_ids,
-            None,
-        )?;
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.report_snapshot_import_time(
-                snapshot_import_start.elapsed().as_millis() as u64,
-                cur_thread_id,
-            );
-        }
-        Ok(status)
-    }
-
-    pub(crate) fn import_legacy_network_payload<R: Read>(
-        &mut self,
-        reader: &mut R,
-        expected: (ThreadIdentifier, BlockIdentifier),
-        anchor: BlockHeight,
-    ) -> anyhow::Result<SnapshotImportStatus> {
-        let mut magic = [0; 7];
-        reader.read_exact(&mut magic)?;
-        anyhow::ensure!(&magic == snapshot_v1::MAGIC, "unsupported legacy network snapshot marker");
-        self.set_state_from_streamed_snapshot_reader(
-            reader,
-            &expected.0,
-            Arc::new(Mutex::new(HashSet::new())),
-            Some((expected.0, expected.1, anchor)),
-        )
-    }
-
-    fn set_state_from_streamed_snapshot_reader<R: Read>(
-        &mut self,
-        reader: &mut R,
-        cur_thread_id: &ThreadIdentifier,
-        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-        network_expected: Option<(ThreadIdentifier, BlockIdentifier, BlockHeight)>,
-    ) -> anyhow::Result<SnapshotImportStatus> {
-        let activity_slot = cur_thread_id.to_string();
-        let phase = |name| {
-            crate::helper::metrics::ActivityMetric::parallel(
-                "snapshot_import",
-                name,
-                &activity_slot,
-            )
-            .enter()
-        };
-        let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut *reader)
-            .map_err(|e| {
-                tracing::error!("Failed to deserialize streamed snapshot header: {e}");
-                anyhow::format_err!("Failed to deserialize streamed snapshot header: {e}")
-            })?;
-        let mut prefix_bytes = vec![0u8; header.prefix_len as usize];
-        reader.read_exact(&mut prefix_bytes)?;
-        let mut prefix = snapshot_v1::decode_prefix(&prefix_bytes).map_err(|e| {
-            tracing::error!("Failed to deserialize legacy snapshot prefix: {e}");
-            anyhow::format_err!("Failed to deserialize snapshot prefix: {e}")
-        })?;
-
-        if let Some((thread, block, height)) = network_expected {
-            anyhow::ensure!(
-                prefix.finalized_block.data().identifier() == block
-                    && *prefix.finalized_block.data().common_section().thread_id() == thread,
-                "legacy snapshot request mismatch"
-            );
-            if height.thread_identifier() == &thread {
-                anyhow::ensure!(
-                    prefix.block_height == height,
-                    "legacy snapshot anchor height mismatch"
-                );
-            }
-            anyhow::ensure!(
-                SnapshotVersion::for_block(
-                    &prefix.block_protocol_version_state,
-                    &self.config_read
-                )? == SnapshotVersion::Legacy,
-                "legacy snapshot not allowed for this block protocol"
-            );
-        }
-
-        let mut state = snapshot_v1::convert_state(&mut prefix)?;
-        validate_snapshot_inboxes(&state, &prefix.db_messages)?;
-
-        let block_id = prefix.finalized_block.data().identifier();
-        let snapshot_block_height = prefix.block_height;
-        let snapshot_thread_id = state.thread_id;
-        let durable_tag = prefix.durable_snapshot_header.tag;
-        let durable_len = prefix.durable_snapshot_header.len;
-        let import_decision =
-            self.decide_snapshot_import(&snapshot_thread_id, &block_id, &snapshot_block_height)?;
-        match import_decision {
-            SnapshotImportDecision::ImportNeeded { .. } => {}
-            SnapshotImportDecision::AlreadyCovered { distance_from_last_finalized } => {
-                tracing::info!(
-                    target: "node",
-                    ?block_id,
-                    ?snapshot_thread_id,
-                    ?snapshot_block_height,
-                    distance_from_last_finalized,
-                    "Skipping snapshot import because local finalized state already covers it",
-                );
-                return Ok(SnapshotImportStatus::Skipped(import_decision));
-            }
-            SnapshotImportDecision::TooClose { distance_from_last_finalized } => {
-                tracing::info!(
-                    target: "node",
-                    ?block_id,
-                    ?snapshot_thread_id,
-                    ?snapshot_block_height,
-                    distance_from_last_finalized,
-                    "Skipping snapshot import because it is too close to local finalized state",
-                );
-                return Ok(SnapshotImportStatus::Skipped(import_decision));
-            }
-            SnapshotImportDecision::Invalidated => {
-                anyhow::bail!(
-                    "Refusing to import invalidated snapshot block: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, block_height={snapshot_block_height:?}"
-                );
-            }
-        }
-        let mut staged_import = None;
-        anyhow::ensure!(durable_tag <= 1, "Invalid legacy durable header");
-        if durable_tag == 0 {
-            anyhow::ensure!(
-                durable_len == 0,
-                "Invalid streamed durable snapshot header: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, tag={durable_tag}, len={durable_len}"
-            );
-            anyhow::ensure!(reader.read(&mut [0])? == 0, "Trailing bytes in legacy snapshot");
-        } else {
-            anyhow::ensure!(
-                durable_len > 0,
-                "Invalid streamed durable snapshot header: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, tag={durable_tag}, len={durable_len}"
-            );
-
-            // Import bodies directly into the provisional archive epoch.
-            let staged = self.thread_accounts_repository.begin_staged_import_after_current_epoch();
-            let import_result = {
-                let _activity = phase("2_legacy_accounts");
-                (|| {
-                    let mut segment = (&mut *reader).take(durable_len);
-                    let state =
-                        self.thread_accounts_repository.import_snapshot_v1_from_reader_staged(
-                            &mut segment,
-                            &snapshot_thread_id,
-                            &block_id,
-                            staged,
-                        )?;
-                    anyhow::ensure!(segment.limit() == 0, "Truncated legacy durable segment");
-                    anyhow::ensure!(
-                        reader.read(&mut [0])? == 0,
-                        "Trailing bytes in legacy snapshot"
-                    );
-                    Ok(state)
-                })()
-            };
-            let new_durable = match import_result {
-                Ok(new_durable) => new_durable,
-                Err(err) => {
-                    tracing::error!(
-                        target: "node",
-                        ?block_id,
-                        ?snapshot_thread_id,
-                        expected_durable_len = durable_len,
-                        "Failed to import durable snapshot from streamed snapshot: {err}",
-                    );
-                    self.thread_accounts_repository.abort_staged_import(staged);
-                    return Err(anyhow::anyhow!(
-                        "Failed to import durable snapshot: block_id={block_id:?}, thread_id={snapshot_thread_id:?}, expected_durable_len={durable_len}, err={err}"
-                    ));
-                }
-            };
-            state.shard_state.0.durable = new_durable;
-            staged_import = Some(staged);
-        }
-
-        self.install_staged_snapshot(
-            prefix,
-            state,
-            staged_import,
-            cur_thread_id,
-            skipped_attestation_ids,
-            &|| false,
-        )
-    }
-
     fn install_staged_snapshot(
         &mut self,
-        prefix: StreamedThreadSnapshot,
+        prefix: SnapshotInstallData,
         state: OptimisticStateImpl,
         staged_import: Option<account_state::StagedArchiveEpoch>,
         cur_thread_id: &ThreadIdentifier,
@@ -1914,36 +1405,10 @@ impl RepositoryImpl {
     }
 }
 
-fn read_snapshot_header_from_reader<R: Read>(
-    reader: &mut R,
-) -> anyhow::Result<Option<ThreadSnapshotHeader>> {
-    let mut probe = Vec::with_capacity(snapshot_v1::MAGIC.len());
-    let mut byte = [0u8; 1];
-    while probe.len() < snapshot_v1::MAGIC.len() {
-        match reader.read(&mut byte)? {
-            0 => break,
-            _ => probe.push(byte[0]),
-        }
-    }
-
-    anyhow::ensure!(probe.as_slice() == snapshot_v1::MAGIC, "Unsupported legacy snapshot marker",);
-    let header: StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut *reader)
-        .map_err(|e| anyhow::format_err!("Failed to deserialize legacy snapshot header: {e}"))?;
-    let mut prefix_bytes = vec![0u8; header.prefix_len as usize];
-    reader.read_exact(&mut prefix_bytes)?;
-    let snapshot = snapshot_v1::decode_prefix(&prefix_bytes)?;
-    Ok(Some(ThreadSnapshotHeader {
-        block_id: snapshot.finalized_block.data().identifier(),
-        thread_id: *snapshot.finalized_block.data().common_section().thread_id(),
-        seq_no: snapshot.finalized_block.data().seq_no(),
-        round: *snapshot.finalized_block.data().common_section().round(),
-    }))
-}
-
 /// Scans `snapshot_dir` for `*.header` sidecar files and returns
 /// all headers that could be parsed successfully.
 /// For snapshot files that have no `.header` sidecar yet, falls back to full
-/// deserialization of the streamed snapshot body in order to extract the header
+/// decoding of the SNAP2V2 primary in order to extract the header
 /// fields, and writes the `.header` file for future runs.
 /// Missing or corrupt files are logged and skipped.
 pub fn scan_snapshot_headers(snapshot_dir: &Path) -> Vec<(PathBuf, ThreadSnapshotHeader)> {
@@ -1997,25 +1462,14 @@ pub fn scan_snapshot_headers(snapshot_dir: &Path) -> Vec<(PathBuf, ThreadSnapsho
             "No header sidecar found for {:?}. Parsing snapshot to build header.",
             snapshot_path,
         );
-        let header = match File::open(&snapshot_path).and_then(|mut file| {
-            let mut compression_magic = [0u8; crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC.len()];
-            match file.read_exact(&mut compression_magic) {
-                Ok(()) if &compression_magic
-                    == crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC =>
-                {
-                    let mut decoder = zstd::Decoder::new(file)
-                        .map_err(std::io::Error::other)?;
-                    read_snapshot_header_from_reader(&mut decoder)
-                        .map_err(std::io::Error::other)?
-                }
-                Ok(()) => {
-                    let mut reader = Cursor::new(compression_magic).chain(file);
-                    read_snapshot_header_from_reader(&mut reader)
-                        .map_err(std::io::Error::other)?
-                }
-                Err(err) => return Err(err),
+        let header = match snapshot_files::read_primary(&snapshot_path).map(|primary| {
+            let block = primary.metadata.finalized_block.data();
+            ThreadSnapshotHeader {
+                block_id: block.identifier(),
+                thread_id: *block.common_section().thread_id(),
+                seq_no: block.seq_no(),
+                round: *block.common_section().round(),
             }
-            .ok_or_else(|| std::io::Error::other("failed to parse snapshot header"))
         }) {
             Ok(header) => header,
             Err(err) => {
@@ -2262,8 +1716,12 @@ impl RepositoryImpl {
         {
             let mut metadatas = metadata.lock();
             if let Some(path) = &zerostate_path {
+                // Note: zerostate contains account in the TVM part of the state, but Node does not
+                // move account from TVM state to durable anymore. The simplest decision is to move
+                // the right here after loading from the zerostate.
                 let zerostate: ZeroState =
-                    ZeroState::load_from_file(path).expect("Failed to load zerostate");
+                    ZeroState::load_for_execution(path, &thread_accounts_repository)
+                        .expect("Failed to load zerostate");
                 for thread_id in zerostate.list_threads() {
                     let optimistic_state = zerostate
                         .state(thread_id)
@@ -2654,6 +2112,16 @@ impl RepositoryImpl {
             )?;
         } else {
             for (thread_id, block_id) in zerostate_threads {
+                let metadata = metadata_guard.get(&thread_id).expect("Zerostate thread metadata");
+                if metadata.lock().last_finalized_block_id == block_id {
+                    let state = repo_impl.thread_last_finalized_state.lock();
+                    let state = state.get(&thread_id).expect("Zerostate thread state");
+                    thread_accounts_repository.initialize_zerostate_archive(
+                        &thread_id,
+                        &block_id,
+                        &state.get_shard_state(),
+                    )?;
+                }
                 thread_accounts_repository.ensure_thread(&thread_id, &block_id, false)?;
             }
         }
@@ -3181,7 +2649,8 @@ impl RepositoryImpl {
             tracing::trace!("Load state from zerostate");
             let mut zero_block = <Self as Repository>::OptimisticState::zero();
             if let Some(path) = &self.zerostate_path {
-                let zerostate = ZeroState::load_from_file(path)?;
+                let zerostate =
+                    ZeroState::load_for_execution(path, &self.thread_accounts_repository)?;
                 zero_block = zerostate.state(thread_id)?.clone();
             };
             Arc::new(zero_block)
@@ -3772,6 +3241,7 @@ impl RepositoryImpl {
 
             let _ = self.bk_set_update_tx.send(BkSetUpdate {
                 seq_no: block_seq_no.into(),
+                thread_id,
                 current: bk_set,
                 future: future_bk_set,
                 added_nodes: (current_added_nodes, future_added_nodes),
@@ -4087,7 +3557,7 @@ impl Repository for RepositoryImpl {
         thread_id: &ThreadIdentifier,
     ) -> anyhow::Result<Option<Arc<Self::OptimisticState>>> {
         if let Some(path) = &self.zerostate_path {
-            let zerostate = ZeroState::load_from_file(path)?;
+            let zerostate = ZeroState::load_for_execution(path, &self.thread_accounts_repository)?;
             Ok(Some(Arc::new(zerostate.state(thread_id)?.clone())))
         } else {
             Ok(None)
@@ -4196,20 +3666,6 @@ impl Repository for RepositoryImpl {
             self.block_state_repository.get(block_id)?.guarded(|e| e.is_block_already_applied());
         tracing::trace!(?block_id, "is_block_already_applied: {result}");
         Ok(result)
-    }
-
-    fn set_state_from_snapshot(
-        &mut self,
-        snapshot: Self::StateSnapshot,
-        cur_thread_id: &ThreadIdentifier,
-        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-    ) -> anyhow::Result<()> {
-        tracing::debug!("set_state_from_snapshot");
-        self.set_state_from_snapshot_reader(
-            &mut Cursor::new(snapshot),
-            cur_thread_id,
-            skipped_attestation_ids,
-        )
     }
 
     fn is_block_suspicious(&self, block_id: &BlockIdentifier) -> anyhow::Result<Option<bool>> {
@@ -4548,16 +4004,10 @@ fn extract_new_messages(
 
 #[cfg(test)]
 pub mod tests {
-    #[path = "snapshot_tests.rs"]
-    mod snapshot_tests;
 
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::collections::HashMap;
-    use std::collections::HashSet;
-    use std::fs::File;
-    use std::io::Cursor;
-    use std::io::Read;
     use std::num::NonZeroUsize;
     use std::path::PathBuf;
     use std::process::Command;
@@ -4565,11 +4015,9 @@ pub mod tests {
     use std::sync::Once;
     use std::time::Duration;
 
-    use account_state::AccountInfo;
     use account_state::DurableThreadAccountsStateDiff;
     use account_state::ThreadAccount;
     use account_state::ThreadAccountsRepository;
-    use anyhow::ensure;
     use node_types::AccountIdentifier;
     use node_types::BlockIdentifier;
     use node_types::ThreadIdentifier;
@@ -4585,18 +4033,11 @@ pub mod tests {
     use tvm_block::ValueFlow;
     use tvm_types::AccountId;
 
-    use super::read_snapshot_file;
-    use super::rewrite_snapshot_file;
     use super::should_skip_stale_finalization;
-    use super::snapshot_v1;
-    use super::write_legacy_snapshot_bytes_to_writer;
-    use super::write_snapshot_file;
     use super::AncestorBlockData;
     use super::BkSetUpdate;
     use super::Metadata;
     use super::RepositoryImpl;
-    use super::SnapshotCompression;
-    use super::SnapshotFormat;
     use super::ThreadSnapshot;
     use super::OID;
     use crate::block_keeper_system::BlockKeeperData;
@@ -4935,18 +4376,6 @@ pub mod tests {
         Ok((repository, block_state_repository))
     }
 
-    fn streamed_durable_offset(bytes: &[u8]) -> anyhow::Result<usize> {
-        anyhow::ensure!(
-            bytes.starts_with(snapshot_v1::MAGIC),
-            "Snapshot is not in streamed format"
-        );
-        let mut reader = Cursor::new(&bytes[snapshot_v1::MAGIC.len()..]);
-        let header: super::StreamedThreadSnapshotHeader = bincode::deserialize_from(&mut reader)?;
-        let header_len = usize::try_from(reader.position())?;
-        let prefix_len = usize::try_from(header.prefix_len)?;
-        Ok(snapshot_v1::MAGIC.len() + header_len + prefix_len)
-    }
-
     #[test]
     fn stale_finalization_predicate_allows_import_shaped_advance() {
         let imported_block_id = BlockIdentifier::new(new_u256("imported", 1));
@@ -5113,17 +4542,6 @@ pub mod tests {
         assert_eq!(selected_block_id, block_id);
         assert_eq!(selected_seq_no, BlockSeqNo::from(13));
         Ok(())
-    }
-
-    fn compress_snapshot_payload(payload: &[u8]) -> anyhow::Result<Vec<u8>> {
-        use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
-        use crate::node::services::sync::snapshot_compression::ZSTD_COMPRESSION_LEVEL;
-
-        let compressed = zstd::encode_all(payload, ZSTD_COMPRESSION_LEVEL)?;
-        let mut bytes = Vec::with_capacity(COMPRESSED_SNAPSHOT_MAGIC.len() + compressed.len());
-        bytes.extend_from_slice(COMPRESSED_SNAPSHOT_MAGIC);
-        bytes.extend_from_slice(&compressed);
-        Ok(bytes)
     }
 
     #[test]
@@ -5455,344 +4873,6 @@ pub mod tests {
         Ok(())
     }
 
-    #[test]
-    #[ignore]
-    fn test_set_state_from_snapshot() -> anyhow::Result<()> {
-        use std::str::FromStr;
-
-        use node_types::BlockIdentifier;
-        use node_types::ThreadIdentifier;
-
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new("trace"))
-            .with_target(false)
-            .compact() // optional: cleaner output formatting
-            .init();
-
-        let tmp = tempfile::TempDir::new()?;
-        let block_state_repository = BlockStateRepository::test(tmp.path().join("block-state"));
-        let accounts_repository = AccountsRepository::new(tmp.path().join("accounts"), Some(0), 1);
-        let thread_accounts_repository =
-            ThreadAccountsRepository::builder(tmp.path().join("durable")).build()?;
-        let message_db = MessageDurableStorage::mem();
-        let finalized_blocks = finalized_blocks_storage();
-
-        let mut repository = RepositoryImpl::new(
-            tmp.path().join("repo"),
-            Some(PathBuf::from(ZEROSTATE)),
-            1,
-            SharedServices::test_start(RoutingService::stub().0, u32::MAX),
-            Arc::new(Mutex::new(FixedSizeHashSet::new(10))),
-            false,
-            block_state_repository,
-            None,
-            accounts_repository,
-            thread_accounts_repository,
-            message_db.clone(),
-            finalized_blocks,
-            mock_bk_set_updates_tx(),
-            ConfigRead::new(ProtocolVersion::parse("None").unwrap(), GlobalConfig::default()),
-        )?;
-
-        let state_path =
-            "/home/user/Downloads/ca6638f7c216beab81886042eb615bdcbe68a451984641b3e7d8aa97b0a0142d";
-        let snapshot_bytes = std::fs::read(state_path)?;
-        repository.set_state_from_snapshot(
-            snapshot_bytes,
-            &ThreadIdentifier::default(),
-            Arc::new(Mutex::new(HashSet::default())),
-        )?;
-
-        let (id, seq_no) =
-            repository.select_thread_last_finalized_block(&ThreadIdentifier::default())?.unwrap();
-        assert_eq!(
-            id,
-            BlockIdentifier::from_str(
-                "ca6638f7c216beab81886042eb615bdcbe68a451984641b3e7d8aa97b0a0142d"
-            )
-            .unwrap()
-        );
-        assert_eq!(seq_no, BlockSeqNo::from(11489521));
-
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "uses local snapshot files from LOCAL_SNAPSHOT_DIR or /Volumes/x5/_"]
-    fn test_set_state_from_local_snapshots_via_streamed_reader() -> anyhow::Result<()> {
-        use anyhow::Context;
-
-        use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
-
-        struct ProgressReader<R> {
-            inner: R,
-            bytes: u64,
-            next: u64,
-            total: u64,
-            started: std::time::Instant,
-        }
-        impl<R: Read> Read for ProgressReader<R> {
-            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-                let count = self.inner.read(output)?;
-                self.bytes += count as u64;
-                if self.bytes >= self.next {
-                    eprintln!(
-                        "snapshot input: {:.1}% ({}/{} bytes), elapsed {:.1}s",
-                        100.0 * self.bytes as f64 / self.total as f64,
-                        self.bytes,
-                        self.total,
-                        self.started.elapsed().as_secs_f64(),
-                    );
-                    self.next = self.bytes + 256 * 1024 * 1024;
-                }
-                Ok(count)
-            }
-        }
-
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "account_state=info".into()),
-            )
-            .with_test_writer()
-            .try_init();
-
-        let snapshots_dir = std::env::var_os("LOCAL_SNAPSHOT_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/Volumes/x5/_"));
-        ensure!(
-            snapshots_dir.exists(),
-            "Local snapshots directory does not exist: {}",
-            snapshots_dir.display()
-        );
-
-        let mut snapshot_paths = std::fs::read_dir(&snapshots_dir)?
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .filter(|path| path.is_file())
-            .filter(|path| path.extension().is_none_or(|ext| ext != "header"))
-            .collect::<Vec<_>>();
-        snapshot_paths.sort();
-        ensure!(
-            !snapshot_paths.is_empty(),
-            "No snapshot files found in {}",
-            snapshots_dir.display()
-        );
-
-        let snapshot_paths = if std::env::var_os("LOCAL_SNAPSHOT_ALL").is_some() {
-            snapshot_paths
-        } else {
-            let snapshot_path = std::env::var_os("LOCAL_SNAPSHOT_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| snapshot_paths[0].clone());
-            ensure!(
-                snapshot_path.is_file(),
-                "Snapshot file does not exist: {}",
-                snapshot_path.display()
-            );
-            vec![snapshot_path]
-        };
-
-        for snapshot_path in snapshot_paths {
-            let tmp = tempfile::TempDir::new()?;
-            // Real snapshots must not accumulate both archive copies in RAM.
-            // Require an explicit external test store and isolate each run's sets.
-            let address = std::env::var("LOCAL_SNAPSHOT_AEROSPIKE_ADDRESS")
-                .context("Set LOCAL_SNAPSHOT_AEROSPIKE_ADDRESS to an isolated test Aerospike")?;
-            let namespace = std::env::var("LOCAL_SNAPSHOT_AEROSPIKE_NAMESPACE")
-                .unwrap_or_else(|_| "snapshot_import".to_string());
-            let set_prefix = format!(
-                "snapshot_import_{}",
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()
-            );
-            eprintln!("snapshot archive: {address}, namespace={namespace}, prefix={set_prefix}");
-            let accounts = ThreadAccountsRepository::builder(tmp.path().join("thread-accounts"))
-                .set_accounts_aerospike_store(&address, &namespace, &set_prefix)
-                .build()?;
-            let (mut repository, _) = make_test_repository_with_accounts(&tmp, accounts)?;
-
-            let file = File::open(&snapshot_path)?;
-            let mut snapshot_file = ProgressReader {
-                total: file.metadata()?.len(),
-                inner: file,
-                bytes: 0,
-                next: 256 * 1024 * 1024,
-                started: std::time::Instant::now(),
-            };
-            let mut magic = [0u8; COMPRESSED_SNAPSHOT_MAGIC.len()];
-            let skipped_attestation_ids = Arc::new(Mutex::new(HashSet::default()));
-
-            let import_started = std::time::Instant::now();
-            let restore_result = match snapshot_file.read_exact(&mut magic) {
-                Ok(()) if &magic == COMPRESSED_SNAPSHOT_MAGIC => {
-                    let mut decoder = zstd::Decoder::new(snapshot_file)?;
-                    repository.set_state_from_snapshot_reader(
-                        &mut decoder,
-                        &ThreadIdentifier::default(),
-                        skipped_attestation_ids,
-                    )
-                }
-                Ok(()) => {
-                    let reader = Cursor::new(magic.to_vec());
-                    let mut chained = reader.chain(snapshot_file);
-                    repository.set_state_from_snapshot_reader(
-                        &mut chained,
-                        &ThreadIdentifier::default(),
-                        skipped_attestation_ids,
-                    )
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    anyhow::bail!("Snapshot file is too short: {}", snapshot_path.display());
-                }
-                Err(err) => Err(err.into()),
-            };
-
-            restore_result.map_err(|e| {
-                anyhow::anyhow!("Failed to restore {}: {e}", snapshot_path.display())
-            })?;
-            eprintln!(
-                "streamed snapshot import completed in {:.1}s",
-                import_started.elapsed().as_secs_f64()
-            );
-            let (restored_block_id, _) = repository
-                .select_thread_last_finalized_block(&ThreadIdentifier::default())?
-                .ok_or_else(|| anyhow::anyhow!("No finalized block after restore"))?;
-            let restored_state = repository
-                .get_full_optimistic_state_no_cache(
-                    &restored_block_id,
-                    &ThreadIdentifier::default(),
-                    None,
-                )?
-                .ok_or_else(|| anyhow::anyhow!("No optimistic state after restore"))?;
-            const MAX_PRINTED_RESTORED_ACCOUNTS: usize = 100;
-            let mut printed_accounts = 0usize;
-            let mut total_accounts = 0usize;
-            for (routing, info) in repository
-                .thread_accounts_repository
-                .durable_map_iter(&restored_state.shard_state.0.durable)
-            {
-                if let AccountInfo::AccountHash(_) = info {
-                    total_accounts += 1;
-                    if printed_accounts < MAX_PRINTED_RESTORED_ACCOUNTS {
-                        // Import already authenticates every body. Read back a
-                        // sample, not the entire database with another BOC decode.
-                        if let Some(account) = repository
-                            .thread_accounts_repository
-                            .state_account(&restored_state.shard_state.0, &routing)?
-                        {
-                            eprintln!(
-                                "streamed snapshot test: account {} last_trans_lt={} dapp_id={} last_trans_hash={}",
-                                routing,
-                                account.last_trans_lt(),
-                                account
-                                    .get_dapp_id()
-                                    .map(|x| x.to_hex_string())
-                                    .unwrap_or_default(),
-                                account.last_trans_hash()
-                            );
-                            printed_accounts += 1;
-                        }
-                    }
-                }
-            }
-            eprintln!(
-                "streamed snapshot test: printed {} of {} restored accounts",
-                printed_accounts, total_accounts
-            );
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_snapshot_file_roundtrip_preserves_durable_bytes() -> anyhow::Result<()> {
-        let tempdir = tempfile::tempdir()?;
-        let input_path = tempdir.path().join("streamed.snapshot");
-        let output_path = tempdir.path().join("streamed-out.snapshot");
-        let durable_bytes = vec![0x10, 0x20, 0x30, 0x40, 0x50];
-
-        let mut payload = Vec::new();
-        write_legacy_snapshot_bytes_to_writer(&make_test_snapshot(), &durable_bytes, &mut payload)?;
-        std::fs::write(&input_path, payload)?;
-
-        let mut snapshot_file = read_snapshot_file(&input_path)?;
-        assert_eq!(snapshot_file.compression(), SnapshotCompression::Plain);
-        match snapshot_file.format() {
-            SnapshotFormat::Streamed { durable_bytes: preserved } => {
-                assert_eq!(preserved, &durable_bytes);
-            }
-        }
-        assert!(snapshot_file.snapshot().durable_state_snapshot().is_none());
-
-        snapshot_file.snapshot_mut().set_descendant_bk_set(BlockKeeperSet::new());
-        write_snapshot_file(&output_path, &snapshot_file)?;
-
-        let output_bytes = std::fs::read(&output_path)?;
-        let durable_offset = streamed_durable_offset(&output_bytes)?;
-        assert_eq!(&output_bytes[durable_offset..], durable_bytes.as_slice());
-
-        let reparsed = read_snapshot_file(&output_path)?;
-        assert!(reparsed.snapshot().descendant_bk_set().is_empty());
-        match reparsed.format() {
-            SnapshotFormat::Streamed { durable_bytes: preserved } => {
-                assert_eq!(preserved, &durable_bytes);
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_snapshot_file_roundtrip_preserves_compression() -> anyhow::Result<()> {
-        use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
-
-        let tempdir = tempfile::tempdir()?;
-        let input_path = tempdir.path().join("compressed.snapshot");
-        let output_path = tempdir.path().join("compressed-out.snapshot");
-        let durable_bytes = vec![0xAB, 0xCD, 0xEF];
-
-        let mut payload = Vec::new();
-        write_legacy_snapshot_bytes_to_writer(&make_test_snapshot(), &durable_bytes, &mut payload)?;
-        std::fs::write(&input_path, compress_snapshot_payload(&payload)?)?;
-
-        let mut snapshot_file = read_snapshot_file(&input_path)?;
-        assert_eq!(snapshot_file.compression(), SnapshotCompression::ZstdWithMagic);
-        snapshot_file.snapshot_mut().set_bk_set(BlockKeeperSet::new());
-        write_snapshot_file(&output_path, &snapshot_file)?;
-
-        let output_bytes = std::fs::read(&output_path)?;
-        assert!(output_bytes.starts_with(COMPRESSED_SNAPSHOT_MAGIC));
-        let decompressed = zstd::decode_all(&output_bytes[COMPRESSED_SNAPSHOT_MAGIC.len()..])?;
-        assert!(decompressed.starts_with(snapshot_v1::MAGIC));
-
-        let reparsed = read_snapshot_file(&output_path)?;
-        assert_eq!(reparsed.compression(), SnapshotCompression::ZstdWithMagic);
-        match reparsed.format() {
-            SnapshotFormat::Streamed { durable_bytes: preserved } => {
-                assert_eq!(preserved, &durable_bytes);
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn rewrite_snapshot_file_keeps_legacy_format() -> anyhow::Result<()> {
-        let tempdir = tempfile::tempdir()?;
-        let input_path = tempdir.path().join("rewrite-streamed.snapshot");
-        let output_path = tempdir.path().join("rewrite-streamed-out.snapshot");
-
-        let mut payload = Vec::new();
-        write_legacy_snapshot_bytes_to_writer(&make_test_snapshot(), &[0x01, 0x02], &mut payload)?;
-        std::fs::write(&input_path, payload)?;
-
-        rewrite_snapshot_file(&input_path, &output_path, |snapshot| {
-            snapshot.set_descendant_bk_set(BlockKeeperSet::new());
-            Ok(())
-        })?;
-
-        let output_bytes = std::fs::read(&output_path)?;
-        assert!(output_bytes.starts_with(snapshot_v1::MAGIC));
-        Ok(())
-    }
-
     /// Test that the durable_state_snapshot field type (Option<Vec<u8>>) survives
     /// bincode roundtrip, both Some and None variants.
     #[test]
@@ -5817,5 +4897,115 @@ pub mod tests {
         let bytes = bincode::serialize(&some_large).unwrap();
         let deserialized: Option<Vec<u8>> = bincode::deserialize(&bytes).unwrap();
         assert_eq!(deserialized.unwrap().len(), 10000);
+    }
+
+    fn test_bk(index: u8) -> BlockKeeperData {
+        BlockKeeperData {
+            owner_address: node_types::AccountIdentifier::new([index; 32]),
+            signer_index: index as u16,
+            ..Default::default()
+        }
+    }
+
+    fn test_bk_set(indices: &[u8]) -> Arc<BlockKeeperSet> {
+        let mut set = BlockKeeperSet::new();
+        for index in indices {
+            set.insert(*index as u16, test_bk(*index));
+        }
+        Arc::new(set)
+    }
+
+    fn test_update(seq_no: u32, current: &[u8]) -> BkSetUpdate {
+        BkSetUpdate {
+            seq_no,
+            thread_id: node_types::ThreadIdentifier::default(),
+            current: Some(test_bk_set(current)),
+            future: None,
+            added_nodes: Default::default(),
+        }
+    }
+
+    fn signers(bks: &[super::ApiBk]) -> Vec<usize> {
+        let mut signers: Vec<_> = bks.iter().map(|x| x.signer_index).collect();
+        signers.sort();
+        signers
+    }
+
+    #[test]
+    fn exact_set_from_update_has_thread_and_lists() {
+        let mut update = test_update(5, &[1, 2]);
+        update.future = Some(test_bk_set(&[3]));
+        let exact = super::ApiExactBkSet::from(&update);
+        assert_eq!(exact.seq_no, 5);
+        assert_eq!(exact.thread_id.len(), 68);
+        assert_eq!(exact.thread_id, hex::encode(node_types::ThreadIdentifier::default()));
+        assert_eq!(signers(&exact.bk_set), vec![1, 2]);
+        assert_eq!(signers(&exact.future_bk_set), vec![3]);
+
+        update.current = None;
+        update.future = None;
+        let exact = super::ApiExactBkSet::from(&update);
+        assert!(exact.bk_set.is_empty());
+        assert!(exact.future_bk_set.is_empty());
+    }
+
+    #[test]
+    fn exact_set_is_sorted_by_signer_index() {
+        let mut update = test_update(5, &[5, 2, 9, 1, 7]);
+        update.future = Some(test_bk_set(&[8, 3, 6]));
+        let exact = super::ApiExactBkSet::from(&update);
+        let ids = |bks: &[super::ApiBk]| bks.iter().map(|x| x.signer_index).collect::<Vec<_>>();
+        assert_eq!(ids(&exact.bk_set), vec![1, 2, 5, 7, 9]);
+        assert_eq!(ids(&exact.future_bk_set), vec![3, 6, 8]);
+
+        let start = super::ApiBkSet {
+            seq_no: 0,
+            current: vec![test_bk(4).into(), test_bk(2).into()],
+            future: vec![test_bk(9).into(), test_bk(3).into()],
+        };
+        let exact = super::exact_bk_set_from_start_set(&start);
+        assert_eq!(ids(&exact.bk_set), vec![2, 4]);
+        assert_eq!(ids(&exact.future_bk_set), vec![3, 9]);
+    }
+
+    #[test]
+    fn exact_set_drops_removed_bk_immediately() {
+        let mut merged = super::ApiBkSet { seq_no: 0, current: vec![], future: vec![] };
+        let mut exact = None;
+        for update in [test_update(999, &[1, 2, 3]), test_update(1000, &[1, 2])] {
+            merged.update(&super::ApiBkSet::from(update_clone(&update)));
+            exact = Some(super::ApiExactBkSet::from(&update));
+        }
+        let exact = exact.unwrap();
+        assert_eq!(exact.seq_no, 1000);
+        assert_eq!(signers(&exact.bk_set), vec![1, 2]);
+        assert_eq!(merged.seq_no, 1000);
+        assert_eq!(signers(&merged.current), vec![1, 2, 3]);
+    }
+
+    fn update_clone(update: &BkSetUpdate) -> BkSetUpdate {
+        BkSetUpdate {
+            seq_no: update.seq_no,
+            thread_id: update.thread_id,
+            current: update.current.clone(),
+            future: update.future.clone(),
+            added_nodes: Default::default(),
+        }
+    }
+
+    #[test]
+    fn initial_exact_snapshot_from_start_set() {
+        let bk: super::ApiBk = test_bk(1).into();
+        let start = super::ApiBkSet { seq_no: 0, current: vec![bk.clone()], future: vec![] };
+        let exact = super::exact_bk_set_from_start_set(&start);
+        assert_eq!(
+            exact,
+            super::ApiExactBkSet {
+                seq_no: 0,
+                thread_id: hex::encode(node_types::ThreadIdentifier::default()),
+                bk_set: vec![bk],
+                future_bk_set: vec![],
+            }
+        );
     }
 }

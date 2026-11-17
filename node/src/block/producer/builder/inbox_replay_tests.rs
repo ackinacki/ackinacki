@@ -115,6 +115,7 @@ fn inbox_cursor_models_preserve_validator_replay() -> anyhow::Result<()> {
     }
     parent.shard_state = OptimisticShardState(accounts.build(None)?.new_state);
     let config = load_blockchain_config()?.get(&DEFAULT_BLOCKCAHIN_CONFIG_HASH)?;
+    let wasm_cache = WasmNodeCache::new()?;
     let run = |state: OptimisticStateImpl,
                parallelism,
                limit,
@@ -138,7 +139,7 @@ fn inbox_cursor_models_preserve_validator_replay() -> anyhow::Result<()> {
                 .settled_messages(HashMap::new())
                 .tracked_ext_out_account_routings(BTreeSet::new())
                 .metrics(None)
-                .wasm_cache(WasmNodeCache::new()?)
+                .wasm_cache(wasm_cache.clone())
                 .is_verifier(checker.is_some())
                 .check_history_proof_hash(None)
                 .build()?

@@ -4,6 +4,7 @@
 pub mod account_boc_loader;
 pub mod key_handling;
 pub mod metrics;
+mod process_memory;
 
 use std::path::Path;
 use std::path::PathBuf;

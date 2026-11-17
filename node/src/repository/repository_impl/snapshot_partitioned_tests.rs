@@ -261,9 +261,6 @@ fn primary_snapshot_rejects_wrong_boundaries_budgets_truncation_and_trailing_dat
         false
     })
     .is_err());
-    assert!(
-        super::super::read_thread_snapshot_from_payload(&raw, SnapshotCompression::Plain).is_err()
-    );
     Ok(())
 }
 

@@ -2,6 +2,86 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.7] – 2026-11-16
+
+### Breaking Changes
+- Removed `SNAP2V1` snapshots. Synchronization and startup recovery need a
+  `SNAP2V2` primary together with its `<block-id>.partitions/` files; a node
+  that has only old snapshots must get a partitioned one with the previous
+  release before upgrading.
+- Removed the background TVM-to-durable account migration and the
+  `node_state_accounts_moved_from_tvm` metric. Upgrade a running network only
+  after the account migration has completed: blocks with the retired migration
+  operation and the old `SyncFinalized` message without a height are rejected.
+- The WASM verifier replacement applies to every block, whatever its engine
+  version. `config/wasm/0d69c25d36f1d8814c644ce96c61dbfbd8ae13e9a116d7d9f379fbaf0648b0eb`
+  must be present and match its SHA-256; the original
+  `2d577ca2e693700282d6d778dce8cfcedbada644497e411ec6aed889f5a3d5f4` is no
+  longer needed. `snapshot_partition_size_bytes` is always part of the protocol
+  identifier.
+- `/v2/bk_set` returns the exact BK set of block `seq_no` of thread
+  `thread_id` (keys `thread_id`, `bk_set`, `future_bk_set`, `seq_no`), with full
+  BK records sorted by `signer_index`. Renamed element fields: `node_id` →
+  `owner_address`, `node_owner_pk` → `owner_pubkey`, `epoch_start_seq_no` →
+  `epoch_finish_seq_no` (`null` when unknown). The response is about 2.7 times
+  larger (about 150 KB for 299 BKs): health checks that match the end of the
+  body need a buffer that holds all of it, e.g. haproxy `tune.bufsize`.
+  `/v2/bk_set_update` is unchanged.
+
+### New / Improvements
+- New default external-message queue limits for nodes and the `block-keeper`
+  Ansible role: `ext_messages_total_limit` / `EXT_MESSAGES_TOTAL_LIMIT` 300,
+  `ext_messages_dapp_limit` / `EXT_MESSAGES_DAPP_LIMIT` 250. Explicitly set
+  values stay in effect.
+- Multifactor `sendTransaction` / `submitTransaction` calls of `setOwnerPubkey`
+  (payload starting with `0x3456a3c0`) get normal priority in the
+  external-message queue.
+- block-manager keeps the exact thread-0 BK set in the archive table
+  `latest_bk_set` (BM archive migration `011-latest_bk_set`), and gql-server
+  serves it as `blockchain.latestBkSet`. Upgrade BK nodes first — block-manager
+  does not accept the old `/v2/bk_set` — and on archive hosts upgrade
+  `bm-archive-processor` before migrating the full archive DB.
+- block-manager keeps a history proofs store `bm-history-proofs.db` (never
+  rotated, about 45 MB a day). gql-server serves thread-0 blocks, bridge and
+  RootPN events, BK set updates and key block attestations from it after they
+  leave the archives, and adds `blockchain.voucherEvents` and
+  `blockchain.layerTree`. Gaps left by restarts are closed with
+  `block-manager history-proofs gaps | export | import`.
+- `ansible/upgrade-bm.yaml` and `ansible/block-manager-upgrading.yaml` upgrade
+  one block-manager at a time and close its store gaps from the others; hosts
+  and the Ansible controller need `rsync`. Do not restart the nodes and
+  block-managers of all sites in one run, and seed the bridge only after the
+  first L3 boundary every block-manager holds
+  (`specs/block-manager/bridge_dex_gql_data_spec_v5_06_11_26.md`, §6).
+- The `block-manager` Ansible role starts `q_server_bm` only after the new
+  `block_manager` healthcheck passes; raise `BM_HEALTHCHECK_START_PERIOD`
+  (default `1h`) if startup migrations on your archive take longer.
+- New metrics: `node_process_rss_bytes` and `node_process_swap_bytes`;
+  `node_state_accounts_batch_accumulation_duration`,
+  `node_state_accounts_batch_queue_duration` and
+  `node_state_accounts_batch_write_duration` for durable account batches; and
+  the optional `node_allocator_allocated_bytes` (Linux, glibc 2.33+), enabled by
+  setting `NODE_ALLOCATOR_STATS_INTERVAL_SECS` to a positive number of seconds
+  (off by default; sampling can delay allocations).
+- `snapshot-viewer` and `snapshot-bootstrap` work with partitioned `SNAP2V2`
+  snapshots and take a snapshot directory as input; `snapshot-bootstrap
+  --out-path` is now an output directory.
+- Block catch-up and partitioned snapshot import use less CPU and memory, and
+  account partitions are downloaded in parallel.
+
+### Fixes
+- `node-helper config` retries resolving `--gossip-seeds`,
+  `--gossip-advertise-addr` and `--node-advertise-addr` up to 30 times, one
+  second apart, instead of exiting while Docker peer names are not registered.
+- Fixed snapshots: cleanup no longer deletes files of a snapshot still being
+  published (incomplete snapshots, synchronization timeouts), snapshot HTTP
+  requests no longer deadlock or stall other API requests, and an unchanged
+  file returns `304 Not Modified` even with an invalid range.
+- Fixed `node_accounts_number` after a snapshot import and for uninitialized
+  accounts created, deleted or activated in blocks.
+- `node_state_accounts_aerospike_batch_write_duration` buckets now reach 30
+  seconds instead of 1 second.
+
 ## [0.19.6] – 2026-10-25
 
 ### Breaking Changes

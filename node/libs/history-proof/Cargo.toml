@@ -9,4 +9,10 @@ license-file.workspace = true
 
 [dependencies]
 node-types.workspace = true
+proof-data.workspace = true
 tvm_vm.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true

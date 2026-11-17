@@ -114,7 +114,7 @@ pub(crate) fn patch_account(
                 .insert(&address.into(), &account.try_into()?)
                 .map_err(|err| anyhow::anyhow!("Failed to insert TVM account: {}", err))?;
         }
-        BlockAccountOperation::Remove | BlockAccountOperation::MoveFromTvm => {
+        BlockAccountOperation::Remove => {
             accounts
                 .remove(&address.into())
                 .map_err(|err| anyhow::anyhow!("Failed to remove TVM account: {}", err))?;

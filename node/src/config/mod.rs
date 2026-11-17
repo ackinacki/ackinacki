@@ -72,11 +72,11 @@ fn default_tracked_ext_out_account_routings() -> BTreeSet<AccountRouting> {
 }
 
 fn default_ext_messages_total_limit() -> usize {
-    1200
+    300
 }
 
 fn default_ext_messages_dapp_limit() -> usize {
-    600
+    250
 }
 
 fn default_ext_messages_account_limit() -> usize {
@@ -126,7 +126,7 @@ pub struct GlobalConfig {
 
     /// Recommended partition capacity in canonical uncompressed bytes (1 GiB).
     /// Protocol-wide, not a hard maximum for indivisible leaves. Committed by
-    /// CanonicalConfigHash starting with engine version 1.0.8.
+    /// CanonicalConfigHash.
     #[serde(
         default = "default_snapshot_partition_size_bytes",
         deserialize_with = "deserialize_snapshot_partition_size_bytes"
@@ -480,8 +480,8 @@ impl Default for NodeConfig {
             state_cache_size: 10,
             unload_after: None,
             rate_limit_on_incoming_block_req: u32::MAX,
-            ext_messages_total_limit: 1200,
-            ext_messages_dapp_limit: 600,
+            ext_messages_total_limit: default_ext_messages_total_limit(),
+            ext_messages_dapp_limit: default_ext_messages_dapp_limit(),
             ext_messages_account_limit: 5,
             ext_messages_low_priority_limit_percentage: 80,
             node_wallet_pubkey: "some_public_key".to_string(),

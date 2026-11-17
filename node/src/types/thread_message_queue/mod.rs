@@ -22,6 +22,7 @@ pub mod account_messages_iterator;
 mod capacity;
 pub use capacity::InboxCapacity;
 mod diff;
+#[cfg(test)]
 pub(crate) mod legacy;
 pub mod maps;
 #[cfg(test)]

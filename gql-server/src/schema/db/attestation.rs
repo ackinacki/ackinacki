@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use sqlx::prelude::FromRow;
 use sqlx::QueryBuilder;
 
+use crate::defaults;
 use crate::schema::db::projection::SqlProjection;
 use crate::schema::db::DBConnector;
 
@@ -101,7 +102,13 @@ impl Attestation {
             _ => panic!("Unsupported SQL projection filter field: attestation.{field}"),
         }
         let select = projection.select_list();
-        let union_sql = db_names
+        let mut sources: Vec<String> = db_names;
+        // The history proofs store keeps the attestations of key and BK set
+        // rotation blocks after the archives rotate.
+        if db_connector.history_store_attached() {
+            sources.push(defaults::HISTORY_PROOFS_DB_ALIAS.to_string());
+        }
+        let union_sql = sources
             .into_iter()
             .map(|name| {
                 format!("SELECT {select} FROM \"{name}\".attestations WHERE {field}={value:?}")

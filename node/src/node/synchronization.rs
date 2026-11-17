@@ -579,14 +579,6 @@ where
                         initial_state = None;
                         recieved_sync_from = Some(seq_no_from);
                     }
-                    NetworkMessage::SyncFinalized((sync_finalized, _thread_identifier)) => {
-                        tracing::debug!(
-                            "[synchronizing] Received legacy SyncFinalized, ignoring: {:?} {:?} {:?}",
-                            sync_finalized.data().block_seq_no(),
-                            sync_finalized.data().block_identifier(),
-                            sync_finalized.data().thread_refs()
-                        );
-                    }
                     NetworkMessage::SyncFinalizedWithHeight((
                         sync_finalized,
                         _thread_identifier,

@@ -3,7 +3,6 @@
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use node_types::BlockIdentifier;
@@ -140,13 +139,6 @@ pub trait Repository {
     ) -> anyhow::Result<()>;
 
     fn is_block_already_applied(&self, block_id: &BlockIdentifier) -> anyhow::Result<bool>;
-
-    fn set_state_from_snapshot(
-        &mut self,
-        snapshot: Self::StateSnapshot,
-        thread_id: &ThreadIdentifier,
-        skipped_attestation_ids: Arc<Mutex<HashSet<BlockIdentifier>>>,
-    ) -> anyhow::Result<()>;
 
     fn store_optimistic<T: Into<Arc<Self::OptimisticState>>>(&self, state: T)
         -> anyhow::Result<()>;

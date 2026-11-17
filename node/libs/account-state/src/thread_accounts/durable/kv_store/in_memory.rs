@@ -18,6 +18,10 @@ pub struct InMemoryKVStore {
     sets: Arc<RwLock<HashMap<String, HashMap<Vec<u8>, StoredRecord>>>>,
     #[cfg(test)]
     next_put_error: Arc<parking_lot::Mutex<Option<anyhow::Error>>>,
+    #[cfg(test)]
+    get_calls: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    next_get_delay: Arc<parking_lot::Mutex<Option<std::time::Duration>>>,
 }
 
 impl InMemoryKVStore {
@@ -26,6 +30,15 @@ impl InMemoryKVStore {
     }
 
     pub fn get(&self, set: &str, keys: &[Vec<u8>]) -> anyhow::Result<Vec<Option<KVRecord>>> {
+        #[cfg(test)]
+        self.get_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        {
+            let delay = self.next_get_delay.lock().take();
+            if let Some(delay) = delay {
+                std::thread::sleep(delay);
+            }
+        }
         let sets = self.sets.read();
         let set_map = sets.get(set);
         Ok(keys
@@ -41,6 +54,16 @@ impl InMemoryKVStore {
                 })
             })
             .collect())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_call_count(&self) -> usize {
+        self.get_calls.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn delay_next_get(&self, delay: std::time::Duration) {
+        *self.next_get_delay.lock() = Some(delay);
     }
 
     pub fn put(&self, set: &str, records: Vec<KVRecord>, cas: bool) -> anyhow::Result<()> {

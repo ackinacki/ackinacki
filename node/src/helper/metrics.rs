@@ -123,6 +123,9 @@ struct BlockProductionMetricsInner {
     aerospike_accounts_pending_len: Gauge<u64>,
     temporary_block_states_size: Gauge<u64>,
     _live_thread_accounts: ObservableGauge<i64>,
+    _process_rss: ObservableGauge<u64>,
+    _process_swap: ObservableGauge<u64>,
+    _allocator_stats: Option<super::process_memory::AllocatorStats>,
     _live_multimap_nodes: ObservableGauge<i64>,
     _live_acki_nacki_blocks: ObservableGauge<i64>,
     _live_thread_account_states: ObservableGauge<i64>,
@@ -551,6 +554,25 @@ impl BlockProductionMetrics {
                 .i64_observable_gauge("node_live_thread_accounts")
                 .with_callback(|observer| observer.observe(live_thread_accounts(), &[]))
                 .build(),
+            _process_rss: meter
+                .u64_observable_gauge("node_process_rss_bytes")
+                .with_description("Resident memory of the node process in bytes")
+                .with_callback(|observer| {
+                    if let Some(bytes) = super::process_memory::sample().rss_bytes {
+                        observer.observe(bytes, &[]);
+                    }
+                })
+                .build(),
+            _process_swap: meter
+                .u64_observable_gauge("node_process_swap_bytes")
+                .with_description("Swapped private anonymous memory of the node process in bytes")
+                .with_callback(|observer| {
+                    if let Some(bytes) = super::process_memory::sample().swap_bytes {
+                        observer.observe(bytes, &[]);
+                    }
+                })
+                .build(),
+            _allocator_stats: super::process_memory::AllocatorStats::from_env(meter),
             _live_multimap_nodes: meter
                 .i64_observable_gauge("node_live_multimap_nodes")
                 .with_callback(|observer| observer.observe(live_multimap_nodes(), &[]))

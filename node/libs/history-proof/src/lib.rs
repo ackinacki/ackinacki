@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use node_types::AccountRouting;
-use tvm_vm::executor::zk_stuff::bn254::poseidon::PoseidonSponge;
+use tvm_vm::executor::zk_stuff::bn254::poseidon::poseidon_bytes_flat;
 
 pub const HISTORY_PROOF_WINDOW_SIZE: usize = 128;
 pub const MAX_HISTORY_PROOF_LAYERS: usize = 10;
@@ -11,9 +11,8 @@ const REFERENCED_REF_BLOCK_TAG: &[u8] = b"acki-nacki:referenced-block:ref:v1";
 
 pub type LayerNumber = u8;
 
-pub struct PoseidonHasher {
-    sponge: PoseidonSponge,
-}
+// Keep construction through `new` while storing no per-hash mutable state.
+pub struct PoseidonHasher(());
 
 impl Default for PoseidonHasher {
     fn default() -> Self {
@@ -23,11 +22,15 @@ impl Default for PoseidonHasher {
 
 impl PoseidonHasher {
     pub fn new() -> Self {
-        PoseidonHasher { sponge: PoseidonSponge::new() }
+        Self(())
     }
 
     pub fn digest(&self, bytes: &[u8]) -> [u8; 32] {
-        self.sponge.hash_bytes_flat(bytes).expect("Poseidon hash failed")
+        // The SDK initializes the round constants once in its LazyLock and
+        // clones the prepared sponge for each digest. Rebuilding the template
+        // here costs milliseconds, including for blocks with no transactions.
+        // Each call still has an independent hashing state, also across threads.
+        poseidon_bytes_flat(bytes).expect("Poseidon hash failed")
     }
 }
 
@@ -116,12 +119,23 @@ pub fn compute_block_leaf_hash(
     envelope_hash: &[u8; 32],
     tracked_ext_out_messages_root: &[u8; 32],
 ) -> [u8; 32] {
-    let hasher = PoseidonHasher::new();
-    let mut buf = [0u8; 96];
-    buf[..32].copy_from_slice(block_id);
-    buf[32..64].copy_from_slice(envelope_hash);
-    buf[64..96].copy_from_slice(tracked_ext_out_messages_root);
-    hasher.digest(&buf)
+    compute_block_leaf_hash_with(
+        &PoseidonHasher::new(),
+        block_id,
+        envelope_hash,
+        tracked_ext_out_messages_root,
+    )
+}
+
+/// `compute_block_leaf_hash` with a caller-owned hasher: creating a hasher
+/// costs far more than one hash, so loops over many blocks reuse one.
+pub fn compute_block_leaf_hash_with(
+    hasher: &PoseidonHasher,
+    block_id: &[u8; 32],
+    envelope_hash: &[u8; 32],
+    tracked_ext_out_messages_root: &[u8; 32],
+) -> [u8; 32] {
+    hash_three(hasher, block_id, envelope_hash, tracked_ext_out_messages_root)
 }
 
 pub fn compute_ext_message_leaf_hash(
@@ -129,12 +143,147 @@ pub fn compute_ext_message_leaf_hash(
     account_id: &[u8; 32],
     ext_message_hash: &[u8; 32],
 ) -> [u8; 32] {
-    let hasher = PoseidonHasher::new();
+    hash_three(&PoseidonHasher::new(), account_dapp_id, account_id, ext_message_hash)
+}
+
+fn hash_three(hasher: &PoseidonHasher, a: &[u8; 32], b: &[u8; 32], c: &[u8; 32]) -> [u8; 32] {
     let mut buf = [0u8; 96];
-    buf[..32].copy_from_slice(account_dapp_id);
-    buf[32..64].copy_from_slice(account_id);
-    buf[64..96].copy_from_slice(ext_message_hash);
+    buf[..32].copy_from_slice(a);
+    buf[32..64].copy_from_slice(b);
+    buf[64..96].copy_from_slice(c);
     hasher.digest(&buf)
+}
+
+/// `compute_ext_out_messages_root` over groups decoded from a stored
+/// `tracked_ext_out_message_hashes` blob (same order: the blob is written from
+/// the same sorted map). Zero when there are no hashes.
+pub fn ext_out_messages_root_from_groups(
+    hasher: &PoseidonHasher,
+    groups: &[proof_data::tracked::TrackedGroup],
+) -> [u8; 32] {
+    let leaf_hashes: Vec<[u8; 32]> = groups
+        .iter()
+        .flat_map(|group| {
+            group
+                .hashes
+                .iter()
+                .map(|message| hash_three(hasher, &group.dapp_id, &group.account_id, message))
+        })
+        .collect();
+    if leaf_hashes.is_empty() {
+        return [0u8; 32];
+    }
+    dense_merkle_root(hasher, &leaf_hashes)
+}
+
+/// The fields of a stored thread-0 block that layer trees are built from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowView {
+    pub block_id: [u8; 32],
+    pub envelope_hash: [u8; 32],
+    pub tracked_root: [u8; 32],
+    pub layers: proof_data::layers::LayerRoots,
+}
+
+impl RowView {
+    fn layer_root(&self, layer: LayerNumber) -> Option<[u8; 32]> {
+        self.layers.iter().find(|(n, _)| *n == layer).map(|(_, root)| *root)
+    }
+}
+
+/// Number of leaves of a layer tree: the higher-layer root, the previous
+/// same-layer root and one window of data.
+pub const LAYER_TREE_LEAF_COUNT: usize = 2 + HISTORY_PROOF_WINDOW_SIZE;
+
+/// Heights whose row is missing or lacks the layer root the tree described by
+/// `spec` needs, sorted. Reads rows only, no hashing: `assemble_layer_tree_leaves`
+/// runs it before any hashing.
+pub fn layer_tree_missing_heights(
+    spec: &proof_data::layer_tree::LayerTreeSpec,
+    get: impl Fn(u64) -> Option<RowView>,
+) -> Vec<u64> {
+    let has_layer = |height: u64, layer: LayerNumber| {
+        get(height).is_some_and(|row| row.layer_root(layer).is_some())
+    };
+    let mut missing = Vec::new();
+    for (height, layer) in [(spec.leaf0, spec.layer + 1), (spec.leaf1, spec.layer)] {
+        if let Some(height) = height {
+            if !has_layer(height, layer) {
+                missing.push(height);
+            }
+        }
+    }
+    for &height in &spec.data {
+        let present = if spec.layer == 1 {
+            height == 0 || get(height).is_some()
+        } else {
+            has_layer(height, spec.layer - 1)
+        };
+        if !present {
+            missing.push(height);
+        }
+    }
+    missing.sort_unstable();
+    missing.dedup();
+    missing
+}
+
+/// Builds the 130 leaves of the layer tree described by `spec` from stored
+/// rows, in the order the node hashes them, or returns the sorted heights
+/// whose row is missing or lacks the needed layer root (found before any
+/// hashing). Height 0 is a zero leaf. The rows are read through `get` first,
+/// and only those reads are used: a second read that failed (a store error
+/// read as "no row") would otherwise become a zero leaf and a false root
+/// mismatch.
+pub fn assemble_layer_tree_leaves(
+    hasher: &PoseidonHasher,
+    spec: &proof_data::layer_tree::LayerTreeSpec,
+    get: impl Fn(u64) -> Option<RowView>,
+) -> Result<Vec<[u8; 32]>, Vec<u64>> {
+    let mut read: std::collections::HashMap<u64, RowView> = std::collections::HashMap::new();
+    for height in spec.leaf0.into_iter().chain(spec.leaf1).chain(spec.data.iter().copied()) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = read.entry(height) {
+            if let Some(row) = get(height) {
+                entry.insert(row);
+            }
+        }
+    }
+    let missing = layer_tree_missing_heights(spec, |height| read.get(&height).cloned());
+    if !missing.is_empty() {
+        return Err(missing);
+    }
+    let layer_root = |height: Option<u64>, layer: LayerNumber| {
+        height
+            .and_then(|height| read.get(&height))
+            .and_then(|row| row.layer_root(layer))
+            .unwrap_or([0u8; 32])
+    };
+    let mut leaves = Vec::with_capacity(LAYER_TREE_LEAF_COUNT);
+    leaves.push(layer_root(spec.leaf0, spec.layer + 1));
+    leaves.push(layer_root(spec.leaf1, spec.layer));
+    for &height in &spec.data {
+        let leaf = if spec.layer == 1 {
+            match read.get(&height).filter(|_| height != 0) {
+                Some(row) => compute_block_leaf_hash_with(
+                    hasher,
+                    &row.block_id,
+                    &row.envelope_hash,
+                    &row.tracked_root,
+                ),
+                None => [0u8; 32],
+            }
+        } else {
+            layer_root(Some(height), spec.layer - 1)
+        };
+        leaves.push(leaf);
+    }
+    Ok(leaves)
+}
+
+/// Root of a layer tree from its 130 leaves (padded with zero leaves to 256).
+pub fn layer_tree_root(hasher: &PoseidonHasher, leaves: &[[u8; 32]]) -> [u8; 32] {
+    assert_eq!(leaves.len(), LAYER_TREE_LEAF_COUNT, "a layer tree has 130 leaves");
+    dense_merkle_root(hasher, leaves)
 }
 
 pub fn compute_ext_out_messages_root(
@@ -214,6 +363,33 @@ mod tests {
 
     fn routing(dapp: u8, account: u8) -> AccountRouting {
         AccountIdentifier::new([account; 32]).routing(DAppIdentifier::new([dapp; 32]))
+    }
+
+    #[test]
+    fn cached_poseidon_matches_fresh_sponge_across_threads() {
+        use tvm_vm::executor::zk_stuff::bn254::poseidon::PoseidonSponge;
+
+        // Cover field chunk boundaries and the fixed history-proof preimage.
+        // Reference results use the previous, freshly constructed sponge path.
+        let inputs: Vec<_> = [0, 30, 31, 32, 64, 331]
+            .into_iter()
+            .map(|len| (0..len).map(|i| (i % 251) as u8).collect::<Vec<_>>())
+            .collect();
+        let reference = PoseidonSponge::new();
+        let expected: Vec<_> =
+            inputs.iter().map(|input| reference.hash_bytes_flat(input).unwrap()).collect();
+        let hasher = PoseidonHasher::new();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..8 {
+                        for (input, expected) in inputs.iter().zip(&expected) {
+                            assert_eq!(&hasher.digest(input), expected);
+                        }
+                    }
+                });
+            }
+        });
     }
 
     #[test]

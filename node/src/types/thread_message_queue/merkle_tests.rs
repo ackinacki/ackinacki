@@ -468,8 +468,6 @@ fn keyed_walk_matches_legacy_indexed_walk() {
             }
         }
         assert_eq!(walk(&queue), expected, "cursor offset={offset}");
-        let restored = old.into_current(&mut HashMap::new()).unwrap();
-        assert_eq!(walk(&restored), expected, "legacy restore, offset={offset}");
     }
 }
 

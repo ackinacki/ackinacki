@@ -25,6 +25,7 @@ use blocks::BlockchainBlock;
 use blocks::BlockchainBlocksConnection;
 use blocks::BlockchainBlocksEdge;
 use blocks::BlockchainBlocksQueryArgs;
+use latest_bk_set::BlockchainLatestBkSet;
 use transactions::BlockchainMessage;
 use transactions::BlockchainTransaction;
 use transactions::BlockchainTransactionsConnection;
@@ -32,6 +33,7 @@ use transactions::BlockchainTransactionsEdge;
 use transactions::BlockchainTransactionsQueryArgs;
 
 use super::message::MessageLoader;
+use crate::defaults::THREAD_ZERO;
 use crate::helpers::pad_thread_id;
 use crate::schema::db;
 use crate::schema::db::account::BlockchainAccountsQueryArgs;
@@ -47,6 +49,7 @@ use crate::schema::graphql_ext::blockchain_api::account::BlockchainAccountsConne
 use crate::schema::graphql_ext::events::BlockchainEventEdge;
 use crate::schema::graphql_ext::events::BlockchainEventsConnection;
 use crate::schema::graphql_ext::events::Event;
+use crate::schema::graphql_ext::history_allowlist;
 use crate::schema::graphql_ext::is_deprecated_api_visible;
 use crate::schema::graphql_ext::strip_cold_pruned_transaction_fields;
 use crate::schema::graphql_ext::DeprecatedApiGuard;
@@ -55,7 +58,36 @@ pub mod account;
 pub mod attestations;
 pub mod bk_set_updates;
 pub mod blocks;
+pub mod latest_bk_set;
+pub mod layer_tree;
 pub mod transactions;
+pub mod voucher_events;
+
+/// A history proofs store read failed.
+fn store_error(err: anyhow::Error) -> async_graphql::Error {
+    crate::schema::db::connector::map_db_error(async_graphql::Error::new(format!(
+        "history proofs store: {err:#}"
+    )))
+}
+
+/// A block from the history proofs store: the selection is checked against
+/// the closed field list first (on this field's own selection, so aliased
+/// calls are checked one by one), then the row's formats.
+fn file_block(
+    ctx: &Context<'_>,
+    row: Option<db::history_store::HistoryBlockRow>,
+) -> async_graphql::Result<Option<BlockchainBlock>> {
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    history_allowlist::check_selection(
+        ctx.look_ahead(),
+        history_allowlist::BLOCK_FIELDS,
+        &[("attestations", history_allowlist::ATTESTATION_FIELDS)],
+    )?;
+    row.validate().map_err(|err| history_allowlist::data_corrupt(row.height(), err))?;
+    Ok(Some(BlockchainBlock::from_history_row(row)))
+}
 
 pub(super) fn selected_node_fields(ctx: &Context<'_>, root: &str) -> Vec<String> {
     selected_node_fields_at(ctx, &[root])
@@ -331,15 +363,31 @@ impl BlockchainQuery<'_> {
         }
     }
 
-    async fn block(&self, hash: String) -> Option<BlockchainBlock> {
+    /// A block by its id. Thread-0 blocks that left the main DB and the
+    /// archives are served from the history proofs store with a closed set of
+    /// fields; the store holds no other thread.
+    async fn block(
+        &self,
+        ctx: &Context<'_>,
+        hash: String,
+    ) -> async_graphql::Result<Option<BlockchainBlock>> {
         let block_loader = self.ctx.data_unchecked::<DataLoader<BlockLoader>>();
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
         // Shared DataLoaders eagerly convert DB rows into GraphQL objects, so
         // keep their compatibility projections and use lookahead only for
         // optional nested loads here.
-        let block = block_loader.load_one(hash).await.expect("Failed to load block");
+        let block = block_loader
+            .load_one(hash.clone())
+            .await
+            .map_err(crate::schema::db::connector::map_db_error)?;
 
-        let block = block?;
+        let Some(block) = block else {
+            let db_connector = ctx.data::<Arc<DBConnector>>()?;
+            let row = db::history_store::HistoryBlockRow::by_block_id(db_connector, &hash)
+                .await
+                .map_err(store_error)?;
+            return file_block(ctx, row);
+        };
 
         // if self.ctx.look_ahead().field("block").field("in_message").exists() {
         //     let in_message =
@@ -350,14 +398,16 @@ impl BlockchainQuery<'_> {
         let selected_fields = selected_single_fields(self.ctx, "block");
         if selected_fields.iter().any(|field| field == "out_messages") {
             let out_msg_ids = block.out_msgs.clone();
-            let _out_messages =
-                message_loader.load_many(out_msg_ids).await.expect("Failed to load out_messages");
+            let _out_messages = message_loader
+                .load_many(out_msg_ids)
+                .await
+                .map_err(crate::schema::db::connector::map_db_error)?;
 
             // block.out_msg_descr =
             //     Some(out_messages.into_values().map(|m| Some(m)).collect());
         }
 
-        Some(block)
+        Ok(Some(block))
     }
 
     /// This node could be used for a cursor-based pagination of blockchain
@@ -446,33 +496,69 @@ impl BlockchainQuery<'_> {
     }
 
     /// Returns a block uniquely identified by the thread ID and block height.
+    /// Thread-0 blocks that left the main DB and the archives are served from
+    /// the history proofs store with a closed set of fields.
     async fn block_by_height(
         &self,
+        ctx: &Context<'_>,
         #[graphql(
             name = "thread_id",
             desc = "A 68-character thread identifier, left-padded with zeros."
         )]
         thread_id: String,
         #[graphql(desc = "The block height is unique within a thread.")] height: u64,
-    ) -> Option<BlockchainBlock> {
+    ) -> async_graphql::Result<Option<BlockchainBlock>> {
         let block_loader = self.ctx.data_unchecked::<DataLoader<BlockLoader>>();
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
         let thread_id = pad_thread_id(thread_id);
         // Shared DataLoaders eagerly convert DB rows into GraphQL objects, so
         // keep their compatibility projections and use lookahead only for
         // optional nested loads here.
-        let block = block_loader.load_one((thread_id, height)).await.expect("Failed to load block");
+        let block = block_loader
+            .load_one((thread_id.clone(), height))
+            .await
+            .map_err(crate::schema::db::connector::map_db_error)?;
 
-        let block = block?;
+        let Some(block) = block else {
+            if thread_id != THREAD_ZERO {
+                return Ok(None);
+            }
+            let db_connector = ctx.data::<Arc<DBConnector>>()?;
+            let row = db::history_store::HistoryBlockRow::by_height(db_connector, height)
+                .await
+                .map_err(store_error)?;
+            return file_block(ctx, row);
+        };
 
         let selected_fields = selected_single_fields(self.ctx, "block_by_height");
         if selected_fields.iter().any(|field| field == "out_messages") {
             let out_msg_ids = block.out_msgs.clone();
-            let _out_messages =
-                message_loader.load_many(out_msg_ids).await.expect("Failed to load out_messages");
+            let _out_messages = message_loader
+                .load_many(out_msg_ids)
+                .await
+                .map_err(crate::schema::db::connector::map_db_error)?;
         }
 
-        Some(block)
+        Ok(Some(block))
+    }
+
+    /// The 130 leaves of the history proof tree of `layer` whose root is
+    /// recorded in the thread-0 block at `height` (`history_proofs[layer]`).
+    /// The tree is rebuilt and checked against that root before it is
+    /// returned. Errors carry `extensions.code`: `LAYER_TREE_BAD_ARGUMENT`,
+    /// `LAYER_TREE_MISSING_DATA` (retry later or ask another server),
+    /// `LAYER_TREE_ROOT_MISMATCH`, `HISTORY_DATA_CORRUPT`.
+    #[graphql(name = "layerTree")]
+    async fn layer_tree(
+        &self,
+        #[graphql(name = "thread_id", desc = "Thread identifier; only thread 0 has layer trees.")]
+        thread_id: String,
+        #[graphql(desc = "A multiple of 128^layer.")] height: u64,
+        #[graphql(desc = "Layer number, 1..=10.")] layer: u8,
+    ) -> async_graphql::Result<Option<layer_tree::LayerTree>> {
+        layer_tree::layer_tree(self.ctx.data::<Arc<DBConnector>>()?, thread_id, height, layer)
+            .await
+            .map(Some)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -577,6 +663,18 @@ impl BlockchainQuery<'_> {
         ))
     }
 
+    #[doc = "Exact BK set (signer_index → BLS public key) that signs block `block_id` (`seq_no`, `height`) of thread `thread_id`; changes made by that block itself are not applied. Null when no usable snapshot is available: the snapshot table is missing or empty, its rows disagree, or the anchor block is outside the history this server serves (its main DB and the attached archives except the oldest one). Null is not an empty set: the last case clears once a newer snapshot is written, so retry later. The commitment covers the signer indexes and the x-coordinates of the keys only; the y sign bit of each compressed key is taken from the node API, and a wrong one shows up as a failing BLS signature check. Database errors are returned as GraphQL errors, not as null. To get the set at a target block T: apply `bkSetUpdates(thread_id, height_start: height, height_end: <height of T>)` in order, checking before each update that L2 of its block equals your current commitment and after it that the new commitment equals L3; finally, even if no updates were returned, check that the resulting commitment equals L3 of T (always L3: the bound is inclusive and L3 = L2 when T has no changes). L2 and L3 are entries 2 and 3 (0-based) of the block's `block_merkle_tree_leaves`. On any mismatch, discard the result and bootstrap again. The server does not guarantee completeness of `bkSetUpdates`."]
+    #[graphql(name = "latestBkSet")]
+    async fn latest_bk_set(&self) -> async_graphql::Result<Option<BlockchainLatestBkSet>> {
+        let snapshot = crate::schema::db::latest_bk_set::load_latest_bk_set(
+            self.ctx.data::<Arc<DBConnector>>()?,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))
+        .map_err(crate::schema::db::connector::map_db_error)?;
+        Ok(snapshot.map(Into::into))
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[graphql(name = "bkSetUpdates")]
     async fn bk_set_updates(
@@ -667,20 +765,96 @@ impl BlockchainQuery<'_> {
         Some(now.saturating_sub(5 * 60))
     }
 
-    async fn message(&self, hash: String) -> Option<BlockchainMessage> {
+    /// A message by its hash. Bridge `WithdrawalInitiated` and RootPN
+    /// `VoucherGenerated` events that left the main DB and the archives are
+    /// served from the history proofs store with a closed set of fields; so
+    /// are the `block_id` and the source transaction of such an event when its
+    /// transaction left them.
+    async fn message(
+        &self,
+        ctx: &Context<'_>,
+        hash: String,
+    ) -> async_graphql::Result<Option<BlockchainMessage>> {
         let message_loader = self.ctx.data_unchecked::<DataLoader<MessageLoader>>();
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
+        let selection = ctx.look_ahead();
 
         // Shared DataLoaders eagerly convert DB rows into GraphQL objects, so
         // keep their compatibility projections and use lookahead only for
         // optional nested loads here.
-        let message = message_loader.load_one(hash).await.expect("Failed to load message");
-        let mut message = message?;
-        let selection_set = self.ctx.look_ahead().field("message");
-        populate_message_tree(self.ctx, &mut message, selection_set, MAX_RELATION_DEPTH)
+        let message = message_loader
+            .load_one(hash.clone())
             .await
-            .expect("Failed to populate message relations");
+            .map_err(crate::schema::db::connector::map_db_error)?;
+        let Some(mut message) = message else {
+            let Some(event) = db::history_store::EventDbRow::by_hash(db_connector, &hash)
+                .await
+                .map_err(store_error)?
+            else {
+                return Ok(None);
+            };
+            history_allowlist::check_selection(
+                selection,
+                history_allowlist::MESSAGE_FIELDS,
+                &[("src_transaction", history_allowlist::TRANSACTION_FIELDS)],
+            )?;
+            return Ok(Some(BlockchainMessage::from_stored_event(event)));
+        };
+        populate_message_tree(ctx, &mut message, ctx.look_ahead(), MAX_RELATION_DEPTH)
+            .await
+            .map_err(|err| async_graphql::Error::new(format!("{err:#}")))?;
 
-        Some(message)
+        let transaction_selection = ctx.look_ahead().field("src_transaction");
+        let transaction_missing =
+            transaction_selection.exists() && message.src_transaction.is_none();
+        if message.stored_block_id().is_none() || transaction_missing {
+            if let Some(event) = db::history_store::EventDbRow::by_hash(db_connector, &hash)
+                .await
+                .map_err(store_error)?
+            {
+                if transaction_missing {
+                    history_allowlist::check_selection(
+                        transaction_selection,
+                        history_allowlist::TRANSACTION_FIELDS,
+                        &[],
+                    )?;
+                }
+                message.fill_from_stored_event(&event, transaction_missing);
+            }
+        }
+
+        Ok(Some(message))
+    }
+
+    #[doc = "RootPN `VoucherGenerated` events whose `skUCommit` is `sk_u_commit` (1 to 64 hex digits, with or without `0x`, any letter case), by height; normally one. Read from the history proofs store only, with the closed field list of messages served from it; a voucher is found as soon as block-manager has written its block. A server without the history proofs store returns the error `HISTORY_STORE_UNAVAILABLE`, never an empty list; a bad argument gives `VOUCHER_EVENTS_BAD_ARGUMENT`. An empty list means only that this server's store has no such voucher: the height may be in a gap of the block-manager that writes it, and only thread 0 is stored."]
+    #[graphql(name = "voucherEvents")]
+    async fn voucher_events(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(name = "sk_u_commit")] sk_u_commit: String,
+    ) -> async_graphql::Result<Vec<BlockchainMessage>> {
+        use voucher_events::error;
+        use voucher_events::CODE_HISTORY_STORE_UNAVAILABLE;
+        use voucher_events::CODE_VOUCHER_EVENTS_BAD_ARGUMENT;
+
+        let db_connector = ctx.data::<Arc<DBConnector>>()?;
+        if !db_connector.history_store_attached() {
+            return Err(error(
+                CODE_HISTORY_STORE_UNAVAILABLE,
+                "this server has no history proofs store: ask a server that has one".to_string(),
+            ));
+        }
+        let sk = voucher_events::parse_sk_u_commit(&sk_u_commit)
+            .map_err(|err| error(CODE_VOUCHER_EVENTS_BAD_ARGUMENT, err))?;
+        history_allowlist::check_selection(
+            ctx.look_ahead(),
+            history_allowlist::MESSAGE_FIELDS,
+            &[("src_transaction", history_allowlist::TRANSACTION_FIELDS)],
+        )?;
+        let rows = db::history_store::EventDbRow::vouchers_by_sk_u_commit(db_connector, sk)
+            .await
+            .map_err(store_error)?;
+        Ok(rows.into_iter().map(BlockchainMessage::from_stored_event).collect())
     }
 
     async fn transaction(&self, hash: String) -> Option<BlockchainTransaction> {

@@ -10,6 +10,7 @@ publish = false
 anyhow.workspace = true
 blake3 = "1.8.2"
 hex.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

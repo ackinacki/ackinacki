@@ -1,19 +1,16 @@
-use std::path::PathBuf;
-
-use salvo::fs::NamedFile;
-use salvo::http::headers::HeaderMapExt;
 use salvo::prelude::*;
-use snapshot_storage::read_guard;
-use snapshot_storage::snapshot_headers;
 use snapshot_storage::valid_id;
+use snapshot_storage::SnapshotResources;
+
+use super::snapshot_file::SnapshotFile;
 
 pub struct StorageHandler {
-    directory: PathBuf,
+    resources: SnapshotResources,
 }
 
 impl StorageHandler {
-    pub fn new(directory: PathBuf) -> Self {
-        Self { directory }
+    pub fn new(resources: SnapshotResources) -> Self {
+        Self { resources }
     }
 }
 
@@ -28,8 +25,8 @@ impl Handler for StorageHandler {
     ) {
         let name = req.param::<String>("path").unwrap_or_default();
         if name.is_empty() {
-            let directory = self.directory.clone();
-            let snapshots = tokio::task::spawn_blocking(move || snapshot_headers(&directory)).await;
+            let resources = self.resources.clone();
+            let snapshots = tokio::task::spawn_blocking(move || resources.headers()).await;
             match snapshots {
                 Ok(Ok(snapshots)) => {
                     let mut listing = String::from("<!doctype html><html><body>");
@@ -55,53 +52,55 @@ impl Handler for StorageHandler {
             res.status_code(StatusCode::NOT_FOUND);
             return;
         }
-        let path = self.directory.join(&name);
-        let directory = self.directory.clone();
+        let path = self.resources.directory().join(&name);
+        let resources = self.resources.clone();
         let header = partition.is_none() && name.ends_with(".header");
         let id: [u8; 32] = hex::decode(partition.as_deref().unwrap_or(id))
             .expect("validated resource id")
             .try_into()
             .unwrap();
         let checked = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-            let guard = read_guard(&directory)?;
-            if partition.is_some() {
-                anyhow::ensure!(
-                    std::fs::symlink_metadata(path.parent().expect("partition parent"))?
-                        .file_type()
-                        .is_dir(),
-                    "invalid partition directory"
-                );
-            }
-            let metadata = std::fs::symlink_metadata(&path)?;
-            anyhow::ensure!(metadata.file_type().is_file(), "not a regular resource");
-            if header {
-                anyhow::ensure!(
-                    std::fs::symlink_metadata(directory.join(hex::encode(id)))?
-                        .file_type()
-                        .is_file(),
-                    "primary missing"
-                );
-            }
-            // Legacy monolithic snapshots have no chunk footer and retain
-            // NamedFile's validator. New immutable blobs carry their own ETag.
-            let blob = if header {
-                None
-            } else {
-                snapshot_storage::chunks::read_footer(&mut std::fs::File::open(&path)?).ok()
-            };
-            Ok((guard, blob))
+            resources.with_read(|| {
+                if partition.is_some() {
+                    anyhow::ensure!(
+                        std::fs::symlink_metadata(path.parent().expect("partition parent"))?
+                            .file_type()
+                            .is_dir(),
+                        "invalid partition directory"
+                    );
+                }
+                let metadata = std::fs::symlink_metadata(&path)?;
+                anyhow::ensure!(metadata.file_type().is_file(), "not a regular resource");
+                if header {
+                    anyhow::ensure!(
+                        std::fs::symlink_metadata(resources.directory().join(hex::encode(id)))?
+                            .file_type()
+                            .is_file(),
+                        "primary missing"
+                    );
+                }
+                // Legacy monolithic snapshots have no chunk footer and retain
+                // NamedFile's validator. New immutable blobs carry their own ETag.
+                let mut opened = std::fs::File::open(&path)?;
+                let blob = if header {
+                    None
+                } else {
+                    snapshot_storage::chunks::read_footer(&mut opened).ok()
+                };
+                // Never await tokio::fs from this blocking worker: other
+                // workers can be waiting for our storage mutex. Capture the
+                // descriptor synchronously and stream only after unlocking.
+                let file = SnapshotFile::new(
+                    opened,
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                )?;
+                Ok((file, blob))
+            })
         })
         .await;
-        let (guard, metadata) = match checked {
+        let (file, metadata) = match checked {
             Ok(Ok(value)) => value,
             _ => {
-                res.status_code(StatusCode::NOT_FOUND);
-                return;
-            }
-        };
-        let file = match NamedFile::open(self.directory.join(name)).await {
-            Ok(file) => file,
-            Err(_) => {
                 res.status_code(StatusCode::NOT_FOUND);
                 return;
             }
@@ -118,14 +117,9 @@ impl Handler for StorageHandler {
                 true,
             );
         }
-        let etag = metadata.map(|metadata| metadata.etag()).or_else(|| {
-            let mut headers = salvo::http::HeaderMap::new();
-            headers.typed_insert(file.etag()?);
-            Some(headers.get("etag")?.to_str().ok()?.to_owned())
-        });
+        let etag = metadata.map(|metadata| metadata.etag()).or_else(|| file.etag());
         // File descriptor + representation validator are now captured. GC may
         // unlink the name, but an in-flight stream keeps its inode alive.
-        drop(guard);
         let mut headers = req.headers().clone();
         if let Some(etag) = &etag {
             if let Some(value) = headers.get("if-match") {
@@ -156,9 +150,8 @@ impl Handler for StorageHandler {
         headers.remove("if-range");
         headers.remove("if-match");
         headers.remove("if-none-match");
-        file.send(&headers, res).await;
-        // NamedFile generates an inode validator. Managed resources instead use
-        // the map digest stored in the immutable blob footer.
+        file.send(&headers, req.method() == salvo::http::Method::HEAD, res).await;
+        // Managed resources use the map digest stored in the immutable footer.
         if let Some(etag) = etag {
             let _ = res.add_header("ETag", etag, true);
         }

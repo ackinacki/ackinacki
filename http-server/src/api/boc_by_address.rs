@@ -203,9 +203,10 @@ mod tests {
         )>(None::<NoopMetrics>, "test-boc-by-address");
         let (account_request_tx, mut account_request_rx) = mpsc::channel(1);
 
+        let snapshot_directory = tempfile::tempdir().unwrap();
         let web_server: WebServer<TestBpResolver, TestSeqnoGetter> = WebServer::new(
             "127.0.0.1:0",
-            ".",
+            snapshot_storage::SnapshotResources::open(snapshot_directory.path()).unwrap(),
             incoming_tx,
             account_request_tx,
             test_bp_resolver,

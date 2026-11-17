@@ -377,6 +377,19 @@ fn decode_currency_delta(
     })
 }
 
+impl Transaction {
+    /// The source transaction of a bridge event served from the history
+    /// proofs store: only `id` and `block_id` carry data.
+    pub fn synthetic(id: String, block_id: String) -> Transaction {
+        Transaction::from(db::Transaction {
+            id,
+            block_id,
+            out_msgs: "[]".to_string(),
+            ..Default::default()
+        })
+    }
+}
+
 impl From<db::Transaction> for Transaction {
     fn from(trx: db::Transaction) -> Self {
         let boc = tvm_types::base64_encode(decompress_blob(trx.boc));

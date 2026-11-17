@@ -102,6 +102,21 @@ pub struct ArchBlock {
     /// Entry 0 is the mandatory parent block ID, entries 1.. are `CommonSection.refs`.
     #[serde(default)]
     pub proof_block_refs: Vec<u8>,
+    /// Ext-out messages of the block, for the history proofs store (bridge
+    /// events). Filled for thread-0 blocks only; not part of the archive row.
+    #[serde(skip)]
+    pub ext_out_messages: Vec<super::ArchMessage>,
+    /// BK set update of a thread-0 block that changes the BK set, for the
+    /// history proofs store: it is written with the block, and the block keeps
+    /// its `block_merkle_leaves` even off a layer boundary. Not part of the
+    /// archive row (the archive gets it through `put_bk_set_updates`).
+    #[serde(skip)]
+    pub bk_set_update: Option<super::ArchBkSetUpdate>,
+    /// Attestations carried in a thread-0 block, for the history proofs store.
+    /// Not part of the archive row (the archive gets them through
+    /// `put_attestations`).
+    #[serde(skip)]
+    pub attestations: Vec<super::ArchAttestation>,
 }
 
 with_prefix!(prefix_prev_ref "prev_ref_");

@@ -2,6 +2,7 @@
 // Application layer: orchestration and use cases
 
 pub mod executor;
+pub mod history_cli;
 pub mod metrics;
 pub mod quarantine;
 pub mod services;

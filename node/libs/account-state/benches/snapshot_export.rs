@@ -18,10 +18,6 @@
 //! First-ready measures partition encoding completion, not file publication.
 //! No concurrent updates: the initialized archive is an immutable pin equivalent.
 //! Caches are NOT reset; this is a fixed-order comparison, not cold-cache A/B.
-//! `--mode legacy` exercises production legacy export, including rebuilding and
-//! rewriting its account map. `RUST_LOG=monit=info` reports stage times.
-//! `--mode scan` is the current scan exporter without legacy conversion, NOT an
-//! old node binary; comparing them isolates conversion, not the full regression.
 //! Production exporters perform their own hash, size and coverage checks; this
 //! benchmark does not re-import output because the sink discards its bytes.
 //! --read-only adds a storage-only comparison: scan checks full routing keys
@@ -68,8 +64,6 @@ enum Mode {
     Both,
     Scan,
     Ordered,
-    /// Production legacy scan export, including rebuilding the old account map.
-    Legacy,
 }
 
 #[derive(Parser)]
@@ -316,16 +310,11 @@ struct Timing {
 fn scan_export(
     repo: &DurableThreadAccountsRepository,
     map: &ThreadAccountMap,
-    legacy: bool,
 ) -> anyhow::Result<Timing> {
     let state = DurableThreadAccountsState::with_map(map.clone());
     let start = Instant::now();
     let mut sink = CountingSink::default();
-    if legacy {
-        repo.export_snapshot_v1_to_writer_checked(&state, &mut sink, &|| false)?;
-    } else {
-        repo.export_durable_snapshot_to_writer(&state, &mut sink)?;
-    }
+    repo.export_durable_snapshot_to_writer(&state, &mut sink)?;
     let total = start.elapsed().as_secs_f64();
     Ok(Timing { first: total, total, bytes: sink.length })
 }
@@ -452,10 +441,6 @@ fn main() -> anyhow::Result<()> {
     // Cargo appends --bench for harness=false executables.
     let args = Args::parse_from(std::env::args().filter(|arg| arg != "--bench" && arg != "--test"));
     anyhow::ensure!(
-        !matches!(args.mode, Mode::Legacy) || !args.read_only,
-        "legacy mode measures validated export, not read-only storage"
-    );
-    anyhow::ensure!(
         args.accounts >= args.thread_accounts
             && args.thread_accounts > 0
             && (args.background_threads > 0 || args.accounts == args.thread_accounts)
@@ -569,7 +554,6 @@ fn main() -> anyhow::Result<()> {
         Mode::Both => &["scan_full_thread", "ordered_all_partitions"],
         Mode::Scan => &["scan_full_thread"],
         Mode::Ordered => &["ordered_all_partitions"],
-        Mode::Legacy => &["legacy_full_thread"],
     };
     for &mode in modes {
         let mut samples = Vec::with_capacity(args.rounds);
@@ -579,9 +563,7 @@ fn main() -> anyhow::Result<()> {
             } else if args.read_only {
                 ordered_read(&kv, &read_set, &parts, limits)?
             } else if mode == "scan_full_thread" {
-                scan_export(&repo, &map, false)?
-            } else if mode == "legacy_full_thread" {
-                scan_export(&repo, &map, true)?
+                scan_export(&repo, &map)?
             } else {
                 ordered_export(&repo, &parts, limits)?
             };

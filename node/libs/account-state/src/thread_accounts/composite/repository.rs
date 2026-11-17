@@ -104,11 +104,14 @@ impl ThreadAccountsState {
 
 // Composite thread accounts state
 // Includes two parts:
-// - legacy TVM shard state;
+// - TVM shard state;
 // - new durable state v2.
 //
 #[derive(Clone)]
-pub struct ThreadAccountsRepository(pub(crate) Arc<ThreadAccountsRepositoryInner>);
+pub struct ThreadAccountsRepository(
+    pub(crate) Arc<ThreadAccountsRepositoryInner>,
+    Option<&'static rayon::ThreadPool>,
+);
 
 impl ThreadAccountsRepository {
     pub fn builder(durable_path: impl Into<PathBuf>) -> ThreadAccountsRepositoryBuilder {
@@ -126,10 +129,20 @@ impl ThreadAccountsRepository {
         apply_to_durable: bool,
         metrics: Option<StateAccountsMetrics>,
     ) -> anyhow::Result<Self> {
-        Ok(Self(Arc::new(ThreadAccountsRepositoryInner {
-            durable: DurableThreadAccountsRepository::new(durable_path, accounts, metrics)?,
-            apply_to_durable,
-        })))
+        Ok(Self(
+            Arc::new(ThreadAccountsRepositoryInner {
+                durable: DurableThreadAccountsRepository::new(durable_path, accounts, metrics)?,
+                apply_to_durable,
+            }),
+            None,
+        ))
+    }
+
+    /// Return a local execution view for replay, including its preprocessing
+    /// and postprocessing builders. Storage is shared; the producer's original
+    /// repository and other clones keep their existing executor.
+    pub fn for_apply(&self) -> anyhow::Result<Self> {
+        Ok(Self(Arc::clone(&self.0), Some(self.0.durable.apply_pool()?)))
     }
 
     pub fn start_archive_update_service(&self) -> anyhow::Result<()> {
@@ -220,19 +233,6 @@ impl ThreadAccountsRepository {
         )
     }
 
-    pub fn export_snapshot_v1_to_writer_checked<W, F>(
-        &self,
-        state: &ThreadAccountsState,
-        writer: &mut W,
-        should_cancel: &F,
-    ) -> anyhow::Result<()>
-    where
-        W: Write + Seek + Send,
-        F: Fn() -> bool,
-    {
-        self.0.durable.export_snapshot_v1_to_writer_checked(&state.durable, writer, should_cancel)
-    }
-
     pub fn import_durable_snapshot_from_reader<R: Read>(
         &self,
         reader: &mut R,
@@ -267,16 +267,6 @@ impl ThreadAccountsRepository {
         self.0.durable.commit_staged_import(staged, thread_id, block_id)
     }
 
-    pub fn import_snapshot_v1_from_reader_staged<R: Read>(
-        &self,
-        reader: &mut R,
-        thread_id: &ThreadIdentifier,
-        block_id: &BlockIdentifier,
-        staged: StagedArchiveEpoch,
-    ) -> anyhow::Result<DurableThreadAccountsState> {
-        self.0.durable.import_snapshot_v1_from_reader_staged(reader, thread_id, block_id, staged)
-    }
-
     pub fn abort_staged_import(&self, staged: StagedArchiveEpoch) {
         self.0.durable.abort_staged_import(staged)
     }
@@ -288,13 +278,50 @@ impl ThreadAccountsRepository {
         )
     }
 
+    /// Prepare the TVM accounts embedded in a zerostate for execution.
+    /// This does not write to the archive or advance its finalized position.
+    pub fn prepare_zerostate(
+        &self,
+        thread_id: &ThreadIdentifier,
+        state: &ThreadAccountsState,
+    ) -> anyhow::Result<ThreadAccountsState> {
+        anyhow::ensure!(state.durable.map().is_empty(), "Zerostate already has durable accounts");
+        let mut builder = self.state_builder(thread_id, 0, state);
+        builder.set_apply_to_durable(true);
+        state.tvm.iterate_accounts(|account_id, account| {
+            let routing = account_id.routing_or_redirect(account.get_dapp_id());
+            builder.insert_account(&routing, &account);
+            Ok(true)
+        })?;
+        let transition = builder.build(None)?;
+        self.0.durable.retain_genesis_accounts(transition.account_operations);
+        Ok(transition.new_state)
+    }
+
+    /// Initialize genesis bodies before starting the archive update service.
+    /// The caller must verify that node metadata is still at genesis.
+    pub fn initialize_zerostate_archive(
+        &self,
+        thread_id: &ThreadIdentifier,
+        block_id: &BlockIdentifier,
+        state: &ThreadAccountsState,
+    ) -> anyhow::Result<()> {
+        self.0.durable.initialize_zerostate_archive(thread_id, block_id, &state.durable)
+    }
+
     pub fn state_builder(
         &self,
         thread_id: &ThreadIdentifier,
         block_height: u64,
         original: &ThreadAccountsState,
     ) -> ThreadAccountsStateBuilder {
-        ThreadAccountsStateBuilder::new(self.0.clone(), *thread_id, block_height, original.clone())
+        ThreadAccountsStateBuilder::new(
+            self.0.clone(),
+            *thread_id,
+            block_height,
+            original.clone(),
+            self.1,
+        )
     }
 
     pub fn state_split(

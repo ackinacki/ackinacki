@@ -93,8 +93,8 @@ impl PrimaryMetadata {
     /// Reuse the existing local recovery schema, not the monolithic wire codec.
     /// Message bodies already live in the reconstructed queues; no message DB
     /// extraction or temporary account-body segment is needed.
-    fn into_install_prefix(self, optimistic_state: Vec<u8>) -> StreamedThreadSnapshot {
-        StreamedThreadSnapshot {
+    pub(super) fn into_install_prefix(self, optimistic_state: Vec<u8>) -> SnapshotInstallData {
+        SnapshotInstallData {
             optimistic_state,
             ancestor_blocks_data: self.ancestor_blocks_data,
             db_messages: Vec::new(),

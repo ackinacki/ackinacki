@@ -46,7 +46,6 @@ impl Serialize for NetworkMessage {
                 &(inclusive_from, exclusive_to, requester, thread_id, at_least_n_blocks),
             ),
 
-            SyncFinalized(e) => serializer.serialize_newtype_variant(TYPE, 8, "SyncFinalized", &e),
             SyncFrom(e) => serializer.serialize_newtype_variant(TYPE, 7, "SyncFrom", &e),
             SyncFinalizedWithHeight(e) => {
                 serializer.serialize_newtype_variant(TYPE, 12, "SyncFinalizedWithHeight", &e)
@@ -82,7 +81,6 @@ impl<'de> Deserialize<'de> for NetworkMessage {
                 "BlockAttestation",
                 "BlockRequest",
                 "SyncFrom",
-                "SyncFinalized",
                 "SyncFinalizedWithHeight",
                 "ResentCandidate",
                 "AuthoritySwitchProtocol",
@@ -133,15 +131,31 @@ impl<'de> de::Visitor<'de> for NetworkMessageVisitor {
             }),
 
             (7, v) => v.newtype_variant().map(SyncFrom),
-            (8, v) => v.newtype_variant().map(SyncFinalized),
             (12, v) => v.newtype_variant().map(SyncFinalizedWithHeight),
             (9, v) => v.newtype_variant().map(ResentCandidate),
             (10, v) => v.newtype_variant().map(AuthoritySwitchProtocol),
             (11, v) => v.newtype_variant().map(NodeJoiningWithLastFinalized),
             (v, _) => Err(Error::unknown_variant(
                 &v.to_string(),
-                &["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"],
+                &["0", "1", "2", "3", "4", "5", "6", "7", "9", "10", "11", "12"],
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retired_sync_finalized_tag_is_rejected_without_changing_sync_from_tag() {
+        assert!(bincode::deserialize::<NetworkMessage>(&8u32.to_le_bytes()).is_err());
+        let message = NetworkMessage::SyncFrom((0.into(), Default::default()));
+        let wire = bincode::serialize(&message).unwrap();
+        assert_eq!(&wire[..4], &7u32.to_le_bytes());
+        assert!(matches!(
+            bincode::deserialize::<NetworkMessage>(&wire).unwrap(),
+            NetworkMessage::SyncFrom(_)
+        ));
     }
 }

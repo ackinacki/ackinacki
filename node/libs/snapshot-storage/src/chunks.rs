@@ -7,9 +7,8 @@
 //! describe the **compressed bytes**, not accounts, messages or uncompressed
 //! records. They provide transport-integrity metadata and stable resume points
 //! without changing the logical codecs or buffering a whole blob in memory.
-//! Legacy monolithic snapshots (SNAP2V1) retain their original format and have
-//! no chunk map/footer. The existing outer `ZSTD` magic is deliberately unchanged;
-//! no additional envelope version or per-chunk marker is introduced.
+//! Each supported blob carries a chunk map/footer after the compressed frame.
+//! The outer envelope starts with `ZSTD`.
 //!
 //! # File layout
 //!
@@ -76,8 +75,8 @@
 //! separate resume files per ETag and records suppliers of verified chunks.
 //! Different providers may offer different valid wire representations; changing
 //! a provider's own ETag or violating a map/chunk bans it for that snapshot.
-//! Runtime's pre-format-dispatch primary/legacy download still uses its existing
-//! restart-on-retry transport; the partitioned coordinator can also cold-download
+//! Runtime's primary download uses restart-on-retry transport;
+//! the partitioned coordinator can also cold-download
 //! a primary using the same chunk-verified worker as other partitions.
 //!
 //! Chunk checks detect corruption, but are NOT consensus authentication: a source
@@ -256,7 +255,6 @@ fn check_trailer_contents(
 pub struct PayloadReader<R> {
     inner: BufReader<R>,
     hashes: Hashes,
-    verify: bool,
     preverified: bool,
 }
 
@@ -269,12 +267,7 @@ impl<R: Read> PayloadReader<R> {
     }
 
     pub fn after_magic(inner: R) -> Self {
-        Self {
-            inner: BufReader::new(inner),
-            hashes: Hashes::default(),
-            verify: true,
-            preverified: false,
-        }
+        Self { inner: BufReader::new(inner), hashes: Hashes::default(), preverified: false }
     }
 
     /// Only for immutable files whose complete chunks and map were verified by
@@ -282,16 +275,8 @@ impl<R: Read> PayloadReader<R> {
     /// hashing them again; retain envelope limits and exact frame/trailer checks.
     pub fn new_preverified(inner: R) -> anyhow::Result<Self> {
         let mut reader = Self::new(inner)?;
-        reader.verify = false;
         reader.preverified = true;
         Ok(reader)
-    }
-
-    /// Legacy dispatch may discover a pre-partition codec after reading a marker.
-    /// Do not impose the new envelope's transport limits on that old stream.
-    pub fn disable_verification(&mut self) {
-        self.verify = false;
-        self.preverified = false;
     }
 
     pub fn verify_trailer(mut self) -> anyhow::Result<ChunkMapMetadata> {
@@ -312,9 +297,9 @@ impl<R: Read> PayloadReader<R> {
 impl<R: Read> Read for PayloadReader<R> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         let count = self.inner.read(bytes)?;
-        if self.verify {
+        if !self.preverified {
             self.hashes.update(&bytes[..count])?;
-        } else if self.preverified {
+        } else {
             self.hashes.bytes += count as u64;
             if self.hashes.bytes > (CHUNK_BYTES * MAX_CHUNKS) as u64 {
                 return Err(std::io::Error::other("snapshot chunk count limit exceeded"));
@@ -326,9 +311,6 @@ impl<R: Read> Read for PayloadReader<R> {
 
 impl<R: Read> BufRead for PayloadReader<R> {
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        if !self.verify && !self.preverified {
-            return self.inner.fill_buf();
-        }
         // Leave limit enforcement in fallible Read/fill_buf rather than consume.
         let remaining = (CHUNK_BYTES * MAX_CHUNKS) as u64 - self.hashes.bytes;
         let bytes = self.inner.fill_buf()?;
@@ -340,9 +322,9 @@ impl<R: Read> BufRead for PayloadReader<R> {
 
     fn consume(&mut self, count: usize) {
         // fill_buf limits consumption to the validated capacity above.
-        if self.verify {
+        if !self.preverified {
             self.hashes.update(&self.inner.buffer()[..count]).expect("bounded chunk consumption");
-        } else if self.preverified {
+        } else {
             self.hashes.bytes += count as u64;
         }
         self.inner.consume(count);

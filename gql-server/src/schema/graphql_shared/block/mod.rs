@@ -10,6 +10,7 @@ use async_graphql::SimpleObject;
 use chrono::DateTime;
 use faster_hex::hex_string;
 
+use crate::defaults::THREAD_ZERO;
 use crate::helpers::decode_u64_string;
 use crate::helpers::format_big_int;
 use crate::helpers::ToBool;
@@ -419,6 +420,35 @@ impl From<db::Block> for Block {
             proof_block_refs: decode_proof_block_refs(block.proof_block_refs.as_deref()),
             history_proofs: decode_history_proofs(block.history_proofs.as_deref()),
         }
+    }
+}
+
+impl Block {
+    /// A thread-0 block read from the history proofs store. Only the fields of
+    /// `history_allowlist::BLOCK_FIELDS` carry data; the resolvers refuse the
+    /// others before building the object.
+    pub fn from_history_row(row: db::history_store::HistoryBlockRow) -> Block {
+        let height = row.height();
+        let block = db::Block {
+            id: hex_string(&row.block_id),
+            seq_no: row.height,
+            gen_utime: row.gen_utime,
+            thread_id: Some(THREAD_ZERO.to_string()),
+            height: Some(height.to_be_bytes().to_vec()),
+            envelope_hash: Some(row.envelope_hash),
+            tracked_ext_out_messages_root: Some(row.tracked_ext_out_messages_root),
+            // The store keeps no blob for "no tracked messages"; the main DB
+            // keeps an empty list, served as `[]`.
+            tracked_ext_out_message_hashes: Some(
+                row.tracked_ext_out_message_hashes.unwrap_or_else(|| 0u32.to_be_bytes().to_vec()),
+            ),
+            history_proofs: row.history_proofs,
+            block_merkle_leaves: row.block_merkle_leaves,
+            ..Default::default()
+        };
+        let mut block = Block::from(block);
+        block.key_block = None;
+        block
     }
 }
 

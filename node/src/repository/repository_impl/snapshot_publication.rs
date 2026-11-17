@@ -1,7 +1,6 @@
 //! Local publication kernel; production worker and network-format cutover remain pending.
 use std::io::BufWriter;
 use std::io::Write;
-use std::path::Path;
 
 use account_state::write_account_partition_checked;
 use account_state::DurableThreadAccountsRepository;
@@ -44,7 +43,7 @@ pub(crate) struct PartitionedSnapshotPublication<'a> {
     pub account_repository: &'a DurableThreadAccountsRepository,
     pub pin: PinHandle,
     pub publisher: &'a NodeIdentifier,
-    pub directory: &'a Path,
+    pub resources: SnapshotResources,
     pub configs: ConfigRead,
     /// Optional stricter operational budget; cannot exceed the wire hard limit.
     pub max_roots_per_list: u64,
@@ -99,7 +98,7 @@ where
     let order =
         partition_publication_order(manifest_partition_count(&manifest), rank, publishers.len())?;
     check_cancel(should_cancel)?;
-    let store = SnapshotResources::open(p.directory)?;
+    let store = &p.resources;
     let resources = store.begin_snapshot(
         *p.state.block_id.as_array(),
         (0..manifest_partition_count(&manifest))

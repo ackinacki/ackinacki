@@ -104,8 +104,7 @@ where
                 let mut current_values = Vec::with_capacity(N_UPDATE_KEYS);
                 let mut batch = Vec::with_capacity(N_UPDATES);
                 // We use the first N_UPDATE_KEYS pairs for initial state.
-                for i in 0..N_UPDATE_KEYS {
-                    let (key, value) = data.insert_pairs[i];
+                for &(key, value) in &data.insert_pairs[..N_UPDATE_KEYS] {
                     current_values.push(value);
                     batch.push((key, Some(value)));
                 }

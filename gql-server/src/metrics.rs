@@ -1,7 +1,11 @@
 // 2022-2026 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
+use std::sync::atomic::AtomicI64;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use opentelemetry::metrics::Counter;
 use opentelemetry::metrics::Gauge;
@@ -23,6 +27,42 @@ pub struct GqlServerMetrics {
     pub(crate) sqlite_query_duration: Histogram<u64>,
     _pool_size: ObservableGauge<u64>,
     _pool_idle: ObservableGauge<u64>,
+    _oldest_thread0_height: ObservableGauge<u64>,
+    _oldest_thread0_age: ObservableGauge<u64>,
+}
+
+/// The lowest thread-0 height the server serves, refreshed by
+/// `spawn_oldest_height_probe`. `u64::MAX` while unknown.
+pub struct OldestHeight {
+    pub height: AtomicU64,
+    pub gen_utime: AtomicI64,
+}
+
+/// How often the oldest served height is read.
+pub const OLDEST_HEIGHT_PROBE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Reads the oldest served thread-0 height every `interval` in the background.
+pub fn spawn_oldest_height_probe(db: Arc<DBConnector>, interval: Duration) -> Arc<OldestHeight> {
+    let oldest = Arc::new(OldestHeight {
+        height: AtomicU64::new(u64::MAX),
+        gen_utime: AtomicI64::new(i64::MIN),
+    });
+    let probe = Arc::clone(&oldest);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            match db.oldest_thread0().await {
+                Ok(Some((height, gen_utime))) => {
+                    probe.gen_utime.store(gen_utime.unwrap_or(i64::MIN), Ordering::Relaxed);
+                    probe.height.store(height, Ordering::Relaxed);
+                }
+                Ok(None) => probe.height.store(u64::MAX, Ordering::Relaxed),
+                Err(err) => tracing::warn!("oldest thread-0 height probe failed: {err:#}"),
+            }
+        }
+    });
+    oldest
 }
 
 #[derive(Clone)]
@@ -73,6 +113,9 @@ impl GqlServerMetrics {
         sqlite_query_boundaries: Option<Vec<f64>>,
     ) -> Self {
         let connector_size = Arc::clone(&db_connector);
+        let oldest =
+            spawn_oldest_height_probe(Arc::clone(&db_connector), OLDEST_HEIGHT_PROBE_INTERVAL);
+        let oldest_for_age = Arc::clone(&oldest);
         let connector_idle = db_connector;
 
         let query_duration_boundaries =
@@ -113,6 +156,37 @@ impl GqlServerMetrics {
                 .with_description("Number of idle connections in the SQLite pool")
                 .with_callback(move |observer| {
                     observer.observe(connector_idle.pool_idle() as u64, &[]);
+                })
+                .build(),
+
+            _oldest_thread0_height: meter
+                .u64_observable_gauge("gql_oldest_thread0_height")
+                .with_description(
+                    "Lowest thread-0 block height served (main DB, archives, history proofs store)",
+                )
+                .with_callback(move |observer| {
+                    let height = oldest.height.load(Ordering::Relaxed);
+                    if height != u64::MAX {
+                        observer.observe(height, &[]);
+                    }
+                })
+                .build(),
+
+            _oldest_thread0_age: meter
+                .u64_observable_gauge("gql_oldest_thread0_age_seconds")
+                .with_description("Age of the lowest thread-0 block served, by its gen_utime")
+                .with_callback(move |observer| {
+                    let gen_utime = oldest_for_age.gen_utime.load(Ordering::Relaxed);
+                    if oldest_for_age.height.load(Ordering::Relaxed) == u64::MAX
+                        || gen_utime == i64::MIN
+                    {
+                        return;
+                    }
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or_default();
+                    observer.observe(now.saturating_sub(gen_utime).max(0) as u64, &[]);
                 })
                 .build(),
         }

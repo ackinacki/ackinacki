@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
@@ -15,32 +14,23 @@ use account_state::PinRequestGuard;
 use node_types::BlockIdentifier;
 use node_types::ThreadIdentifier;
 use parking_lot::Mutex;
-use tempfile::NamedTempFile;
 use typed_builder::TypedBuilder;
 
 use crate::bls::envelope::BLSSignedEnvelope;
-use crate::helper::get_temp_file_path;
 use crate::node::block_state::repository::BlockStateRepository;
 use crate::node::services::block_processor::service::MAX_ATTESTATION_TARGET_BETA;
 use crate::node::services::statistics::median_descendants_chain_length_to_meet_threshold::BLOCK_STATISTICS_INITIAL_WINDOW_SIZE;
-use crate::node::services::sync::snapshot_compression::COMPRESSED_SNAPSHOT_MAGIC;
-use crate::node::services::sync::snapshot_compression::ZSTD_COMPRESSION_LEVEL;
 use crate::node::services::sync::state_sync_service_trait::SaveStateForSharingStatus;
 use crate::node::shared_services::SharedServices;
 use crate::repository::optimistic_state::OptimisticStateImpl;
 use crate::repository::repository_impl::get_process_rss_bytes;
-use crate::repository::repository_impl::write_legacy_thread_snapshot;
 use crate::repository::repository_impl::AncestorBlockData;
 use crate::repository::repository_impl::RepositoryImpl;
-use crate::repository::repository_impl::SnapshotVersion;
 use crate::repository::repository_impl::ThreadSnapshot;
-use crate::repository::repository_impl::ThreadSnapshotHeader;
 use crate::repository::CrossThreadRefData;
 use crate::repository::CrossThreadRefDataRead;
 use crate::repository::Repository;
-use crate::storage::MessageDurableStorage;
 use crate::types::history_proof::take_history_data_snapshot;
-use crate::types::thread_message_queue::account_messages_iterator::AccountMessagesIterator;
 use crate::utilities::guarded::AllowGuardedMut;
 use crate::utilities::guarded::Guarded;
 use crate::utilities::guarded::GuardedMut;
@@ -49,31 +39,8 @@ use crate::utilities::guarded::GuardedMut;
 /// Set to 1 so only one snapshot runs at a time — if a snapshot is already
 /// in progress when `save_object` is called, it's skipped.
 const MAX_CONCURRENT_SAVE_THREADS: usize = 1;
-const SNAPSHOT_CANCEL_CHECK_BYTES: usize = 1024 * 1024;
 
-fn cleanup_snapshot_resources(directory: &Path) -> anyhow::Result<()> {
-    let store = snapshot_storage::SnapshotResources::open(directory)?;
-    for (id, _) in snapshot_storage::snapshot_headers(directory)? {
-        let result = (|| -> anyhow::Result<()> {
-            let path = directory.join(format!("{id}.header"));
-            anyhow::ensure!(std::fs::metadata(&path)?.len() <= 1024, "snapshot header too large");
-            let bytes = std::fs::read(path)?;
-            let header: ThreadSnapshotHeader = bincode::deserialize(&bytes)?;
-            anyhow::ensure!(
-                hex::encode(header.block_id.as_array()) == id,
-                "snapshot header ID mismatch"
-            );
-            store.register_legacy_snapshot(
-                *header.block_id.as_array(),
-                &bytes,
-                header.thread_id.as_ref(),
-                u64::from(u32::from(header.seq_no)),
-            )
-        })();
-        if let Err(error) = result {
-            tracing::warn!(%id, "cannot register snapshot for retention: {error}");
-        }
-    }
+fn cleanup_snapshot_resources(store: &snapshot_storage::SnapshotResources) -> anyhow::Result<()> {
     store.retain_recent(Default::default(), std::time::SystemTime::now())
 }
 
@@ -97,40 +64,8 @@ impl SnapshotCancelToken {
     }
 }
 
-struct CancelCheckedWriter<W> {
-    inner: W,
-    cancel: SnapshotCancelToken,
-    bytes_until_check: usize,
-}
-
-impl<W> CancelCheckedWriter<W> {
-    fn new(inner: W, cancel: SnapshotCancelToken) -> Self {
-        Self { inner, cancel, bytes_until_check: SNAPSHOT_CANCEL_CHECK_BYTES }
-    }
-}
-
-impl<W: Write> Write for CancelCheckedWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.cancel.check().map_err(|e| std::io::Error::new(std::io::ErrorKind::Interrupted, e))?;
-        let written = self.inner.write(buf)?;
-        self.bytes_until_check = self.bytes_until_check.saturating_sub(written);
-        if self.bytes_until_check == 0 {
-            self.cancel
-                .check()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Interrupted, e))?;
-            self.bytes_until_check = SNAPSHOT_CANCEL_CHECK_BYTES;
-        }
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.cancel.check().map_err(|e| std::io::Error::new(std::io::ErrorKind::Interrupted, e))?;
-        self.inner.flush()
-    }
-}
-
-/// RAII guard that decrements an atomic counter on drop.
 struct ActiveThreadGuard(Arc<AtomicUsize>);
+
 impl Drop for ActiveThreadGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Release);
@@ -190,18 +125,6 @@ impl WorkerSnapshotPin {
             }
         }
     }
-
-    fn release_acquired(&mut self) {
-        match std::mem::replace(self, Self::Empty) {
-            Self::Acquired(pin) => drop(pin),
-            Self::Abandoned => {
-                *self = Self::Abandoned;
-            }
-            other => {
-                *self = other;
-            }
-        }
-    }
 }
 
 struct SnapshotWorker {
@@ -223,7 +146,7 @@ impl Drop for WorkerPinCleanup {
 
 #[derive(Clone, TypedBuilder)]
 pub struct FileSavingService {
-    root_path: PathBuf,
+    resources: snapshot_storage::SnapshotResources,
     publisher: crate::node::NodeIdentifier,
     #[builder(default = Arc::new(Mutex::new(None)))]
     cleanup_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -236,7 +159,6 @@ pub struct FileSavingService {
     repository: RepositoryImpl,
     block_state_repository: BlockStateRepository,
     shared_services: SharedServices,
-    message_db: MessageDurableStorage,
 }
 
 fn get_ancestor_blocks_data(
@@ -349,114 +271,6 @@ where
     SnapshotPinAcquireOutcome::Acquired(pin)
 }
 
-#[cfg(test)]
-fn write_snapshot_file<F>(
-    snapshot_path: &Path,
-    parent_dir: &Path,
-    header: &ThreadSnapshotHeader,
-    write_snapshot: F,
-) -> anyhow::Result<()>
-where
-    F: FnOnce(&mut dyn Write) -> anyhow::Result<()>,
-{
-    let tmp_file_path = get_temp_file_path(parent_dir);
-    let result = (|| -> anyhow::Result<()> {
-        let mut tmp_file = std::fs::File::create(&tmp_file_path)?;
-        tmp_file.write_all(COMPRESSED_SNAPSHOT_MAGIC)?;
-        let mut encoder = zstd::Encoder::new(tmp_file, ZSTD_COMPRESSION_LEVEL)?;
-        write_snapshot(&mut encoder)?;
-        let tmp_file = encoder.finish()?;
-        tmp_file.sync_all()?;
-        std::fs::rename(&tmp_file_path, snapshot_path)?;
-
-        let header_path = RepositoryImpl::snapshot_header_path(snapshot_path);
-        if !std::fs::exists(&header_path)? {
-            let header_bytes = bincode::serialize(header)?;
-            let tmp_header_path = get_temp_file_path(parent_dir);
-            std::fs::write(&tmp_header_path, header_bytes)?;
-            std::fs::rename(tmp_header_path, &header_path)?;
-        }
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp_file_path);
-    }
-
-    result
-}
-
-fn write_snapshot_file_checked<F>(
-    snapshot_path: &Path,
-    parent_dir: &Path,
-    header: &ThreadSnapshotHeader,
-    cancel: &SnapshotCancelToken,
-    write_snapshot: F,
-) -> anyhow::Result<()>
-where
-    F: FnOnce(&mut dyn Write) -> anyhow::Result<()>,
-{
-    let tmp_file_path = get_temp_file_path(parent_dir);
-    let mut tmp_header_path = None;
-    let result = (|| -> anyhow::Result<()> {
-        cancel.check()?;
-        let mut tmp_file = std::fs::File::create(&tmp_file_path)?;
-        tmp_file.write_all(COMPRESSED_SNAPSHOT_MAGIC)?;
-        let mut encoder = zstd::Encoder::new(tmp_file, ZSTD_COMPRESSION_LEVEL)?;
-        {
-            let mut checked = CancelCheckedWriter::new(&mut encoder, cancel.clone());
-            write_snapshot(&mut checked)?;
-            checked.flush()?;
-        }
-        cancel.check()?;
-        let tmp_file = encoder.finish()?;
-        cancel.check()?;
-        tmp_file.sync_all()?;
-        cancel.check()?;
-        std::fs::rename(&tmp_file_path, snapshot_path)?;
-
-        let header_path = RepositoryImpl::snapshot_header_path(snapshot_path);
-        if !std::fs::exists(&header_path)? {
-            cancel.check()?;
-            let header_bytes = bincode::serialize(header)?;
-            let header_tmp = get_temp_file_path(parent_dir);
-            tmp_header_path = Some(header_tmp.clone());
-            std::fs::write(&header_tmp, header_bytes)?;
-            cancel.check()?;
-            std::fs::rename(&header_tmp, &header_path)?;
-            tmp_header_path = None;
-        }
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp_file_path);
-        if let Some(tmp_header_path) = tmp_header_path {
-            let _ = std::fs::remove_file(tmp_header_path);
-        }
-    }
-
-    result
-}
-
-#[cfg(test)]
-fn export_durable_and_write_snapshot<FExport, FWrite>(
-    snapshot_path: &Path,
-    parent_dir: &Path,
-    header: &ThreadSnapshotHeader,
-    export_durable_snapshot: FExport,
-    write_snapshot: FWrite,
-) -> anyhow::Result<()>
-where
-    FExport: FnOnce() -> anyhow::Result<Option<NamedTempFile>>,
-    FWrite: FnOnce(Option<&Path>, &mut dyn Write) -> anyhow::Result<()>,
-{
-    let durable_snapshot = export_durable_snapshot()?;
-    write_snapshot_file(snapshot_path, parent_dir, header, |writer| {
-        write_snapshot(durable_snapshot.as_ref().map(|temp| temp.path()), writer)
-    })
-}
-
 impl Drop for FileSavingService {
     fn drop(&mut self) {
         // Only join threads when this is the last clone (Arc has a single owner).
@@ -479,7 +293,7 @@ impl Drop for FileSavingService {
 
 impl FileSavingService {
     pub fn resource_directory(&self) -> &Path {
-        &self.root_path
+        self.resources.directory()
     }
 
     pub(super) fn start_resource_cleanup(&self) -> anyhow::Result<()> {
@@ -487,13 +301,13 @@ impl FileSavingService {
         if slot.is_some() || self.cancel_token.is_cancelled() {
             return Ok(());
         }
-        let directory = self.root_path.clone();
+        let resources = self.resources.clone();
         let cancel = self.cancel_token.clone();
         *slot = Some(std::thread::Builder::new().name("snapshot-resource-cleanup".into()).spawn(
             move || {
                 while !cancel.is_cancelled() {
-                    if directory.is_dir() {
-                        let result = cleanup_snapshot_resources(&directory);
+                    if resources.directory().is_dir() {
+                        let result = cleanup_snapshot_resources(&resources);
                         if let Err(error) = result {
                             tracing::warn!("snapshot resource cleanup failed: {error}");
                         }
@@ -643,9 +457,8 @@ impl FileSavingService {
             self.repository.thread_accounts_repository().request_snapshot_pin(anchor);
         pin_slot.lock().set_requested(pin_request_guard);
 
-        let path = self.root_path.join(path);
-        let parent_dir = self.root_path.clone();
-        let message_db = self.message_db.clone();
+        let path = self.resources.directory().join(path);
+        let resources = self.resources.clone();
         let mut shared_services = self.shared_services.clone();
         let block_state_repository = self.block_state_repository.clone();
         let repository = self.repository.clone();
@@ -684,15 +497,6 @@ impl FileSavingService {
                 tracing::trace!(target: "node", "Saving state to {}", path.display());
                 cancel.check()?;
                 let snapshot_creation_start = std::time::Instant::now();
-                let activity_slot = thread_id.to_string();
-                let phase = |name| {
-                    crate::helper::metrics::ActivityMetric::parallel(
-                        "snapshot_export",
-                        name,
-                        &activity_slot,
-                    )
-                    .enter()
-                };
                 let _snapshot_span = tracing::info_span!(target: "monit", "snapshot_publication",
                     ?block_id, ?thread_id)
                 .entered();
@@ -744,39 +548,6 @@ impl FileSavingService {
                 );
                 cancel.check()?;
                 let block_state = block_state_repository.get(&block_id)?;
-                let block_version = block_state
-                    .guarded(|e| e.block_version_state().clone())
-                    .ok_or_else(|| anyhow::anyhow!("Missing snapshot block protocol"))?;
-                let snapshot_version =
-                    SnapshotVersion::for_block(&block_version, &repository.config_read())?;
-                let db_messages = if snapshot_version == SnapshotVersion::Legacy {
-                    state
-                        .messages
-                        .iter(&message_db)
-                        .map(|range| range.remaining_messages_from_db().unwrap_or_default())
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let db_messages_total: usize = db_messages.iter().map(|v: &Vec<_>| v.len()).sum();
-                if snapshot_version == SnapshotVersion::Legacy {
-                    crate::repository::repository_impl::validate_snapshot_inboxes(
-                        &state,
-                        &db_messages,
-                    )?;
-                }
-                let rss_after_db_msgs = get_process_rss_bytes();
-                tracing::info!(
-                    target: "mem",
-                    "snapshot[{block_id:?}]: AFTER db_messages count={db_messages_total} rss_mb={:.1}",
-                    mb(rss_after_db_msgs),
-                );
-
-                if snapshot_version == SnapshotVersion::Legacy && path.exists() {
-                    return Ok(());
-                }
-                tracing::info!(target: "monit", ?block_id, ?snapshot_version,
-                    protocol = %block_version.to_use(), "snapshot publication format selected");
                 tracing::info!(target: "monit",
                     preparation_ms = snapshot_creation_start.elapsed().as_millis() as u64,
                     "Snapshot state preparation finished");
@@ -826,91 +597,11 @@ impl FileSavingService {
                         return Ok(());
                     }
                 };
-                let pin_acquired_at = Instant::now();
                 tracing::info!(target: "monit",
                     pin_wait_ms = pin_wait_started.elapsed().as_millis() as u64,
                     "Snapshot pin acquired");
                 cancel.check()?;
-                let (durable_state_snapshot, serialized_state, partition_state) =
-                    if snapshot_version == SnapshotVersion::Legacy {
-                        let mut temp = NamedTempFile::new_in(&parent_dir).map_err(|e| {
-                            tracing::error!(
-                                target: "node",
-                                ?block_id,
-                                ?thread_id,
-                                path = %path.display(),
-                                "Failed to create temp durable snapshot file: {e}",
-                            );
-                            anyhow::anyhow!("Failed to create temp durable snapshot file: {e}")
-                        })?;
-                        // Atomic skip: if the export's resolution chain
-                        // fails on any routing, it returns Err and the temp
-                        // file is dropped (NamedTempFile cleans up on
-                        // drop). The final snapshot path is never touched.
-                        let accounts = repository.thread_accounts_repository();
-                        let export_started = std::time::Instant::now();
-                        let export_activity = phase("1_legacy_accounts");
-                        let export_result = accounts.export_snapshot_v1_to_writer_checked(
-                            &state.shard_state.0,
-                            temp.as_file_mut(),
-                            &|| cancel.is_cancelled(),
-                        );
-                        export_result.map_err(|e| {
-                            tracing::warn!(
-                                target: "monit",
-                                ?block_id,
-                                ?thread_id,
-                                "snapshot export aborted (atomic skip): {e}",
-                            );
-                            anyhow::anyhow!("Failed to export durable snapshot: {e}")
-                        })?;
-                        drop(export_activity);
-                        tracing::info!(target: "monit", ?block_id,
-                            elapsed_ms = export_started.elapsed().as_millis() as u64,
-                            "Legacy snapshot account export to temporary file completed");
-                        let rss_after_export = get_process_rss_bytes();
-                        tracing::info!(
-                            target: "mem",
-                            "snapshot[{block_id:?}]: AFTER export_durable_snapshot rss_mb={:.1}",
-                            mb(rss_after_export),
-                        );
-                        worker_pin_slot.lock().release_acquired();
-                        tracing::info!(target: "monit",
-                            pin_held_ms = pin_acquired_at.elapsed().as_millis() as u64,
-                            "Legacy snapshot pin released");
-                        tracing::info!(
-                            target: "mem",
-                            "snapshot[{block_id:?}]: snapshot released pin after durable export rss_mb={:.1}",
-                            mb(get_process_rss_bytes()),
-                        );
-                        cancel.check()?;
-                        let sync_started = Instant::now();
-                        temp.as_file_mut().sync_all()?;
-                        tracing::info!(target: "monit",
-                            sync_ms = sync_started.elapsed().as_millis() as u64,
-                            "Legacy snapshot temporary account file synced");
-                        let durable_state_snapshot = Some(temp);
-                        cancel.check()?;
-                        let serialize_started = Instant::now();
-                        let serialized_state = snapshot_version.serialize_state(state)?;
-                        tracing::info!(target: "monit",
-                            state_serialize_ms = serialize_started.elapsed().as_millis() as u64,
-                            bytes = serialized_state.len(),
-                            "Legacy snapshot primary state serialized and source released");
-                        (durable_state_snapshot, serialized_state, None)
-                    } else {
-                        (None, Vec::new(), Some(state))
-                    };
                 let envelope_started = Instant::now();
-                let serialized_state_bytes = serialized_state.len();
-                // Drop the heavy optimistic state now that it's serialized.
-                let rss_after_serialize_state = get_process_rss_bytes();
-                tracing::info!(
-                    target: "mem",
-                    "snapshot[{block_id:?}]: AFTER serialize+drop(state) bytes={serialized_state_bytes} rss_mb={:.1}",
-                    mb(rss_after_serialize_state),
-                );
-
                 cancel.check()?;
                 let ancestor_blocks_data = get_ancestor_blocks_data(
                     &block_id,
@@ -961,9 +652,9 @@ impl FileSavingService {
                 };
                 let history_snapshot = take_history_data_snapshot(history_proof_data);
                 let builder = ThreadSnapshot::builder()
-                    .optimistic_state(serialized_state)
+                    .optimistic_state(Vec::new())
                     .ancestor_blocks_data(ancestor_blocks_data)
-                    .db_messages(db_messages)
+                    .db_messages(Vec::new())
                     .finalized_block(finalized_block.deref().clone())
                     .bk_set(bk_set.deref().clone())
                     .future_bk_set(future_bk_set.deref().clone())
@@ -993,23 +684,12 @@ impl FileSavingService {
                 // Drop the Arc<Envelope> now that its data has been cloned into the snapshot.
                 drop(finalized_block);
 
-                // Extract lightweight header before dropping the snapshot
-                let header = ThreadSnapshotHeader {
-                    block_id: shared_thread_state.finalized_block().data().identifier(),
-                    thread_id: *shared_thread_state
-                        .finalized_block()
-                        .data()
-                        .common_section()
-                        .thread_id(),
-                    seq_no: shared_thread_state.finalized_block().data().seq_no(),
-                    round: *shared_thread_state.finalized_block().data().common_section().round(),
-                };
                 tracing::info!(target: "monit",
                     envelope_preparation_ms = envelope_started.elapsed().as_millis() as u64,
                     "Snapshot envelope preparation finished");
 
                 cancel.check()?;
-                if let Some(state) = partition_state {
+                {
                     use crate::repository::repository_impl::snapshot_manifest::MAX_SNAPSHOT_ROOTS_PER_LIST;
                     use crate::repository::repository_impl::snapshot_publication::publish_partitioned_snapshot;
                     use crate::repository::repository_impl::snapshot_publication::PartitionedSnapshotPublication;
@@ -1022,7 +702,7 @@ impl FileSavingService {
                             account_repository: accounts.durable_map_repo(),
                             pin,
                             publisher: &publisher,
-                            directory: &parent_dir,
+                            resources: resources.clone(),
                             configs: repository.config_read(),
                             max_roots_per_list: MAX_SNAPSHOT_ROOTS_PER_LIST,
                             account_read_limits: Default::default(),
@@ -1039,19 +719,6 @@ impl FileSavingService {
                             Ok(())
                         },
                     )?;
-                } else {
-                    let packaging_started = std::time::Instant::now();
-                    let _activity = phase("2_legacy_packaging");
-                    write_snapshot_file_checked(&path, &parent_dir, &header, &cancel, |writer| {
-                        write_legacy_thread_snapshot(
-                            &shared_thread_state,
-                            durable_state_snapshot.as_ref().map(|temp| temp.path()),
-                            &mut *writer,
-                        )
-                    })?;
-                    tracing::info!(target: "monit", ?block_id,
-                        elapsed_ms = packaging_started.elapsed().as_millis() as u64,
-                        "Legacy snapshot final packaging and publication completed");
                 }
                 let cleanup_started = Instant::now();
                 drop(shared_thread_state);
@@ -1070,7 +737,7 @@ impl FileSavingService {
                     m.report_snapshot_creation_time(snapshot_creation_elapsed, &thread_id);
                 }
                 let rss_end = get_process_rss_bytes();
-                tracing::info!(target: "monit", ?snapshot_version,
+                tracing::info!(target: "monit",
                     total_ms = snapshot_creation_elapsed, rss_bytes = rss_end,
                     "Snapshot publication completed");
                 tracing::info!(
@@ -1118,8 +785,6 @@ impl FileSavingService {
         repository: &RepositoryImpl,
     ) -> anyhow::Result<Vec<Arc<crate::bls::envelope::Envelope<crate::types::AckiNackiBlock>>>>
     {
-        use crate::bls::envelope::BLSSignedEnvelope;
-
         if finalized_block_id == finalizing_block_id {
             return Ok(vec![]);
         }
@@ -1156,37 +821,6 @@ impl FileSavingService {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn cleanup_registers_legacy_snapshots_and_keeps_the_latest_two() -> anyhow::Result<()> {
-        let directory = tempfile::tempdir()?;
-        for id in 1..=3u8 {
-            let header = super::ThreadSnapshotHeader {
-                block_id: node_types::BlockIdentifier::from(tvm_types::UInt256::from([id; 32])),
-                thread_id: node_types::ThreadIdentifier::default(),
-                seq_no: u32::from(id).into(),
-                round: 0,
-            };
-            let path = directory.path().join(hex::encode([id; 32]));
-            std::fs::write(&path, b"legacy body")?;
-            let header_path = path.with_extension("header");
-            std::fs::write(&header_path, bincode::serialize(&header)?)?;
-            for file in [&path, &header_path] {
-                std::fs::File::open(file)?.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
-            }
-        }
-        // Incomplete publications and unknown files must not be adopted/deleted.
-        let incomplete = directory.path().join(hex::encode([9; 32]));
-        std::fs::write(&incomplete, b"no header")?;
-        super::cleanup_snapshot_resources(directory.path())?;
-        super::cleanup_snapshot_resources(directory.path())?;
-        assert!(!directory.path().join(hex::encode([1; 32])).exists());
-        assert!(!directory.path().join(format!("{}.header", hex::encode([1; 32]))).exists());
-        for id in [2, 3, 9] {
-            assert!(directory.path().join(hex::encode([id; 32])).exists());
-        }
-        Ok(())
-    }
-
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -1196,12 +830,9 @@ mod tests {
     use node_types::ThreadIdentifier;
 
     use super::acquire_snapshot_pin_for_worker;
-    use super::export_durable_and_write_snapshot;
     use super::spawn_named_worker;
     use super::SnapshotCancelToken;
     use super::SnapshotPinAcquireOutcome;
-    use super::ThreadSnapshotHeader;
-    use crate::repository::repository_impl::RepositoryImpl;
 
     struct TestPinGuard(Arc<AtomicUsize>);
 
@@ -1209,37 +840,6 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
-    }
-
-    #[test]
-    fn durable_export_failure_does_not_publish_snapshot_or_header() -> anyhow::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let snapshot_path = dir.path().join("snapshot.bin");
-        let header = ThreadSnapshotHeader {
-            block_id: BlockIdentifier::default(),
-            thread_id: ThreadIdentifier::default(),
-            seq_no: Default::default(),
-            round: 0,
-        };
-        let mut writer_called = false;
-
-        let err = export_durable_and_write_snapshot(
-            &snapshot_path,
-            dir.path(),
-            &header,
-            || anyhow::bail!("durable export failed"),
-            |_durable_snapshot_path, _writer| {
-                writer_called = true;
-                Ok(())
-            },
-        )
-        .unwrap_err();
-
-        assert!(err.to_string().contains("durable export failed"));
-        assert!(!writer_called);
-        assert!(!snapshot_path.exists());
-        assert!(!RepositoryImpl::snapshot_header_path(&snapshot_path).exists());
-        Ok(())
     }
 
     #[test]

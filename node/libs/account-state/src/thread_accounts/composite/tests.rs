@@ -718,7 +718,7 @@ fn test_builder_skips_avm_accounts() -> anyhow::Result<()> {
 }
 
 #[test]
-fn test_builder_preserves_remove_and_move_from_tvm() -> anyhow::Result<()> {
+fn test_builder_preserves_remove() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
     let state0 = new_state();
     let block_id_1 = BlockIdentifier::new(new_u256("block", 300));
@@ -915,14 +915,12 @@ fn test_multiple_accounts_mixed_optimization() -> anyhow::Result<()> {
 fn test_durable_diff_bincode_roundtrip_all_variants() {
     let (routing1, some_account) = new_acc(1);
     let (routing2, _) = new_acc(2);
-    let (routing3, _) = new_acc(3);
     let (routing4, _) = new_acc(4);
 
     let diff = DurableThreadAccountsStateDiff {
         accounts: HashMap::from_iter([
             (routing1, BlockAccountOperation::UpdateOrInsert(some_account)),
             (routing2, BlockAccountOperation::Remove),
-            (routing3, BlockAccountOperation::MoveFromTvm),
             (routing4, BlockAccountOperation::AccountMerkleUpdate(vec![0xDE, 0xAD, 0xBE, 0xEF])),
         ]),
     };
@@ -1944,75 +1942,6 @@ fn test_redirect_stub_removed_when_account_removed() -> anyhow::Result<()> {
 }
 
 #[test]
-fn test_redirect_stub_for_move_from_tvm() -> anyhow::Result<()> {
-    let (repo, _dir) = setup_repo(true);
-    let state0 = new_state();
-    let block_id_1 = BlockIdentifier::new(new_u256("block", 1));
-    let block_id_2 = BlockIdentifier::new(new_u256("block", 2));
-
-    // Step 1: Insert an account with dapp_id into TVM (apply_to_durable = false)
-    let (routing, acc) = new_acc_with_dapp(4, 40);
-    let account_id = *routing.account_id();
-    let dapp_id = *routing.dapp_id();
-    let default_routing = account_id.redirect();
-
-    let mut builder = repo.state_builder(&ThreadIdentifier::default(), 0, &state0);
-    builder.set_apply_to_durable(false);
-    builder.insert_account(&routing, &acc);
-    let transition1 = builder.build(None)?;
-    let state1 = transition1.new_state;
-    repo.finalize_thread_transition(
-        &block_id_1,
-        &ThreadIdentifier::default(),
-        0,
-        &state1,
-        transition1.account_operations,
-    )?;
-    assert_drained(&repo);
-    repo.state_save(&block_id_1, &state1)?;
-
-    // Account should be in TVM, not durable
-    assert!(
-        repo.state_account(&state1, &default_routing)?.is_some(),
-        "Account should be findable in TVM via default routing"
-    );
-
-    // Step 2: Move from TVM to durable
-    let mut builder2 = repo.state_builder(&ThreadIdentifier::default(), 0, &state1);
-    builder2.set_apply_to_durable(true);
-    builder2.move_from_tvm(1000)?;
-    let transition2 = builder2.build(None)?;
-    let state2 = transition2.new_state;
-    repo.finalize_thread_transition(
-        &block_id_2,
-        &ThreadIdentifier::default(),
-        0,
-        &state2,
-        transition2.account_operations,
-    )?;
-    assert_drained(&repo);
-    repo.state_save(&block_id_2, &state2)?;
-
-    // The real account should be at (dapp_id, account_id) in durable
-    let real = repo.state_account(&state2, &routing)?;
-    assert!(real.is_some(), "Real account should exist in durable at (dapp_id, account_id)");
-    assert!(!real.unwrap().is_redirect(), "Real account should not be a redirect");
-
-    // Default routing follows redirect → returns the real account
-    let followed = repo.state_account(&state2, &default_routing)?;
-    assert!(followed.is_some(), "Default routing should find account via redirect");
-    let followed = followed.unwrap();
-    assert!(!followed.is_redirect(), "Followed redirect should return real account");
-    assert_eq!(
-        followed.get_dapp_id(),
-        Some(dapp_id),
-        "Followed account should have actual dapp_id"
-    );
-
-    Ok(())
-}
-
-#[test]
 fn test_redirect_stub_for_replace_with_redirect() -> anyhow::Result<()> {
     let (repo, _dir) = setup_repo(true);
     let state0 = new_state();
@@ -3021,5 +2950,122 @@ fn test_pin_acquires_when_anchor_already_applied_and_stream_is_stale() -> anyhow
     pin_request_guard.disarm();
     drop(pin);
 
+    Ok(())
+}
+
+#[test]
+fn zerostate_accounts_survive_finalization_restart_and_replay() -> anyhow::Result<()> {
+    use crate::ArchiveStateStore;
+
+    let directory = tempfile::tempdir()?;
+    let archive = ArchiveStateStore::in_memory();
+    let thread = ThreadIdentifier::default();
+    let zero = BlockIdentifier::default();
+    let repo = ThreadAccountsRepository::new(
+        directory.path().to_path_buf(),
+        archive.clone(),
+        false,
+        None,
+    )?;
+    let (routing, account) = new_acc(777);
+    let dapp = DAppIdentifier::new([0x44; 32]);
+    let redirected = set_acc_dapp_id(&account, dapp);
+    let real_routing = routing.account_id().routing(dapp);
+    let (untouched_routing, untouched) = new_acc(778);
+    let (no_dapp_routing, no_dapp_source) = new_acc(779);
+    let no_dapp = ThreadAccount::new(
+        no_dapp_source.vm_account()?,
+        no_dapp_source.last_trans_hash(),
+        no_dapp_source.last_trans_lt(),
+        None,
+    )?;
+    let mut builder = repo.state_builder(&thread, 0, &new_state());
+    builder.insert_account(&real_routing, &redirected);
+    builder.insert_account(&untouched_routing, &untouched);
+    builder.insert_account(&no_dapp_routing, &no_dapp);
+    let raw = builder.build(None)?.new_state;
+    assert!(raw.durable.map().is_empty());
+    let genesis = repo.prepare_zerostate(&thread, &raw)?;
+    let mut tvm_count = 0;
+    genesis.tvm.iterate_accounts(|_, _| {
+        tvm_count += 1;
+        Ok(true)
+    })?;
+    assert_eq!(tvm_count, 0);
+    assert_eq!(genesis.durable.map().iter().count(), 4);
+    assert_eq!(
+        repo.state_account(&genesis, &no_dapp_routing)?.unwrap().account_hash(),
+        no_dapp.account_hash(),
+    );
+    assert_eq!(
+        repo.state_account(&genesis, &routing)?.unwrap().account_hash(),
+        redirected.account_hash()
+    );
+    assert!(repo.state_account_exact(&genesis, &routing)?.unwrap().is_redirect());
+    repo.initialize_zerostate_archive(&thread, &zero, &genesis)?;
+    // Repeating startup at genesis is safe.
+    repo.initialize_zerostate_archive(&thread, &zero, &genesis)?;
+    repo.start_archive_update_service()?;
+    let changed = modify_acc_balance(&redirected, 12345);
+    let mut builder = repo.state_builder(&thread, 1, &genesis);
+    builder.set_apply_to_durable(true);
+    builder.insert_account(&real_routing, &changed);
+    let transition = builder.build(None)?;
+    let block = BlockIdentifier::new([0x55; 32]);
+    // A verifier independently loads the same genesis and applies the producer's diff.
+    let verifier_dir = tempfile::tempdir()?;
+    let verifier = ThreadAccountsRepository::builder(verifier_dir.path()).build()?;
+    let verifier_genesis = verifier.prepare_zerostate(&thread, &raw)?;
+    let verified = verifier.state_apply_diff(&verifier_genesis, transition.diff, thread, 1)?;
+    assert_eq!(repo.state_hash(&transition.new_state), verifier.state_hash(&verified.new_state));
+    assert_eq!(
+        repo.durable_state_hash(&transition.new_state),
+        verifier.durable_state_hash(&verified.new_state),
+    );
+    repo.finalize_thread_transition(
+        &block,
+        &thread,
+        1,
+        &transition.new_state,
+        transition.account_operations,
+    )?;
+    assert_drained(&repo);
+    assert_eq!(
+        repo.state_account(&genesis, &routing)?.unwrap().account_hash(),
+        redirected.account_hash()
+    );
+    let current = transition.new_state;
+    let snapshot = repo.export_durable_snapshot(&current)?;
+    let (imported_repo, _imported_dir) = setup_import_repo(true);
+    let imported = imported_repo.import_durable_snapshot(snapshot, &thread, &block)?;
+    let imported_state = current.with_durable_state(imported);
+    for routing in [routing, untouched_routing, no_dapp_routing] {
+        assert_eq!(
+            imported_repo.state_account(&imported_state, &routing)?.unwrap().account_hash(),
+            repo.state_account(&current, &routing)?.unwrap().account_hash(),
+        );
+    }
+    drop(repo);
+
+    // A new repository has no pool, caches or retained genesis bodies.
+    let restarted =
+        ThreadAccountsRepository::new(directory.path().to_path_buf(), archive, true, None)?;
+    assert_eq!(
+        restarted.state_account(&current, &untouched_routing)?.unwrap().account_hash(),
+        untouched.account_hash()
+    );
+    assert_eq!(
+        restarted.state_account(&current, &routing)?.unwrap().account_hash(),
+        changed.account_hash()
+    );
+    let replay = restarted.prepare_zerostate(&thread, &raw)?;
+    assert_eq!(genesis.durable.map().hash(), replay.durable.map().hash());
+    // Even if asked to bootstrap again, an advanced archive is preserved.
+    restarted.initialize_zerostate_archive(&thread, &zero, &replay)?;
+    assert_eq!(
+        restarted.state_account(&current, &routing)?.unwrap().account_hash(),
+        changed.account_hash()
+    );
+    assert_eq!(restarted.get_archive_thread_control_states()?[0].last_block_id, Some(block));
     Ok(())
 }

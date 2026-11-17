@@ -8,6 +8,7 @@ use sqlx::prelude::FromRow;
 use sqlx::QueryBuilder;
 
 use crate::defaults;
+use crate::helpers::sql_quote;
 use crate::helpers::u64_to_string;
 use crate::schema::db::projection::SqlProjection;
 use crate::schema::db::DBConnector;
@@ -387,12 +388,12 @@ impl Message {
 
         if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
-                where_ops.push(format!("{cursor_field} > {after:?}"));
+                where_ops.push(format!("{cursor_field} > {}", sql_quote(after)));
             }
         }
         if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
-                where_ops.push(format!("{cursor_field} < {before:?}"));
+                where_ops.push(format!("{cursor_field} < {}", sql_quote(before)));
             }
         }
 
@@ -488,13 +489,13 @@ impl Message {
 
         if let Some(after) = &pagination.after {
             if !after.is_empty() {
-                where_ops.push(format!("{cursor_field} > {after:?}"));
+                where_ops.push(format!("{cursor_field} > {}", sql_quote(after)));
             }
         }
 
         if let Some(before) = &pagination.before {
             if !before.is_empty() {
-                where_ops.push(format!("{cursor_field} < {before:?}"));
+                where_ops.push(format!("{cursor_field} < {}", sql_quote(before)));
             }
         }
 
@@ -557,13 +558,13 @@ impl Message {
 
         if let Some(after) = &pagination.after {
             if !after.is_empty() {
-                where_ops.push(format!("{cursor_field} > {after:?}"));
+                where_ops.push(format!("{cursor_field} > {}", sql_quote(after)));
             }
         }
 
         if let Some(before) = &pagination.before {
             if !before.is_empty() {
-                where_ops.push(format!("{cursor_field} < {before:?}"));
+                where_ops.push(format!("{cursor_field} < {}", sql_quote(before)));
             }
         }
 

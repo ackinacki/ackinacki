@@ -1,0 +1,58 @@
+---
+# Internal to tasks/close-history-gaps*.yaml; not meant to be overridden.
+# Templated each time they are used, with the current facts:
+#   history_target  - `history-proofs gaps --json` of this block-manager
+#   history_stores  - every reachable source with a store: {name, first_height,
+#                     last_height, gaps, missing_attestations, failed_checks}
+#                     from its `gaps --json`
+#   history_sources - the usable ones: history_stores without failed_checks
+#   history_source  - the source being copied from (close-history-gaps-from-source.yaml)
+
+# The heights of the target's missing_attestations that some source with a
+# store has, with the names of those sources: [{height, sources}]. A source
+# has the attestation of h when it covers h, h is older than its last 256
+# heights, and h is in none of its gaps and not in its own
+# missing_attestations. Sources not used for their failed checks count too:
+# the verdict stops on an attestation that only they have, the same as on
+# history that only they have; the copy takes from usable sources only.
+# Recomputed on every use: an import can expose new missing heights (a key
+# block that was in a gap).
+history_attestation_holders: >-
+  {%- set out = [] -%}
+  {%- for h in history_target.missing_attestations | default([]) -%}
+  {%- set names = [] -%}
+  {%- for s in history_stores -%}
+  {%- set ns = namespace(in_gap=false) -%}
+  {%- for g in s.gaps -%}
+  {%- if g[0] | int <= h | int and h | int <= g[1] | int -%}
+  {%- set ns.in_gap = true -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- if s.first_height | int <= h | int
+        and h | int <= s.last_height | int - 256
+        and not ns.in_gap
+        and h not in s.missing_attestations -%}
+  {%- set _ = names.append(s.name) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- if names | length > 0 -%}
+  {%- set _ = out.append({'height': h | int, 'sources': names}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ out }}
+
+# Ranges to copy from history_source: the target's gaps, the heights the
+# source has below the target's start, and [h, h] for each missing
+# attestation the source has. A missing attestation is of a stored block, so
+# it is never inside the first two.
+history_source_ranges: >-
+  {%- set out = history_target.gaps | list -%}
+  {%- if history_source.first_height | int < history_target.first_height | int -%}
+  {%- set _ = out.append([history_source.first_height | int, history_target.first_height | int - 1]) -%}
+  {%- endif -%}
+  {%- for held in history_attestation_holders -%}
+  {%- if history_source.name in held.sources -%}
+  {%- set _ = out.append([held.height, held.height]) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ out }}

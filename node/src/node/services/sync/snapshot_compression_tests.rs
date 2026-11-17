@@ -155,7 +155,7 @@ fn partition_compression_account_batches_have_identical_bytes() -> anyhow::Resul
             assert_eq!(&blob, expected);
         }
         let raw = decode(&blob)?;
-        let restored = read_account_partition_checked(
+        let (restored, _) = read_account_partition_checked(
             &mut raw.as_slice(),
             MapKeyPath::default(),
             map.hash(),

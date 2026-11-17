@@ -11,6 +11,9 @@ use super::KVRecord;
 use crate::StateAccountsMetrics;
 
 const CHUNK_DATA_LIMIT: usize = 1024 * 992;
+// Bound temporary chunk responses to roughly 32 MiB for normally sized
+// records. The final logical bodies still belong to the caller's whole batch.
+const READ_CHUNK_BATCH_SIZE: usize = 32;
 
 #[derive(Debug, Default)]
 pub struct AerospikeAccountsCacheStat {
@@ -121,18 +124,71 @@ impl AerospikeKVStore {
     pub fn get(&self, set: &str, keys: &[Vec<u8>]) -> anyhow::Result<Vec<Option<KVRecord>>> {
         let started = Instant::now();
         let heads = self.backend.get(set, keys)?;
+        anyhow::ensure!(heads.len() == keys.len(), "Aerospike head result count mismatch");
         let mut results = Vec::with_capacity(keys.len());
+        let mut chunk_counts = Vec::with_capacity(keys.len());
         for (key, head) in keys.iter().zip(heads) {
             let Some(head) = head else {
                 results.push(None);
+                chunk_counts.push(1);
                 continue;
             };
-            results.push(Some(self.assemble_logical_record(set, key, head)?));
+            let count = head.chunk_count.unwrap_or(1);
+            anyhow::ensure!(count > 0, "Chunk count must be positive");
+            chunk_counts.push(count);
+            results.push(Some(KVRecord {
+                key: key.clone(),
+                generation: head.generation,
+                data_epoch: head.data_epoch,
+                data: head.data,
+            }));
+        }
+        // Preserve request order (including duplicate keys), but share backend
+        // requests across accounts instead of fetching each account's tail
+        // separately. Generate keys incrementally even for very large tails.
+        let mut pending = Vec::with_capacity(READ_CHUNK_BATCH_SIZE);
+        for (index, &count) in chunk_counts.iter().enumerate() {
+            for chunk_index in 1..count {
+                pending.push((index, chunk_index, chunk_key_bytes(&keys[index], chunk_index)));
+                if pending.len() == READ_CHUNK_BATCH_SIZE {
+                    self.append_chunk_batch(set, &pending, &chunk_counts, &mut results)?;
+                    pending.clear();
+                }
+            }
+        }
+        if !pending.is_empty() {
+            self.append_chunk_batch(set, &pending, &chunk_counts, &mut results)?;
         }
         if let Some(metrics) = &self.metrics {
             metrics.report_aerospike_read_duration_micros(started.elapsed().as_micros() as u64);
         }
         Ok(results)
+    }
+
+    fn append_chunk_batch(
+        &self,
+        set: &str,
+        pending: &[(usize, usize, Vec<u8>)],
+        chunk_counts: &[usize],
+        results: &mut [Option<KVRecord>],
+    ) -> anyhow::Result<()> {
+        let keys = pending.iter().map(|(_, _, key)| key.clone()).collect::<Vec<_>>();
+        let chunks = self.backend.get(set, &keys)?;
+        anyhow::ensure!(chunks.len() == pending.len(), "Aerospike chunk result count mismatch");
+        for ((index, chunk_index, _), chunk) in pending.iter().zip(chunks) {
+            // A pending chunk is created only for an existing head.
+            let record = results[*index].as_mut().expect("chunk request has a head");
+            let chunk = chunk.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Missing Aerospike chunk: set={set}, key={}, chunk_index={}, chunk_count={}",
+                    hex::encode(&record.key),
+                    chunk_index,
+                    chunk_counts[*index],
+                )
+            })?;
+            record.data.extend(chunk.data);
+        }
+        Ok(())
     }
 
     pub fn put(&self, set: &str, records: Vec<KVRecord>, cas: bool) -> anyhow::Result<()> {
@@ -326,15 +382,6 @@ impl AerospikeKVStore {
         })
     }
 
-    fn assemble_logical_record(
-        &self,
-        set: &str,
-        key: &[u8],
-        head: AerospikeRecord,
-    ) -> anyhow::Result<KVRecord> {
-        self.assemble_logical_record_checked(set, key, head, &|| false)
-    }
-
     fn assemble_logical_record_checked(
         &self,
         set: &str,
@@ -499,6 +546,87 @@ mod tests {
         assert_record_body_eq(enumerated.get(&small.key).unwrap(), &small);
         assert_record_body_eq(enumerated.get(&large.key).unwrap(), &large);
         assert_eq!(enumerated.len(), 2);
+    }
+
+    #[test]
+    fn batch_get_shares_tail_reads_and_preserves_missing_and_duplicate_keys() {
+        let store = AerospikeKVStore::new_mock();
+        let AerospikeBackend::Mock(mock) = &store.backend else { unreachable!() };
+        let set = "batch-tails";
+        let small = record(1, 128);
+        let first = record(2, CHUNK_DATA_LIMIT + 17);
+        let second = record(3, 2 * CHUNK_DATA_LIMIT + 11);
+        store.put(set, vec![small.clone(), first.clone(), second.clone()], false).unwrap();
+        mock.take_get_batch_sizes(); // Ignore the overwrite lookup in put().
+        let keys = vec![
+            second.key.clone(),
+            vec![99; 8],
+            small.key.clone(),
+            first.key.clone(),
+            second.key.clone(),
+        ];
+        let loaded = store.get(set, &keys).unwrap();
+        assert_eq!(loaded.len(), keys.len());
+        assert!(loaded[1].is_none());
+        for (index, expected) in [(0, &second), (2, &small), (3, &first), (4, &second)] {
+            assert_record_body_eq(loaded[index].as_ref().unwrap(), expected);
+        }
+        assert_eq!(loaded[0], loaded[4]);
+        // One heads request, one shared tail request, including both instances
+        // of the repeated logical key. No per-account backend round trips.
+        assert_eq!(mock.take_get_batch_sizes(), vec![5, 5]);
+
+        mock.delete(set, &[chunk_key_bytes(&first.key, 1)]).unwrap();
+        let error = store.get(set, &keys).unwrap_err().to_string();
+        assert!(error.contains("Missing Aerospike chunk"), "{error}");
+        assert!(error.contains(&hex::encode(&first.key)), "{error}");
+        assert!(error.contains("chunk_index=1, chunk_count=2"), "{error}");
+    }
+
+    #[test]
+    fn batch_get_bounds_tail_requests_and_keeps_order_across_batches() {
+        let store = AerospikeKVStore::new_mock();
+        let AerospikeBackend::Mock(mock) = &store.backend else { unreachable!() };
+        let set = "bounded-tails";
+        let key = vec![7; 8];
+        let count = READ_CHUNK_BATCH_SIZE + 3;
+        // Tiny physical payloads exercise a long tail without a large fixture.
+        let mut physical = vec![AerospikeRecord {
+            key: key.clone(),
+            generation: 0,
+            data_epoch: Some(42),
+            chunk_count: Some(count),
+            data: vec![0],
+        }];
+        for index in 1..count {
+            physical.push(AerospikeRecord {
+                key: chunk_key_bytes(&key, index),
+                generation: 0,
+                data_epoch: Some(42),
+                chunk_count: None,
+                data: vec![index as u8],
+            });
+        }
+        mock.put(set, physical, false).unwrap();
+        let loaded = store.get(set, std::slice::from_ref(&key)).unwrap().remove(0).unwrap();
+        assert_eq!(loaded.key, key);
+        assert_eq!(loaded.generation, 1);
+        assert_eq!(loaded.data_epoch, Some(42));
+        assert_eq!(loaded.data, (0..count).map(|index| index as u8).collect::<Vec<_>>());
+        assert_eq!(mock.take_get_batch_sizes(), vec![1, READ_CHUNK_BATCH_SIZE, 2]);
+    }
+
+    #[test]
+    fn batch_get_without_tails_uses_only_head_request() {
+        let store = AerospikeKVStore::new_mock();
+        let AerospikeBackend::Mock(mock) = &store.backend else { unreachable!() };
+        let small = record(8, 10);
+        store.put("no-tails", vec![small.clone()], false).unwrap();
+        mock.take_get_batch_sizes();
+        let loaded = store.get("no-tails", &[vec![9; 8], small.key.clone()]).unwrap();
+        assert!(loaded[0].is_none());
+        assert_record_body_eq(loaded[1].as_ref().unwrap(), &small);
+        assert_eq!(mock.take_get_batch_sizes(), vec![2]);
     }
 
     #[test]

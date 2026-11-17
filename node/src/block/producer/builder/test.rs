@@ -131,7 +131,11 @@ mod tests {
         //     )
         //     .with_ansi(false)
         //     .init();
-        let zerostate = ZeroState::load_from_file("./tests/test_verification/zerostate")?;
+        let directory = tempfile::tempdir()?;
+        let accounts =
+            ThreadAccountsRepository::builder(directory.path().join("durable")).build()?;
+        let zerostate =
+            ZeroState::load_for_execution("./tests/test_verification/zerostate", &accounts)?;
         let opt_state = zerostate.state(&ThreadIdentifier::default())?.clone();
         let ext_queue: HashMap<ExtMessageDst, VecDeque<(Stamp, QueuedExtMessage)>> = HashMap::new();
         let bc_config = load_blockchain_config()?.get(&DEFAULT_BLOCKCAHIN_CONFIG_HASH)?;
@@ -197,10 +201,7 @@ mod tests {
             .block_gas_limit(1_000_000)
             .rand_seed(seed.clone())
             .control_rx_stop(None)
-            .thread_accounts_repository(
-                ThreadAccountsRepository::builder(tempfile::tempdir()?.path().join("durable"))
-                    .build()?,
-            )
+            .thread_accounts_repository(accounts.clone())
             .block_keeper_epoch_code_hash(String::new())
             .block_keeper_preepoch_code_hash(String::new())
             .parallelization_level(1)
@@ -265,10 +266,7 @@ mod tests {
             .block_gas_limit(10_000_000)
             .rand_seed(seed)
             .control_rx_stop(None)
-            .thread_accounts_repository(
-                ThreadAccountsRepository::builder(tempfile::tempdir()?.path().join("durable"))
-                    .build()?,
-            )
+            .thread_accounts_repository(accounts.clone())
             .block_keeper_epoch_code_hash(String::new())
             .block_keeper_preepoch_code_hash(String::new())
             .parallelization_level(1)
@@ -306,7 +304,11 @@ mod tests {
     #[test]
     #[ignore]
     fn test_started_external_message_not_marked_processed_on_stop() -> anyhow::Result<()> {
-        let zerostate = ZeroState::load_from_file("./tests/test_verification/zerostate")?;
+        let directory = tempfile::tempdir()?;
+        let accounts =
+            ThreadAccountsRepository::builder(directory.path().join("durable")).build()?;
+        let zerostate =
+            ZeroState::load_for_execution("./tests/test_verification/zerostate", &accounts)?;
         let opt_state = zerostate.state(&ThreadIdentifier::default())?.clone();
         let bc_config = load_blockchain_config()?.get(&DEFAULT_BLOCKCAHIN_CONFIG_HASH)?;
         let now = now_ms();
@@ -337,10 +339,7 @@ mod tests {
             .block_gas_limit(10_000_000)
             .rand_seed(Some(UInt256::rand()))
             .control_rx_stop(Some(stop_rx))
-            .thread_accounts_repository(
-                ThreadAccountsRepository::builder(tempfile::tempdir()?.path().join("durable"))
-                    .build()?,
-            )
+            .thread_accounts_repository(accounts.clone())
             .block_keeper_epoch_code_hash(String::new())
             .block_keeper_preepoch_code_hash(String::new())
             .parallelization_level(1)

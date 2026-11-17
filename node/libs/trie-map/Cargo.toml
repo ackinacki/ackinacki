@@ -11,12 +11,7 @@ license-file.workspace = true
 anyhow.workspace = true
 bincode.workspace = true
 blake3 = { version = "1.8.2" }
-bytes = { version = "1.11.0" }
-criterion = { version = "0.8.1", default-features = false, features = ["html_reports", "plotters"] }
-derive-getters = "0.5.0"
-derive_setters = { path = "../derive-setters" }
 digest = "0.10.7"
-hashbrown = "0.16.0"
 hex = "0.4.3"
 node-types.workspace = true
 num = "0.4.3"
@@ -24,9 +19,10 @@ parking_lot.workspace = true
 rand.workspace = true
 serde.workspace = true
 sha2 = "0.10.9"
-sha3 = "0.10.8"
 tempfile.workspace = true
-tracing.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.8.1", default-features = false, features = ["html_reports", "plotters"] }
 
 [[bench]]
 name = "dapp_map_perf"

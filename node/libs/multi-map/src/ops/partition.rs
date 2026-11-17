@@ -114,8 +114,8 @@ where
             NodeAug::Ext(ext) => {
                 let count = ext.nibble_count as usize;
                 let mut child_path = path;
-                for i in 0..count {
-                    set_nibble(&mut child_path.prefix, depth + i, ext.nibbles[i]);
+                for (i, &nibble) in ext.nibbles[..count].iter().enumerate() {
+                    set_nibble(&mut child_path.prefix, depth + i, nibble);
                 }
                 child_path.len = ((depth + count) * 4) as u16;
                 self.consider(key, source_path, &ext.child, child_path)?;

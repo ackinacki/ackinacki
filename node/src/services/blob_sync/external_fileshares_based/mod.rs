@@ -44,7 +44,6 @@ impl ExternalFileSharesBased {
             &self.local_storage_share_base_path.join(".snapshot-downloads"),
             Some(self.download_cache_bytes),
         )?;
-        cache.migrate_legacy_downloads(&self.local_storage_share_base_path)?;
         let (tx, rx) = instrumented_channel(
             metrics.clone(),
             crate::helper::metrics::BLOB_SYNC_COMMAND_CHANNEL,

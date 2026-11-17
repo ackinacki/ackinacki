@@ -76,12 +76,11 @@ fn runtime_partitioned_import_uses_static_fallback_and_real_publisher_worker() -
     let output = tempfile::tempdir()?;
     let publisher = source.snapshot.bk_set.iter().next().unwrap().node_id();
     let service = crate::node::services::sync::FileSavingService::builder()
-        .root_path(output.path().to_owned())
+        .resources(snapshot_storage::SnapshotResources::open(output.path())?)
         .publisher(publisher)
         .repository(repository.clone())
         .block_state_repository(block_states)
         .shared_services(repository.shared_services.clone())
-        .message_db(repository.message_db.clone())
         .build();
     service.save_object(
         &source.state.block_id,
@@ -192,56 +191,5 @@ fn runtime_dispatch_rejects_intermediate_markers_wrong_height_and_protocol_befor
     }
     assert!(!cache.exists());
     assert!(!RepositoryImpl::snapshot_import_recovery_path(&repository.data_dir).exists());
-    Ok(())
-}
-
-#[test]
-fn runtime_dispatch_imports_baseline_only_under_retired_protocol() -> anyhow::Result<()> {
-    let mut source = Fixture::new()?;
-    let old_config =
-        GlobalConfig { engine_version: semver::Version::new(1, 0, 7), ..GlobalConfig::default() };
-    let old = crate::versioning::ProtocolVersion::builder()
-        .canonical_config_hash(&old_config)
-        .tvm_engine_version(old_config.engine_version.clone())
-        .gossip_version(old_config.gossip_version)
-        .build();
-    source
-        .snapshot
-        .set_block_protocol_version_state(BlockProtocolVersionState::Current(old.clone()));
-    source.snapshot.optimistic_state =
-        SnapshotVersion::Legacy.serialize_state(source.state.clone())?;
-    let durable = tempfile::NamedTempFile::new()?;
-    let _pin = source.pin()?;
-    source.repo.export_snapshot_v1_to_writer_checked(
-        &source.state.shard_state.0,
-        &mut durable.as_file(),
-        &|| false,
-    )?;
-    let mut raw = Vec::new();
-    write_legacy_thread_snapshot(&source.snapshot, Some(durable.path()), &mut raw)?;
-    for compressed in [false, true] {
-        let directory = tempfile::tempdir()?;
-        let (mut repository, _) = super::tests::make_test_repository(&directory)?;
-        repository.config_read =
-            source.configs.clone().with_retired(old.clone(), old_config.clone());
-        let bytes = if compressed {
-            let mut bytes = b"ZSTD".to_vec();
-            bytes.extend(zstd::encode_all(raw.as_slice(), 3)?);
-            bytes
-        } else {
-            raw.clone()
-        };
-        let status = import_downloaded_snapshot(
-            &mut bytes.as_slice(),
-            &mut repository,
-            (source.state.thread_id, source.state.block_id),
-            source.snapshot.block_height,
-            &directory.path().join("cache"),
-            &[],
-            &[],
-            &|| false,
-        )?;
-        assert!(matches!(status, SnapshotImportStatus::Imported));
-    }
     Ok(())
 }

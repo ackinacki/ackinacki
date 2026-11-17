@@ -27,6 +27,7 @@ use database::sqlite::ArchTransaction;
 use node_types::AccountHash;
 use node_types::AccountIdentifier;
 use node_types::DAppIdentifier;
+use node_types::ThreadIdentifier;
 use node_types::TransactionHash;
 use parking_lot::Mutex;
 use tvm_block::AccountBlock;
@@ -281,6 +282,11 @@ pub fn reflect_block_in_db(
     // Prepare messages
     let now = std::time::Instant::now();
     let msg_count = messages.len(); // is 0 if not process_message
+
+    // Only thread-0 blocks are stored in the history proofs store.
+    let thread_zero = envelope.data().common_section().thread_id() == &ThreadIdentifier::default();
+    // Bridge events of the history proofs store.
+    let ext_outs = if thread_zero { ext_out_messages(&messages) } else { vec![] };
     let mut arch_messages = vec![];
     for (_, arch_msg) in messages {
         arch_messages.push(arch_msg);
@@ -291,12 +297,12 @@ pub fn reflect_block_in_db(
     tracing::debug!(target: "database", "TIME: prepare {} messages {}ms;", msg_count, now.elapsed().as_millis(),);
 
     // Prepare BK set updates
-    if let Some(bk_set_update) =
-        prepare_bk_set_update_archive_struct(&envelope, &block_id_hex, &block_index)?
-    {
+    let bk_set_update =
+        prepare_bk_set_update_archive_struct(&envelope, &block_id_hex, &block_index)?;
+    if let Some(bk_set_update) = &bk_set_update {
         archive
             .lock()
-            .put_bk_set_updates(vec![bk_set_update])
+            .put_bk_set_updates(vec![bk_set_update.clone()])
             .map_err(|e| anyhow::format_err!("Failed to put bk set updates: {e}"))?;
     }
 
@@ -305,14 +311,14 @@ pub fn reflect_block_in_db(
     if !attestations.is_empty() {
         archive
             .lock()
-            .put_attestations(attestations)
+            .put_attestations(attestations.clone())
             .map_err(|e| anyhow::format_err!("Failed to put attestations: {e}"))?;
     }
 
     // Block
     let now = std::time::Instant::now();
     let _ = raw_block;
-    let item = prepare_block_archive_struct(
+    let mut item = prepare_block_archive_struct(
         envelope,
         &block_root,
         &archive_block_id,
@@ -320,6 +326,8 @@ pub fn reflect_block_in_db(
         block_index.clone(),
     )
     .map_err(|e| anyhow::format_err!("{e}"))?;
+    item.ext_out_messages = ext_outs;
+    attach_history_extras(&mut item, thread_zero, bk_set_update, &attestations);
     archive.lock().put_block(item).map_err(|e| anyhow::format_err!("{e}"))?;
     tracing::debug!(target: "database", "TIME: block({}) {}ms;", block_id_hex, now.elapsed().as_millis());
     tracing::debug!(target: "database",
@@ -328,6 +336,31 @@ pub fn reflect_block_in_db(
         block_id_hex
     );
     Ok(activity_summaries)
+}
+
+/// The BK set update and the carried attestations of a thread-0 block travel
+/// with it to the history proofs store, which writes them in one transaction
+/// with the block row. Other threads are not stored there.
+pub(crate) fn attach_history_extras(
+    item: &mut ArchBlock,
+    thread_zero: bool,
+    bk_set_update: Option<ArchBkSetUpdate>,
+    attestations: &[ArchAttestation],
+) {
+    if thread_zero {
+        item.bk_set_update = bk_set_update;
+        item.attestations = attestations.to_vec();
+    }
+}
+
+/// Ext-out messages of a block (v1 and v2 headers), for the bridge events of
+/// the history proofs store.
+pub(crate) fn ext_out_messages(messages: &HashMap<UInt256, ArchMessage>) -> Vec<ArchMessage> {
+    messages
+        .values()
+        .filter(|message| matches!(message.msg_type, Some(2) | Some(4)))
+        .cloned()
+        .collect()
 }
 
 fn prepare_bk_set_update_archive_struct(
@@ -752,14 +785,22 @@ fn append_prefixed_hex_with_decimal_len(buffer: &mut String, hex_value: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use database::sqlite::ArchAttestation;
+    use database::sqlite::ArchBkSetUpdate;
+    use database::sqlite::ArchBlock;
+    use database::sqlite::ArchMessage;
     use node_types::ThreadIdentifier;
     use tvm_block::BlockExtra;
     use tvm_block::BlockInfo;
     use tvm_block::MerkleUpdate;
     use tvm_block::ValueFlow;
 
+    use super::attach_history_extras;
     use super::block_index;
     use super::Block;
+    use super::UInt256;
     use crate::types::BlockHeight;
 
     fn make_test_block(gen_utime_ms: u64, height: u32) -> Block {
@@ -775,6 +816,51 @@ mod tests {
             BlockExtra::default(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn arch_block_carries_bk_set_update_and_attestations() {
+        let update = ArchBkSetUpdate {
+            block_id: "aa".repeat(32),
+            thread_id: "00".repeat(34),
+            height: 2000u64.to_be_bytes(),
+            chain_order: "00002000".to_string(),
+            bk_set_update: vec![0xbb; 40],
+        };
+        let attestations = vec![
+            ArchAttestation { block_id: "cc".repeat(32), target_type: 0, ..Default::default() },
+            ArchAttestation { block_id: "cc".repeat(32), target_type: 1, ..Default::default() },
+        ];
+
+        let mut thread_zero = ArchBlock::default();
+        attach_history_extras(&mut thread_zero, true, Some(update.clone()), &attestations);
+        assert_eq!(thread_zero.bk_set_update, Some(update.clone()));
+        assert_eq!(thread_zero.attestations, attestations);
+
+        let mut other_thread = ArchBlock::default();
+        attach_history_extras(&mut other_thread, false, Some(update), &attestations);
+        assert_eq!(other_thread.bk_set_update, None);
+        assert!(other_thread.attestations.is_empty());
+    }
+
+    #[test]
+    fn ext_out_messages_selects_ext_outs_only() {
+        let message = |seed: u8, msg_type: u8| {
+            (
+                UInt256::from([seed; 32]),
+                ArchMessage {
+                    id: hex::encode([seed; 32]),
+                    msg_type: Some(msg_type),
+                    ..Default::default()
+                },
+            )
+        };
+        let messages: HashMap<UInt256, ArchMessage> =
+            HashMap::from([message(1, 0), message(2, 1), message(3, 2), message(4, 4)]);
+        let mut selected: Vec<Option<u8>> =
+            super::ext_out_messages(&messages).iter().map(|m| m.msg_type).collect();
+        selected.sort();
+        assert_eq!(selected, vec![Some(2), Some(4)]);
     }
 
     #[test]

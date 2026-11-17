@@ -393,6 +393,8 @@ fn snapshot_consumption_accepts_ready_partitions_in_reverse_order_with_accounts_
         staged.state().shard_state.0.durable.map().hash(),
         source.state.shard_state.0.durable.map().hash()
     );
+    #[cfg(feature = "monitor-accounts-number")]
+    assert_eq!(staged.state().accounts_number, 12);
     assert_eq!(staged.state().messages.root_hash(), source.state.messages.root_hash());
     assert_eq!(
         staged.state().high_priority_messages.root_hash(),

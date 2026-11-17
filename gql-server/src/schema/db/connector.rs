@@ -25,6 +25,7 @@ use sqlx::SqlitePool;
 
 use crate::defaults;
 use crate::defaults::DEFAULT_SQLITE_QUERY_TIMEOUT_SECS;
+use crate::defaults::THREAD_ZERO;
 use crate::metrics::GqlServerMetrics;
 
 /// Build PRAGMAs applied to every new SQLite connection for read-optimized workloads.
@@ -45,6 +46,12 @@ const PROGRESS_HANDLER_OPS: i32 = 1000;
 pub struct DBConnector {
     pool: ArcSwap<SqlitePool>,
     attachments: ArcSwap<HashMap<String, String>>,
+    /// `ATTACH` URI of the history proofs store, already escaped as an SQL
+    /// literal. `None` when there is no store next to the main DB.
+    history_proofs_db: ArcSwap<Option<String>>,
+    /// The history proofs store is attached to the connections of the current
+    /// pool (its ATTACH did not fail). Checked when the pool is recreated.
+    history_store_attached: ArcSwap<bool>,
     db_path: PathBuf,
     metrics: ArcSwap<Option<GqlServerMetrics>>,
     query_timeout: ArcSwap<Duration>,
@@ -125,6 +132,8 @@ impl DBConnector {
         Arc::new(Self {
             pool: ArcSwap::new(Arc::new(pool)),
             attachments: ArcSwap::new(Arc::new(HashMap::new())),
+            history_proofs_db: ArcSwap::new(Arc::new(None)),
+            history_store_attached: ArcSwap::new(Arc::new(false)),
             db_path,
             metrics: ArcSwap::new(Arc::new(None)),
             query_timeout: ArcSwap::new(Arc::new(Duration::from_secs(
@@ -178,6 +187,75 @@ impl DBConnector {
         **self.max_attached_db.load()
     }
 
+    /// Sets the history proofs store to attach to every pooled connection as
+    /// `HISTORY_PROOFS_DB_ALIAS`. Takes effect when the pool is next
+    /// recreated, i.e. on `update_attachments`.
+    pub fn set_history_proofs_db(&self, path: Option<&Path>) {
+        let attach_uri =
+            path.map(|path| escape_literal(&format!("file:{}?mode=ro", path.display())));
+        self.history_proofs_db.store(Arc::new(attach_uri));
+    }
+
+    pub fn has_history_proofs_db(&self) -> bool {
+        self.history_proofs_db.load().is_some()
+    }
+
+    /// The store's ATTACH worked on a new connection of the current pool when
+    /// the pool was created. Reads of the store check this, not
+    /// `has_history_proofs_db`: a failed ATTACH, or the old pool before the
+    /// file's first attach, would fail them with "no such table" instead of a
+    /// miss. Connections opened later attach on their own; one whose ATTACH
+    /// fails still returns that error.
+    pub fn history_store_attached(&self) -> bool {
+        **self.history_store_attached.load()
+    }
+
+    /// Probes the store on a connection of `pool`: attached, with its four
+    /// tables. `false` without a store, or when the ATTACH or the query failed.
+    async fn probe_history_store(&self, pool: &SqlitePool) -> bool {
+        if !self.has_history_proofs_db() {
+            return false;
+        }
+        let sql = format!(
+            "SELECT name FROM \"{}\".sqlite_master WHERE type = 'table' \
+             AND name IN ({})",
+            defaults::HISTORY_PROOFS_DB_ALIAS,
+            HISTORY_TABLES.map(|table| format!("'{table}'")).join(", ")
+        );
+        let tables: Result<Vec<(String,)>, sqlx::Error> =
+            QueryBuilder::new(sql).build_query_as().fetch_all(pool).await;
+        let tables: Vec<String> = match tables {
+            Ok(rows) => rows.into_iter().map(|(name,)| name).collect(),
+            Err(err) => {
+                tracing::error!(
+                    "the history proofs store is not attached, gql-server serves without it: {err}"
+                );
+                return false;
+            }
+        };
+        let missing = missing_history_tables(&tables);
+        if !missing.is_empty() {
+            tracing::error!(
+                "the history proofs store has no table {}, gql-server serves without it",
+                missing.join(", ")
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Replaces the pool and the store flag probed on it. The flag turns off
+    /// before the swap and on after it, so a query does not see a flag that
+    /// its pool does not back.
+    async fn replace_pool_and_probe(&self, new_pool: SqlitePool) {
+        let attached = self.probe_history_store(&new_pool).await;
+        if !attached {
+            self.history_store_attached.store(Arc::new(false));
+        }
+        self.replace_pool(new_pool);
+        self.history_store_attached.store(Arc::new(attached));
+    }
+
     pub async fn set_max_connections(&self, max_conn: u32) -> anyhow::Result<()> {
         let current = **self.max_connections.load();
         if current == max_conn {
@@ -185,7 +263,7 @@ impl DBConnector {
         }
         self.max_connections.store(Arc::new(max_conn));
         let new_pool = self.create_pool_with_attachments().await?;
-        self.replace_pool(new_pool);
+        self.replace_pool_and_probe(new_pool).await;
         tracing::info!("Recreated pool with max_connections={max_conn}");
         Ok(())
     }
@@ -215,7 +293,7 @@ impl DBConnector {
         self.attachments.store(Arc::new(new_attachments));
 
         let new_pool = self.create_pool_with_attachments().await?;
-        self.replace_pool(new_pool);
+        self.replace_pool_and_probe(new_pool).await;
 
         Ok(())
     }
@@ -236,6 +314,7 @@ impl DBConnector {
             SqliteConnectOptions::from_str(&connect_string)?.create_if_missing(false);
 
         let attachments = self.attachments.load_full().clone();
+        let history_proofs_db = self.history_proofs_db.load_full();
         let max_conn = **self.max_connections.load();
         let acquire_timeout = **self.acquire_timeout.load();
         let pragmas =
@@ -248,11 +327,27 @@ impl DBConnector {
             .acquire_timeout(acquire_timeout)
             .after_connect(move |conn, _meta| {
                 let attachments = attachments.clone();
+                let history_proofs_db = history_proofs_db.clone();
                 let pragmas = pragmas.clone();
                 Box::pin(async move {
                     sqlx::raw_sql(sqlx::AssertSqlSafe(pragmas.clone())).execute(&mut *conn).await?;
                     // TODO: remove after verifying PRAGMAs in production
                     tracing::info!("Applied SQLite read PRAGMAs to new connection");
+                    // Attached before the archives and outside
+                    // `attached_db_names()`: it is not an archive and no
+                    // UNION over archives must see it.
+                    if let Some(path) = &*history_proofs_db {
+                        let sql = format!(
+                            "ATTACH DATABASE '{}' AS '{}'",
+                            path,
+                            defaults::HISTORY_PROOFS_DB_ALIAS
+                        );
+                        tracing::trace!(sql);
+
+                        if let Err(err) = QueryBuilder::new(sql).build().execute(&mut *conn).await {
+                            tracing::error!("ATTACH of the history proofs store failed: {err}");
+                        }
+                    }
                     for (attach_name, path) in attachments.iter() {
                         let sql = format!("ATTACH DATABASE '{}' AS '{}'", path, attach_name);
                         tracing::trace!(sql);
@@ -312,16 +407,78 @@ impl DBConnector {
         self.pool.load().num_idle()
     }
 
+    /// The lowest thread-0 height served from the main DB, the archives and
+    /// the history proofs store, with that block's `gen_utime`.
+    pub async fn oldest_thread0(&self) -> anyhow::Result<Option<(u64, Option<i64>)>> {
+        let mut oldest: Option<(u64, Option<i64>)> = None;
+        let mut keep = |height: u64, gen_utime: Option<i64>| {
+            if oldest.is_none_or(|(current, _)| height < current) {
+                oldest = Some((height, gen_utime));
+            }
+        };
+        let union_sql = self
+            .attached_db_names()
+            .into_iter()
+            .map(|name| {
+                format!(
+                    "SELECT * FROM (SELECT height, gen_utime FROM \"{name}\".blocks \
+                     WHERE thread_id = '{THREAD_ZERO}' ORDER BY height LIMIT 1)"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+        let mut conn = self.get_connection().await?;
+        conn.set_sql(&union_sql);
+        let rows: Vec<(Option<Vec<u8>>, Option<i64>)> =
+            sqlx::QueryBuilder::new(union_sql).build_query_as().fetch_all(&mut *conn).await?;
+        for (height, gen_utime) in rows {
+            if let Some(height) = height.and_then(|h| <[u8; 8]>::try_from(h.as_slice()).ok()) {
+                keep(u64::from_be_bytes(height), gen_utime);
+            }
+        }
+        if self.history_store_attached() {
+            let sql = format!(
+                "SELECT height, gen_utime FROM \"{}\".blocks ORDER BY height LIMIT 1",
+                defaults::HISTORY_PROOFS_DB_ALIAS
+            );
+            conn.set_sql(&sql);
+            let row: Option<(i64, Option<i64>)> =
+                sqlx::QueryBuilder::new(sql).build_query_as().fetch_optional(&mut *conn).await?;
+            if let Some((height, gen_utime)) = row {
+                keep(height as u64, gen_utime);
+            }
+        }
+        Ok(oldest)
+    }
+
     pub fn attached_db_names(&self) -> Vec<String> {
         let mut list: Vec<String> = self.attachments.load_full().keys().cloned().collect();
 
         list.push("main".to_string());
         list
     }
+
+    /// Attached archives newest first, from a single snapshot of the attachments, without the
+    /// oldest one: the one most likely to be cut off by retention. Archives are named
+    /// `bm-archive-<unix_ts>.db` and attached under their file stem; a stem whose suffix after
+    /// the last `-` is not a number counts as `0`. `main` is not included.
+    pub fn attached_db_names_except_oldest(&self) -> Vec<String> {
+        let attachments = self.attachments.load_full();
+        let mut names: Vec<(u64, &String)> =
+            attachments.keys().map(|name| (archive_timestamp(name), name)).collect();
+        names.sort_unstable();
+        names.into_iter().skip(1).rev().map(|(_, name)| name.clone()).collect()
+    }
+}
+
+/// Suffix after the last `-` of an attached archive name (`bm-archive-<unix_ts>`); `0` when it
+/// is not a number.
+fn archive_timestamp(name: &str) -> u64 {
+    name.rsplit('-').next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0)
 }
 
 fn is_system_db(name: &str) -> bool {
-    matches!(name, "main" | "temp")
+    matches!(name, "main" | "temp") || name == defaults::HISTORY_PROOFS_DB_ALIAS
 }
 
 fn escape_identifier(value: &str) -> String {
@@ -330,6 +487,14 @@ fn escape_identifier(value: &str) -> String {
 
 fn escape_literal(value: &str) -> String {
     value.replace('\'', "''")
+}
+
+/// The tables of the history proofs store that gql-server reads.
+const HISTORY_TABLES: [&str; 4] = ["blocks", "events", "bk_set_updates", "attestations"];
+
+/// The tables of `HISTORY_TABLES` that are not in `found`.
+fn missing_history_tables(found: &[String]) -> Vec<&'static str> {
+    HISTORY_TABLES.into_iter().filter(|table| !found.iter().any(|name| name == table)).collect()
 }
 
 #[cfg(test)]
@@ -345,6 +510,28 @@ mod tests {
     use crate::defaults;
     use crate::schema::db::build_read_pragmas;
     use crate::web;
+
+    /// The tables gql-server requires are the ones block-manager creates.
+    #[test]
+    fn history_tables_are_in_the_store_schema() {
+        let dir = testdir::testdir!();
+        let store = database::sqlite::history_proofs::HistoryProofsStore::open(&dir).unwrap();
+        let tables: Vec<String> = store
+            .connection()
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(super::missing_history_tables(&tables), Vec::<&str>::new(), "{tables:?}");
+    }
+
+    #[test]
+    fn missing_history_tables_names_each_absent_table() {
+        let found = ["attestations".to_string(), "blocks".to_string()];
+        assert_eq!(super::missing_history_tables(&found), vec!["events", "bk_set_updates"]);
+    }
 
     async fn setup_connector() -> (Arc<DBConnector>, std::path::PathBuf) {
         let root = PathBuf::from("./tests/fixtures/popitgame");
@@ -566,5 +753,182 @@ mod tests {
         let mut names = connector.attached_db_names();
         names.sort();
         assert_eq!(names, vec!["bm-archive-1".to_string(), "main".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn oldest_thread0_covers_file() {
+        use database::sqlite::history_proofs::HistoryProofsStore;
+        use database::sqlite::history_proofs::HistoryRow;
+        use migration_tool::DbInfo;
+        use migration_tool::DbMaintenance;
+        use migration_tool::DbMaintenanceOptions;
+        use migration_tool::MigrateTo;
+
+        // The library and the binary target both run this test and share the
+        // directory, so every statement has to tolerate a second run.
+        let root = testdir::testdir!();
+        let open = |db_dir: &std::path::Path| {
+            let maintenance = DbMaintenance::new(&DbInfo::BM_ARCHIVE, db_dir);
+            maintenance
+                .migrate(
+                    MigrateTo::Latest,
+                    DbMaintenanceOptions { silent: true, ..Default::default() },
+                )
+                .expect("migrate the main DB");
+            maintenance.path
+        };
+        let main_db = open(&root.join("main"));
+        let empty_db = open(&root.join("empty"));
+        {
+            let conn = rusqlite::Connection::open(&main_db).unwrap();
+            let thread_zero = "0".repeat(68);
+            for (id, thread, height) in [
+                ("a", thread_zero.as_str(), 700u64),
+                ("b", thread_zero.as_str(), 500),
+                ("c", "01", 10),
+            ] {
+                conn.execute(
+                    "INSERT OR IGNORE INTO blocks (id, status, seq_no, parent, thread_id, height, gen_utime)
+                     VALUES (?1, 2, ?2, 'p', ?3, ?4, 1800000000)",
+                    rusqlite::params![id, height as i64, thread, height.to_be_bytes().to_vec()],
+                )
+                .unwrap();
+            }
+        }
+        let store_path = root.join("store").join(defaults::HISTORY_PROOFS_DB_FILE);
+        std::fs::create_dir_all(store_path.parent().unwrap()).unwrap();
+        {
+            let mut store =
+                HistoryProofsStore::open_file(&store_path, Duration::from_secs(5), true).unwrap();
+            for height in [100u64, 300] {
+                let row = HistoryRow {
+                    height,
+                    block_id: [height as u8; 32],
+                    envelope_hash: [0; 32],
+                    tracked_root: [0; 32],
+                    tracked_hashes: None,
+                    history_proofs: None,
+                    block_merkle_leaves: None,
+                    gen_utime: Some(1_700_000_000 + height as i64),
+                };
+                store.insert_block(&row, &[]).unwrap();
+            }
+        }
+        let connector = |db: PathBuf| async move {
+            let pool = web::open_db(
+                db.clone(),
+                2,
+                Duration::from_secs(defaults::DEFAULT_ACQUIRE_TIMEOUT_SECS),
+                build_read_pragmas(
+                    defaults::DEFAULT_SQLITE_MMAP_SIZE,
+                    defaults::DEFAULT_SQLITE_CACHE_SIZE,
+                ),
+            )
+            .await
+            .expect("open `main` DB");
+            DBConnector::new(pool, db, 2)
+        };
+
+        let main = connector(main_db.clone()).await;
+        assert_eq!(main.oldest_thread0().await.unwrap(), Some((500, Some(1_800_000_000))));
+        main.set_history_proofs_db(Some(store_path.as_path()));
+        main.update_attachments(vec![]).await.unwrap();
+        assert_eq!(main.oldest_thread0().await.unwrap(), Some((100, Some(1_700_000_100))));
+
+        let empty = connector(empty_db).await;
+        assert_eq!(empty.oldest_thread0().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn attaches_history_proofs_db_next_to_nine_archives() {
+        // The library and the binary target both run this test and share the
+        // directory, so every statement has to tolerate a second run.
+        let root = testdir::testdir!();
+        let main_db = root.join("bm-archive.db");
+        rusqlite::Connection::open(&main_db)
+            .and_then(|conn| conn.execute_batch("CREATE TABLE IF NOT EXISTS t (x)"))
+            .expect("create main DB");
+
+        let mut archives = Vec::new();
+        for ts in 1..=9 {
+            let path = root.join(format!("bm-archive-{ts}.db"));
+            rusqlite::Connection::open(&path)
+                .and_then(|conn| conn.execute_batch("CREATE TABLE IF NOT EXISTS t (x)"))
+                .expect("create archive DB");
+            archives.push(path.to_string_lossy().into_owned());
+        }
+
+        let history_db = root.join(defaults::HISTORY_PROOFS_DB_FILE);
+        rusqlite::Connection::open(&history_db)
+            .and_then(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS history_proofs (
+                        thread_id TEXT NOT NULL,
+                        height BLOB NOT NULL,
+                        block_id TEXT NOT NULL,
+                        gen_utime INTEGER,
+                        history_proofs BLOB NOT NULL,
+                        PRIMARY KEY (thread_id, height)
+                    ) WITHOUT ROWID",
+                )
+            })
+            .expect("create history proofs store");
+
+        let pool = web::open_db(
+            main_db.clone(),
+            2,
+            Duration::from_secs(defaults::DEFAULT_ACQUIRE_TIMEOUT_SECS),
+            build_read_pragmas(
+                defaults::DEFAULT_SQLITE_MMAP_SIZE,
+                defaults::DEFAULT_SQLITE_CACHE_SIZE,
+            ),
+        )
+        .await
+        .expect("open `main` DB");
+        let connector = DBConnector::new(pool, main_db, 2);
+        assert!(!connector.has_history_proofs_db());
+
+        connector.set_history_proofs_db(Some(history_db.as_path()));
+        connector.update_attachments(archives).await.expect("attach archives");
+        assert!(connector.has_history_proofs_db());
+
+        // Nine archives and `main`; the store is not an archive.
+        let names = connector.attached_db_names();
+        assert_eq!(names.len(), 10);
+        assert!(!names.iter().any(|name| name == defaults::HISTORY_PROOFS_DB_ALIAS));
+
+        let mut conn = connector.get_connection().await.expect("get conn");
+        let attached: Vec<String> = sqlx::query("PRAGMA database_list")
+            .fetch_all(&mut *conn)
+            .await
+            .expect("database_list")
+            .iter()
+            .map(|row| row.get::<String, _>(1))
+            .collect();
+        for name in &names {
+            assert!(attached.contains(name), "{name} is not attached: {attached:?}");
+        }
+        assert!(
+            attached.iter().any(|name| name == defaults::HISTORY_PROOFS_DB_ALIAS),
+            "the history proofs store is not attached: {attached:?}"
+        );
+
+        let rows: i64 = sqlx::query("SELECT COUNT(*) FROM \"history_proofs_db\".history_proofs")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("query the history proofs store")
+            .get(0);
+        assert_eq!(rows, 0);
+    }
+
+    #[tokio::test]
+    async fn history_proofs_db_can_be_unset() {
+        let (connector, root) = setup_connector().await;
+
+        connector.set_history_proofs_db(Some(root.join("bm-archive-1.db").as_path()));
+        assert!(connector.has_history_proofs_db());
+
+        connector.set_history_proofs_db(None);
+        assert!(!connector.has_history_proofs_db());
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "block-manager"
-version = "0.10.1"
+version = "0.11.0"
 edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
@@ -16,14 +16,17 @@ bincode.workspace = true
 clap.workspace = true
 clickhouse.workspace = true
 database.workspace = true
+hex.workspace = true
+history-proof.workspace = true
 message-router.workspace = true
 network.workspace = true
 node.workspace = true
+node-types.workspace = true
 opentelemetry.workspace = true
 parking_lot.workspace = true
+proof-data.workspace = true
 rusqlite.workspace = true
 salvo.workspace = true
-sdk-wrapper.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true
@@ -45,3 +48,9 @@ rustls-pki-types = { version = "1.8.0" }
 
 dotenvy = "0"
 serde_yaml = "0.9"
+
+[dev-dependencies]
+gosh_blst.workspace = true
+http-server.workspace = true
+migration-tool.workspace = true
+testdir.workspace = true

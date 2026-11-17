@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -164,7 +165,7 @@ impl Fixture {
             account_repository: self.repo.durable_map_repo(),
             pin,
             publisher: &self.publisher,
-            directory,
+            resources: SnapshotResources::open(directory).unwrap(),
             configs: self.configs.clone(),
             max_roots_per_list: 1000,
             retention: RetentionPolicy::default(),
@@ -298,10 +299,8 @@ fn snapshot_partition_capacity_uses_effective_block_config_and_rejects_invalid_c
         &configs,
     )
     .is_err());
-    for config in [
-        GlobalConfig { engine_version: semver::Version::new(1, 0, 7), ..GlobalConfig::default() },
-        GlobalConfig { snapshot_partition_size_bytes: 0, ..GlobalConfig::default() },
-    ] {
+    {
+        let config = GlobalConfig { snapshot_partition_size_bytes: 0, ..GlobalConfig::default() };
         let version = protocol(&config);
         let configs = ConfigRead::new(version.clone(), config);
         assert!(partition_capacity_for_block(
@@ -381,7 +380,9 @@ fn snapshot_publication_missing_block_config_publishes_nothing() -> anyhow::Resu
         |_| panic!("unconfigured snapshot must not publish"),
     )
     .is_err());
-    assert_eq!(std::fs::read_dir(output.path())?.count(), 0);
+    assert!(entries(output.path()).is_empty());
+    assert!(snapshot_storage::snapshot_headers(output.path())?.is_empty());
+    assert_eq!(std::fs::read_dir(output.path().join(".snapshot-resources/records"))?.count(), 0);
     Ok(())
 }
 
@@ -407,29 +408,30 @@ fn snapshot_publication_primary_first_scheduled_blobs_roundtrip_and_pin_spans_la
         partition_publication_order(flat.len(), rank, ranked.len())?.map(|i| flat[i].clone()),
     );
     let mut published = Vec::new();
-    let actual =
-        publish_partitioned_snapshot(fixture.publication(pin, output.path()), &|| false, |name| {
-            assert_eq!(fixture.archive_block(), fixture.state.block_id);
-            assert!(!fixture.repo.wait_for_drain(Duration::from_millis(5)));
-            let raw = payload(output.path(), name)?;
-            if published.is_empty() {
-                let primary = read_primary_snapshot_checked(&mut raw.as_slice(), 1000, &|| false)?;
-                assert_eq!(primary.manifest, manifest);
-                assert_eq!(entries(output.path()), vec![expected[0].clone()]);
-                let headers = snapshot_storage::snapshot_headers(output.path())?;
-                assert_eq!(headers.len(), 1);
-                assert_eq!(headers[0].0, expected[0]);
-                let header: super::super::ThreadSnapshotHeader = bincode::deserialize(
-                    &std::fs::read(output.path().join(format!("{}.header", expected[0])))?,
-                )?;
-                assert_eq!(header.block_id, fixture.state.block_id);
-                SnapshotResources::open(output.path())?.retain(&Default::default())?;
-                assert!(output.path().join(name).is_file());
-            }
-            assert_eq!(name, expected[published.len()]);
-            published.push(name.to_string());
-            Ok(())
-        })?;
+    let publication = fixture.publication(pin, output.path());
+    let resources = publication.resources.clone();
+    let actual = publish_partitioned_snapshot(publication, &|| false, |name| {
+        assert_eq!(fixture.archive_block(), fixture.state.block_id);
+        assert!(!fixture.repo.wait_for_drain(Duration::from_millis(5)));
+        let raw = payload(output.path(), name)?;
+        if published.is_empty() {
+            let primary = read_primary_snapshot_checked(&mut raw.as_slice(), 1000, &|| false)?;
+            assert_eq!(primary.manifest, manifest);
+            assert_eq!(entries(output.path()), vec![expected[0].clone()]);
+            let headers = snapshot_storage::snapshot_headers(output.path())?;
+            assert_eq!(headers.len(), 1);
+            assert_eq!(headers[0].0, expected[0]);
+            let header: super::super::ThreadSnapshotHeader = bincode::deserialize(&std::fs::read(
+                output.path().join(format!("{}.header", expected[0])),
+            )?)?;
+            assert_eq!(header.block_id, fixture.state.block_id);
+            resources.retain(&Default::default())?;
+            assert!(output.path().join(name).is_file());
+        }
+        assert_eq!(name, expected[published.len()]);
+        published.push(name.to_string());
+        Ok(())
+    })?;
     assert_eq!(actual, manifest);
     assert_eq!(published, expected);
     assert_eq!(entries(output.path()).len(), flat.len() + 1);
@@ -445,7 +447,7 @@ fn snapshot_publication_primary_first_scheduled_blobs_roundtrip_and_pin_spans_la
                 snapshot_storage::PartitionKind::Accounts,
             ),
         )?;
-        let map = read_account_partition_checked(
+        let (map, _) = read_account_partition_checked(
             &mut raw.as_slice(),
             MapKeyPath::default(),
             ThreadAccountsHash::new(*root),
@@ -638,12 +640,12 @@ fn snapshot_publication_concurrent_writers_never_overwrite_the_winner() -> anyho
     for identical in [true, false] {
         let output = tempfile::tempdir()?;
         let barrier = std::sync::Barrier::new(2);
+        let store = SnapshotResources::open(output.path())?;
         let results = std::thread::scope(|scope| {
             let spawn = |primary, body: &'static [u8]| {
-                let output = output.path();
+                let store = store.clone();
                 let barrier = &barrier;
                 scope.spawn(move || {
-                    let store = SnapshotResources::open(output).unwrap();
                     let resources = store.begin([primary; 32], [[42; 32]]).unwrap();
                     publish_blob(&resources, &[42; 32], None, &|| false, |writer| {
                         writer.write_all(body)?;

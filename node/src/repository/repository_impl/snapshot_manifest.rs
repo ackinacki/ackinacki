@@ -28,10 +28,6 @@ pub(crate) fn partition_capacity_for_block(
         anyhow::anyhow!("No configuration for snapshot block protocol {}", version.to_use())
     })?;
     anyhow::ensure!(
-        config.engine_version >= semver::Version::new(1, 0, 8),
-        "partitioned snapshot publication requires engine version 1.0.8 or later"
-    );
-    anyhow::ensure!(
         config.snapshot_partition_size_bytes > 0,
         "snapshot partition capacity must be positive"
     );

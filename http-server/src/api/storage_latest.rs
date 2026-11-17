@@ -1,19 +1,17 @@
 // 2022-2024 (c) Copyright Contributors to the GOSH DAO. All rights reserved.
 //
 
-use std::path::Path;
-use std::path::PathBuf;
-
 use salvo::prelude::*;
+use snapshot_storage::SnapshotResources;
 // pub type GetBlockFn = Arc<dyn Fn(Vec<u8>) -> anyhow::Result<Vec<u8>> + Send + Sync>;
 
 pub struct StorageLatestHandler {
-    pub storage_dir: PathBuf,
+    pub resources: SnapshotResources,
 }
 
 impl StorageLatestHandler {
-    pub fn new(storage_dir: PathBuf) -> Self {
-        Self { storage_dir }
+    pub fn new(resources: SnapshotResources) -> Self {
+        Self { resources }
     }
 }
 
@@ -26,10 +24,20 @@ impl Handler for StorageLatestHandler {
         res: &mut Response,
         _ctrl: &mut FlowCtrl,
     ) {
-        let file_name: String = match get_latest_file(&self.storage_dir) {
-            Ok(file) => file,
-            Err(e) => {
+        let resources = self.resources.clone();
+        // GC holds this mutex while scanning/deleting/fsyncing resources.
+        // Waiting for it and walking the directory must not occupy an async
+        // runtime worker, just as in the /storage/ listing handler.
+        let latest = tokio::task::spawn_blocking(move || get_latest_file(&resources)).await;
+        let file_name = match latest {
+            Ok(Ok(file)) => file,
+            Ok(Err(e)) => {
                 res.status_code(StatusCode::NOT_FOUND);
+                res.body(format!("Error: {e}"));
+                return;
+            }
+            Err(e) => {
+                res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
                 res.body(format!("Error: {e}"));
                 return;
             }
@@ -39,8 +47,9 @@ impl Handler for StorageLatestHandler {
     }
 }
 
-fn get_latest_file(storage_dir: &Path) -> anyhow::Result<String> {
-    match snapshot_storage::snapshot_headers(storage_dir)?
+fn get_latest_file(resources: &SnapshotResources) -> anyhow::Result<String> {
+    match resources
+        .headers()?
         .into_iter()
         .max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)))
         .map(|(file, _)| file)

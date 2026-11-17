@@ -2,6 +2,37 @@
 
 All notable changes to `gql-server` are documented in this file.
 
+## [1.6.0] – 2026-11-16
+
+### Added
+- `blockchain.blockByHeight` (thread 0), `blockchain.block(hash)` and
+  `blockchain.message(hash)` read `bm-history-proofs.db` once a block, a bridge
+  `WithdrawalInitiated` or a RootPN `VoucherGenerated` event has left the main
+  DB and the archives. Such objects serve a limited set of fields; other fields
+  return `HISTORY_FIELD_UNAVAILABLE`.
+- `blockchain.voucherEvents(sk_u_commit)`: RootPN vouchers by `skUCommit`, from
+  the history proofs store.
+- `blockchain.layerTree(thread_id, height, layer)`: the leaves and root of a
+  history proof tree, checked against the stored root.
+- `blockchain.latestBkSet`: the exact BK set that signs a recent block of a
+  thread, `null` when no usable snapshot exists. Requires the BM archive
+  migration `011-latest_bk_set`.
+- `blockchain.bkSetUpdates`, `Block.attestations` and `BkSetUpdate.attestations`
+  also read the history proofs store, so thread-0 BK set updates and key block
+  attestations no longer disappear with archive rotation.
+- Metrics `gql_oldest_thread0_height` and `gql_oldest_thread0_age_seconds`.
+- gql-server attaches `bm-history-proofs.db` read-only when it exists next to
+  the main DB, at startup and on `SIGHUP`. Send `SIGHUP` after replacing or
+  deleting the file. The volume must stay writable.
+
+Specifications: `specs/block-manager/history_proofs_store.md` (field lists and error codes) and
+`specs/block-manager/latest_bk_set.md` (the `latestBkSet` verification procedure).
+
+### Fixed
+- Pagination cursors (`after`, `before`) of blocks, transactions, messages and
+  `bkSetUpdates` are passed to SQLite as quoted string values. A cursor with a
+  quote no longer breaks the query or changes its condition.
+
 ## [1.5.0] – 2026-10-25
 
 ### Added

@@ -23,7 +23,6 @@ use crate::repository::repository_impl::snapshot_partitioned::MAGIC;
 use crate::repository::repository_impl::thread_snapshot_import::BlobDownloadLimits;
 use crate::repository::repository_impl::RepositoryImpl;
 use crate::repository::repository_impl::SnapshotImportStatus;
-use crate::repository::repository_impl::SnapshotVersion;
 use crate::types::BlockHeight;
 
 #[allow(clippy::too_many_arguments)] // Explicit worker inputs; no additional runtime state.
@@ -40,27 +39,16 @@ pub(crate) fn import_downloaded_snapshot<C: Fn() -> bool + Sync>(
     anyhow::ensure!(!cancel(), "snapshot candidate cancelled");
     let mut envelope = [0; 4];
     input.read_exact(&mut envelope)?;
-    if &envelope != COMPRESSED_SNAPSHOT_MAGIC {
-        return repository.import_legacy_network_payload(
-            &mut Cursor::new(envelope).chain(input),
-            expected,
-            anchor,
-        );
-    }
+    anyhow::ensure!(
+        &envelope == COMPRESSED_SNAPSHOT_MAGIC,
+        "unsupported snapshot compression envelope"
+    );
     let input = snapshot_storage::chunks::PayloadReader::after_magic(input);
     let mut decoder = zstd::Decoder::with_buffer(input)?;
     decoder.window_log_max(PARTITION_WINDOW_LOG)?;
     let mut marker = [0; 7];
     decoder.read_exact(&mut marker)?;
-    if &marker != MAGIC {
-        decoder.get_mut().disable_verification();
-        // Only legacy SNAP2V1 is accepted by the monolithic network entry point.
-        return repository.import_legacy_network_payload(
-            &mut Cursor::new(marker).chain(decoder),
-            expected,
-            anchor,
-        );
-    }
+    anyhow::ensure!(&marker == MAGIC, "unsupported snapshot format; SNAP2V2 required");
     let mut decoder = decoder.single_frame();
     let primary = read_primary_snapshot_checked(
         &mut Cursor::new(marker).chain(&mut decoder),
@@ -79,13 +67,10 @@ pub(crate) fn import_downloaded_snapshot<C: Fn() -> bool + Sync>(
         primary.metadata.block_protocol_version_state.to_use().to_string() != "None",
         "missing snapshot block protocol"
     );
-    anyhow::ensure!(
-        SnapshotVersion::for_block(
-            &primary.metadata.block_protocol_version_state,
-            &repository.config_read()
-        )? == SnapshotVersion::Current,
-        "partitioned snapshot not allowed for this block protocol"
-    );
+    crate::repository::repository_impl::snapshot_manifest::partition_capacity_for_block(
+        &primary.metadata.block_protocol_version_state,
+        &repository.config_read(),
+    )?;
     // Source trust is inherited from the worker's configured/current-BK URLs.
     // Do not claim to verify signatures or a block-committed manifest here.
     std::fs::create_dir_all(cache)?;
@@ -97,21 +82,21 @@ pub(crate) fn import_downloaded_snapshot<C: Fn() -> bool + Sync>(
         deadline: Instant::now() + Duration::from_secs(3600),
     };
     let accounts = repository.thread_accounts_repository().clone();
-    let staged = stage_snapshot_partitions(SnapshotHttpImport {
-        repository: accounts.durable_map_repo(), cache_directory: cache,
-        expected,
-        #[cfg(test)]
-        primary_sources: &[],
-        known_sources: known, fallback_sources: fallbacks,
-        download_limits,
-        import_limits: SnapshotImportLimits {
-            roots_per_list: MAX_SNAPSHOT_ROOTS_PER_LIST,
-            messages: crate::types::thread_message_queue::partition_codec::MessagePartitionImportLimits {
-                max_inboxes: 1_000_000, max_messages_per_inbox: 1_000_000, max_messages: 1_000_000,
-            },
-            accounts_per_batch: 256, account_bytes_per_batch: 8 * 1024 * 1024,
+    let staged = stage_snapshot_partitions(
+        SnapshotHttpImport {
+            repository: accounts.durable_map_repo(),
+            cache_directory: cache,
+            expected,
+            #[cfg(test)]
+            primary_sources: &[],
+            known_sources: known,
+            fallback_sources: fallbacks,
+            download_limits,
+            import_limits: SnapshotImportLimits::default(),
+            fetch_limits: SnapshotFetchLimits::default(),
         },
-        fetch_limits: SnapshotFetchLimits::default(),
-    }, primary, cancel)?;
+        primary,
+        cancel,
+    )?;
     repository.install_partitioned_snapshot(staged, &expected.0, cancel)
 }

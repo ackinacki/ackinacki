@@ -8,7 +8,6 @@
 //! 64-hex files and discard only known temporary-file names (never symlinks).
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -112,65 +111,6 @@ impl DownloadCache {
 
     pub(crate) fn budget(&self) -> u64 {
         self.0.budget
-    }
-
-    /// Run at service startup, before any import or publication can use files.
-    /// Older nodes downloaded monolithic snapshots into the publication root
-    /// without discovery headers. Move only recognized legacy bodies into the
-    /// bounded cache; never treat headerless new-format partitions as downloads.
-    pub(super) fn migrate_legacy_downloads(&self, directory: &Path) -> anyhow::Result<()> {
-        let mut candidates = Vec::new();
-        for entry in std::fs::read_dir(directory)? {
-            let entry = entry?;
-            let id = entry.file_name().to_string_lossy().into_owned();
-            if !snapshot_storage::valid_id(&id)
-                || !entry.file_type()?.is_file()
-                || std::fs::symlink_metadata(directory.join(format!("{id}.header"))).is_ok()
-            {
-                continue;
-            }
-            let mut file = File::open(entry.path())?;
-            let mut envelope = [0; 4];
-            if file.read_exact(&mut envelope).is_err() {
-                continue;
-            }
-            let marker = if &envelope == snapshot_storage::chunks::MAGIC {
-                let Ok(mut decoder) = zstd::Decoder::new(file) else { continue };
-                decoder.window_log_max(27)?;
-                let mut marker = [0; 7];
-                if decoder.read_exact(&mut marker).is_err() {
-                    continue;
-                }
-                marker
-            } else {
-                let mut marker = [0; 7];
-                if std::io::Cursor::new(envelope).chain(file).read_exact(&mut marker).is_err() {
-                    continue;
-                }
-                marker
-            };
-            if &marker == b"SNAP2V1" {
-                candidates.push((entry.metadata()?.modified()?, id, entry.path()));
-            }
-        }
-        candidates.sort();
-        for (_, id, source) in candidates {
-            let bytes = std::fs::metadata(&source)?.len();
-            if bytes > self.budget() {
-                // A cache cannot admit this file. It has no discovery header
-                // and no active readers at startup, so discard the old download.
-                std::fs::remove_file(&source)?;
-                tracing::info!(%id, bytes, "discarded legacy download exceeding cache budget");
-                continue;
-            }
-            let lease = self.acquire(&id, bytes, &|| false)?;
-            std::fs::rename(&source, lease.path())?;
-            lease.accepted()?;
-            tracing::info!(%id, bytes, "moved legacy download into bounded snapshot cache");
-        }
-        File::open(directory)?.sync_all()?;
-        File::open(&self.0.directory)?.sync_all()?;
-        Ok(())
     }
 
     /// Admit a primary download and its complete import callback together.

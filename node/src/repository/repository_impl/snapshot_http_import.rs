@@ -1,5 +1,5 @@
 //! Compatibility entry points for the channel-driven Tokio snapshot actors.
-//! Local and legacy import retain their codecs and staged-commit boundaries.
+//! Local import shares the partition codecs and staged-commit boundary.
 use std::path::Path;
 
 use account_state::DurableThreadAccountsRepository;
@@ -53,7 +53,7 @@ where
     super::thread_snapshot_import::import_snapshot(request, None, sources, verify_primary, cancel)
 }
 
-/// Runtime's legacy/partitioned format dispatcher has already decoded and
+/// Runtime has already decoded and
 /// checked the primary. Reuse it, rather than redownload or decode it twice.
 pub(crate) fn stage_snapshot_partitions<'a, C: Fn() -> bool + Sync>(
     request: SnapshotHttpImport<'a>,

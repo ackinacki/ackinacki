@@ -8,6 +8,7 @@ use super::sqlite::ArchAccount;
 use super::sqlite::ArchAttestation;
 use super::sqlite::ArchBkSetUpdate;
 use super::sqlite::ArchBlock;
+use super::sqlite::ArchLatestBkSet;
 use super::sqlite::ArchMessage;
 use super::sqlite::ArchTransaction;
 
@@ -24,6 +25,7 @@ pub enum DBStoredRecord {
     Messages(Vec<ArchMessage>),
     BkSetUpdates(Vec<ArchBkSetUpdate>),
     Attestations(Vec<ArchAttestation>),
+    LatestBkSet(Box<ArchLatestBkSet>),
 }
 
 impl fmt::Debug for DBStoredRecord {
@@ -35,6 +37,9 @@ impl fmt::Debug for DBStoredRecord {
             DBStoredRecord::Messages(val) => write!(f, "Messages({})", val.len()),
             DBStoredRecord::BkSetUpdates(val) => write!(f, "BkSetUpdates({})", val.len()),
             DBStoredRecord::Attestations(val) => write!(f, "Attestations({})", val.len()),
+            DBStoredRecord::LatestBkSet(val) => {
+                write!(f, "LatestBkSet({}, {})", val.block_id, val.signers.len())
+            }
         }
     }
 }

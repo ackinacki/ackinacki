@@ -56,6 +56,37 @@ fn payload(accounts: &[(AccountRouting, ThreadAccount)]) -> Vec<u8> {
 }
 
 #[test]
+fn account_partition_counts_uninit_and_excludes_redirects() -> anyhow::Result<()> {
+    let mut accounts = fixture();
+    let address =
+        tvm_block::MsgAddressInt::with_standart(None, 0, tvm_types::AccountId::from([25; 32]))?;
+    let uninit = Account::with_address(address);
+    assert_eq!(uninit.status(), tvm_block::AccountStatus::AccStateUninit);
+    let dapp = DAppIdentifier::new([4; 32]);
+    accounts.push((
+        AccountRouting::new(dapp, AccountIdentifier::new([25; 32])),
+        ThreadAccount::from_tvm(ShardAccount::with_params(
+            &uninit,
+            Default::default(),
+            0,
+            Some(dapp.into()),
+        )?),
+    ));
+    let source = map(&accounts);
+    let bytes = payload(&accounts);
+    let (restored, accounts_number) = read_account_partition_checked(
+        &mut bytes.as_slice(),
+        MapKeyPath::default(),
+        source.hash(),
+        &|| false,
+        |_, _| Ok(()),
+    )?;
+    assert_eq!(restored.hash(), source.hash());
+    assert_eq!(accounts_number, 21); // 20 fixture accounts + Uninit; four redirects excluded.
+    Ok(())
+}
+
+#[test]
 fn account_partition_parallel_batches_preserve_root_order_and_cancellation() -> anyhow::Result<()> {
     use std::cell::Cell;
 
@@ -76,7 +107,7 @@ fn account_partition_parallel_batches_preserve_root_order_and_cancellation() -> 
     let expected = map(&accounts);
     let bytes = payload(&accounts);
     let mut seen = 0;
-    let restored = read_account_partition_checked(
+    let (restored, _) = read_account_partition_checked(
         &mut bytes.as_slice(),
         MapKeyPath::default(),
         expected.hash(),
@@ -136,7 +167,7 @@ fn account_partition_import_normalizes_bodies_sizes_and_transfers_owned_bytes() 
     }
     assert!(wire_size > source.capacity().bytes());
     let mut seen = 0;
-    let restored = read_account_partition_checked(
+    let (restored, _) = read_account_partition_checked(
         &mut wire.as_slice(),
         MapKeyPath::default(),
         source.hash(),
@@ -199,7 +230,7 @@ fn account_partition_codec_roundtrip_reconstructs_and_merges_sparse_maps() -> an
         )?;
         assert_eq!(output, second);
         let mut imported = Vec::new();
-        let decoded = read_account_partition_checked(
+        let (decoded, _) = read_account_partition_checked(
             &mut output.as_slice(),
             part.map.dapps.root_path,
             part.map.hash(),
@@ -237,7 +268,7 @@ fn account_partition_roundtrip_after_deleting_a_shared_prefix_neighbor() -> anyh
         )])
         .update(&[(neighbor, None)]);
     let encoded = payload(&accounts);
-    let decoded = read_account_partition_checked(
+    let (decoded, _) = read_account_partition_checked(
         &mut encoded.as_slice(),
         MapKeyPath::default(),
         source.hash(),
@@ -251,7 +282,7 @@ fn account_partition_roundtrip_after_deleting_a_shared_prefix_neighbor() -> anyh
             let entries: Vec<_> =
                 accounts.iter().filter(|(key, _)| part.map.get(key).is_some()).cloned().collect();
             let bytes = payload(&entries);
-            let restored = read_account_partition_checked(
+            let (restored, _) = read_account_partition_checked(
                 &mut bytes.as_slice(),
                 MapKeyPath::default(),
                 part.map.hash(),
@@ -391,7 +422,7 @@ fn account_partitions_after_stateful_updates_export_import_and_reexport_identica
                     },
                     &|| false,
                 )?;
-                let decoded = read_account_partition_checked(
+                let (decoded, _) = read_account_partition_checked(
                     &mut encoded.as_slice(),
                     source.dapps.root_path,
                     part.map.hash(),
@@ -528,7 +559,7 @@ fn account_partition_codec_preserves_thread_scope_and_rejects_foreign_keys() {
     assert!(!selected.is_empty());
     assert!(selected.len() < accounts.len());
     let encoded = payload(&selected);
-    let restored = read_account_partition_checked(
+    let (restored, _) = read_account_partition_checked(
         &mut encoded.as_slice(),
         scope,
         scoped.hash(),

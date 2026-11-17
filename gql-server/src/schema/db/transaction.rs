@@ -6,6 +6,7 @@ use sqlx::prelude::FromRow;
 use sqlx::QueryBuilder;
 
 use crate::defaults;
+use crate::helpers::sql_quote;
 use crate::helpers::u64_to_string;
 use crate::schema::db::projection::SqlProjection;
 use crate::schema::db::DBConnector;
@@ -361,13 +362,13 @@ impl Transaction {
 
         if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
-                where_ops.push(format!("chain_order > {after:?}"));
+                where_ops.push(format!("chain_order > {}", sql_quote(after)));
             }
         }
 
         if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
-                where_ops.push(format!("chain_order < {before:?}"));
+                where_ops.push(format!("chain_order < {}", sql_quote(before)));
             }
         }
 
@@ -454,13 +455,13 @@ impl Transaction {
 
         if let Some(after) = &args.pagination.after {
             if !after.is_empty() {
-                where_ops.push(format!("chain_order > {after:?}"));
+                where_ops.push(format!("chain_order > {}", sql_quote(after)));
             }
         }
 
         if let Some(before) = &args.pagination.before {
             if !before.is_empty() {
-                where_ops.push(format!("chain_order < {before:?}"));
+                where_ops.push(format!("chain_order < {}", sql_quote(before)));
             }
         }
 

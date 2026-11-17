@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.19.6"
+version = "0.19.7"
 edition.workspace = true
 rust-version.workspace = true
 build = 'build.rs'
@@ -24,8 +24,6 @@ history-proof.workspace = true
 http-server.workspace = true
 inbound-external-messages.workspace = true
 lazy_static.workspace = true
-message-router.workspace = true
-monotree.workspace = true
 multi-map.workspace = true
 network.workspace = true
 num-bigint.workspace = true
@@ -34,6 +32,7 @@ opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
 parking_lot.workspace = true
+proof-data.workspace = true
 rayon.workspace = true
 semver.workspace = true
 serde.workspace = true
@@ -85,9 +84,10 @@ thiserror = "2.0.3"
 thread-load-balance = { path = "./libs/thread-load-balance" }
 thread-reference-state = { path = "./libs/thread-reference-state" }
 time.workspace = true
-tracing-test = "0.1"
-versioned_struct = { path = "./libs/versioned_struct" }
 weak-table = "0.3.2"
+
+[target.'cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))'.dependencies]
+libc = "0.2"
 
 # Windows doesn't support assembly for compilation
 # will be fixed when sha2 0.11 released

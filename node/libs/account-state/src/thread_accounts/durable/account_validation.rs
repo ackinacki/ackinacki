@@ -1,4 +1,4 @@
-//! Bounded CPU validation shared by legacy and partitioned snapshot import.
+//! Bounded CPU validation shared by snapshot import paths.
 //!
 //! Reading/framing and the storage sink remain on the caller's thread. Only
 //! owned account bodies enter this dedicated pool, never the producer's Rayon
@@ -20,11 +20,11 @@ const VALIDATION_BATCH_BYTES: usize = 8 * 1024 * 1024;
 type RawAccount = (AccountRouting, Vec<u8>);
 type ValidatedAccount = (AccountRouting, Box<[u8]>, AccountInfo, AccountCapacity);
 
-/// Recanonicalize untrusted input once and compute all leaf metadata on the
-/// validation worker, not on the serial map/storage thread. Neither format may
-/// retain wire bytes as its database version or derive redirects from an old map.
+/// Validate and normalize input once on the worker. Canonical wire bytes can be
+/// retained only after both BOC encoding and account normalization are checked;
+/// neither format derives redirects or leaf metadata from an obsolete map.
 pub(super) fn validate_account((routing, bytes): RawAccount) -> anyhow::Result<ValidatedAccount> {
-    let account = ThreadAccount::recanonicalize_tvm_bytes(&bytes)?;
+    let account = ThreadAccount::recanonicalize_tvm_bytes(bytes.into_boxed_slice())?;
     let info = if account.is_redirect() {
         AccountInfo::Redirect(
             account
@@ -40,7 +40,7 @@ pub(super) fn validate_account((routing, bytes): RawAccount) -> anyhow::Result<V
     Ok((routing, account.into_canonical_bytes(), info, capacity))
 }
 
-/// Legacy records may be delivered in batch completion order. Partition records
+/// Scan records may be delivered in batch completion order. Partition records
 /// must retain wire order for their incremental bounds/order checks; only that
 /// mode buffers out-of-order results, within the same in-flight window.
 pub(super) fn with_validated_accounts<T, V, O>(

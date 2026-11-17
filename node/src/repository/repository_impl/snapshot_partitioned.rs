@@ -1,4 +1,4 @@
-//! Canonical SNAP2V2 primary payload. Not wired into snapshot publication yet.
+//! Canonical SNAP2V2 primary payload.
 use bincode::Options;
 use serde::Serializer;
 
@@ -13,7 +13,7 @@ use crate::types::ThreadsTable;
 pub(crate) const MAGIC: &[u8; 7] = b"SNAP2V2";
 
 /// Primary state deliberately has no account map, queues, cursors or pending
-/// account operations. The legacy TVM state is retained with its existing hash.
+/// account operations. The TVM state is retained with its existing hash.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct PrimaryState {
     pub block_seq_no: BlockSeqNo,

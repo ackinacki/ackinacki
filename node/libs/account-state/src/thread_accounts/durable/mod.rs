@@ -1,15 +1,15 @@
 mod account_partition_codec;
 mod account_validation;
 pub(crate) mod accumulator;
+mod apply_pool;
 pub mod archive;
 pub(crate) mod kv_store;
-mod legacy;
+mod map_builder;
 mod maps;
+mod operation_serde;
 mod ordered_export;
 mod partition;
 pub(crate) mod repository;
-mod snapshot_v1;
-mod snapshot_v1_export;
 
 use std::fmt::Display;
 
@@ -28,7 +28,7 @@ pub use archive::store::StagedArchiveEpoch;
 pub use archive::update::ThreadSnapshot;
 pub use kv_store::KVRecord;
 pub use kv_store::KVStore;
-pub use legacy::ensure_legacy_durable_snapshot_is_empty;
+pub use map_builder::MapBuilder;
 pub use maps::AccountCapacity;
 pub use maps::DurableThreadAccountsIter;
 pub use maps::ThreadAccountMap;

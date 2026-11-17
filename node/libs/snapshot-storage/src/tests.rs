@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn concurrent_publication_and_gc_preserve_in_progress_shared_partitions() -> anyhow::Result<()> {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+
+    let directory = tempfile::tempdir()?;
+    let store = SnapshotResources::open(directory.path())?;
+    let stopped = AtomicBool::new(false);
+    std::thread::scope(|scope| -> anyhow::Result<()> {
+        let cleanup = scope.spawn(|| -> anyhow::Result<()> {
+            while !stopped.load(Ordering::Acquire) {
+                store.clone().retain(&BTreeSet::new())?;
+                std::thread::yield_now();
+            }
+            Ok(())
+        });
+        let result = (|| -> anyhow::Result<()> {
+            for snapshot in 1..=32 {
+                let publication = store.begin([snapshot; 32], [[200; 32], [201; 32]])?;
+                publication.publish([snapshot; 32], |writer| {
+                    writer.write_all(b"primary")?;
+                    Ok(())
+                })?;
+                for id in [200, 201] {
+                    let name = publication.publish_partition_checked(
+                        [id; 32],
+                        PartitionKind::Accounts,
+                        |writer| {
+                            let mut chunks = chunks::ChunkWriter::new(writer)?;
+                            chunks.write_all(&zstd::encode_all(&[id; 4096][..], 3)?)?;
+                            std::thread::yield_now();
+                            chunks.finish()?;
+                            Ok(())
+                        },
+                        &|| false,
+                    )?;
+                    anyhow::ensure!(
+                        directory.path().join(name).is_file(),
+                        "active publication lost its partition during GC"
+                    );
+                }
+            }
+            Ok(())
+        })();
+        stopped.store(true, Ordering::Release);
+        cleanup.join().unwrap()?;
+        result
+    })
+}
+
+#[test]
 fn snapshot_partition_directories_share_bodies_and_gc_removes_only_retired_links(
 ) -> anyhow::Result<()> {
     use std::os::unix::fs::MetadataExt;
@@ -151,7 +201,7 @@ fn gc_discovers_chunked_orphans_but_protects_references_and_unknown_files() -> a
     assert!(fs::symlink_metadata(path(9))?.file_type().is_symlink());
 
     // Active publication also protects a shared partition after another
-    // snapshot is retired. Once the lease is released, ordinary GC removes it.
+    // snapshot is retired. Once the registration is released, ordinary GC removes it.
     store.retain(&BTreeSet::new())?;
     assert!(!path(2).exists());
     assert!(path(3).exists());
@@ -199,8 +249,8 @@ fn gc_retains_active_attempt_and_failed_attempt_is_explicitly_retired() -> anyho
     attempt.publish_header(b"header")?;
     assert_eq!(snapshot_headers(directory.path())?.len(), 1);
     assert!(!directory.path().join(hex::encode([3; 32])).exists());
-    // Independent handle models a separate GC process/worker.
-    SnapshotResources::open(directory.path())?.retain(&BTreeSet::new())?;
+    // GC shares the same in-process state as the publisher.
+    store.clone().retain(&BTreeSet::new())?;
     publish(&attempt, 3, b"partition")?;
     assert!(attempt
         .publish([4; 32], |writer| {
@@ -393,58 +443,6 @@ fn time(seconds: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
 }
 
-#[test]
-fn registered_legacy_snapshots_share_retention_with_partitioned_snapshots() -> anyhow::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let store = SnapshotResources::open(directory.path())?;
-    for id in 1..=3 {
-        let path = directory.path().join(hex::encode([id; 32]));
-        fs::write(&path, b"legacy body")?;
-        fs::write(path.with_extension("header"), b"header")?;
-        for file in [&path, &path.with_extension("header")] {
-            File::open(file)?.set_modified(time(0))?;
-        }
-        store.register_legacy_snapshot([id; 32], b"header", &[1], id as u64)?;
-    }
-    let record = store.private("records", &[1; 32]);
-    let before = fs::read(&record)?;
-    store.register_legacy_snapshot([1; 32], b"header", &[1], 1)?;
-    assert_eq!(before, fs::read(record)?);
-    // A new-format publication must protect all of its partitions while old
-    // monolithic snapshots age out of the same thread's latest-two window.
-    let active = store.begin_snapshot([4; 32], [[8; 32]], &[1], 4)?;
-    publish(&active, 4, b"primary")?;
-    publish(&active, 8, b"partition")?;
-    active.publish_header(b"new header")?;
-    store.retain_recent(RetentionPolicy::default(), time(7200))?;
-    for id in [1, 2] {
-        let path = directory.path().join(hex::encode([id; 32]));
-        assert!(!path.exists());
-        assert!(!path.with_extension("header").exists());
-    }
-    for id in [3, 4, 8] {
-        assert!(directory.path().join(hex::encode([id; 32])).exists());
-    }
-    Ok(())
-}
-
-#[test]
-fn legacy_registration_rejects_incomplete_changed_or_chunked_files() -> anyhow::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let store = SnapshotResources::open(directory.path())?;
-    let path = directory.path().join(hex::encode([1; 32]));
-    fs::write(&path, b"legacy")?;
-    assert!(store.register_legacy_snapshot([1; 32], b"header", &[1], 1).is_err());
-    fs::write(path.with_extension("header"), b"header")?;
-    assert!(store.register_legacy_snapshot([1; 32], b"changed", &[1], 1).is_err());
-    let mut writer = chunks::ChunkWriter::new(Vec::new())?;
-    writer.write_all(&zstd::encode_all(b"new payload".as_slice(), 3)?)?;
-    fs::write(&path, writer.finish()?.0)?;
-    assert!(store.register_legacy_snapshot([1; 32], b"header", &[1], 1).is_err());
-    assert!(store.records()?.is_empty());
-    Ok(())
-}
-
 fn retention_record(
     id: u8,
     thread: u8,
@@ -511,7 +509,7 @@ fn automatic_retention_sweeps_expired_records_preserves_threads_and_shared_bodie
     let mut record: SnapshotRecord = serde_json::from_reader(File::open(&path)?)?;
     record.retention.as_mut().unwrap().started_at = time(0);
     atomic_write(&path, &serde_json::to_vec(&record)?)?;
-    let store = SnapshotResources::open(directory.path())?;
+    let store = store.clone();
     store.retain_recent(RetentionPolicy::default(), time(3600))?;
     for id in 1..=6 {
         assert_eq!(directory.path().join(hex::encode([id; 32])).exists(), id >= 3);
@@ -549,4 +547,88 @@ fn retention_retries_preserve_first_ready_time_and_identity() -> anyhow::Result<
     let after: SnapshotRecord = serde_json::from_reader(File::open(path)?)?;
     assert!(after.retention.unwrap().primary_ready_at.is_some());
     Ok(())
+}
+
+#[test]
+fn publication_registration_is_released_on_unwind() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = SnapshotResources::open(directory.path())?;
+    let result = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let publication = store.begin([1; 32], []).unwrap();
+                publication
+                    .publish([1; 32], |writer| {
+                        writer.write_all(b"partial")?;
+                        panic!("encoding failed");
+                    })
+                    .unwrap();
+            })
+            .join()
+    });
+    assert!(result.is_err());
+    store.retain(&BTreeSet::new())?;
+    assert!(store.records()?.is_empty());
+    // The same primary can be registered again after the failed writer exits.
+    let publication = store.begin([1; 32], [])?;
+    publish(&publication, 1, b"retry")?;
+    Ok(())
+}
+
+#[test]
+fn startup_recovers_abandoned_staging_without_removing_published_resources() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = SnapshotResources::open(directory.path())?;
+    let publication = store.begin([1; 32], [])?;
+    publish(&publication, 1, b"primary")?;
+    publication.publish_header(b"header")?;
+    let stale = store.staging(&[1; 32]).join(".tmp-abandoned");
+    fs::write(&stale, b"partial")?;
+    let orphan = store.staging(&[2; 32]);
+    fs::create_dir(&orphan)?;
+    fs::write(orphan.join(".tmp-orphan"), b"partial")?;
+    drop(publication);
+    drop(store);
+    let store = SnapshotResources::open(directory.path())?;
+    assert!(!stale.exists());
+    assert_eq!(fs::read_dir(orphan)?.count(), 0);
+    assert_eq!(store.headers()?.len(), 1);
+    assert_eq!(fs::read(directory.path().join(hex::encode([1; 32])))?, b"primary");
+    Ok(())
+}
+
+#[test]
+fn opened_resource_survives_gc_and_read_capture_excludes_gc() -> anyhow::Result<()> {
+    use std::sync::mpsc;
+    let directory = tempfile::tempdir()?;
+    let store = SnapshotResources::open(directory.path())?;
+    let publication = store.begin([1; 32], [])?;
+    publish(&publication, 1, b"primary")?;
+    drop(publication);
+    let (attempt_tx, attempt_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    std::thread::scope(|scope| -> anyhow::Result<()> {
+        let mut worker = None;
+        let mut file = store.with_read(|| {
+            let file = File::open(directory.path().join(hex::encode([1; 32])))?;
+            worker = Some(scope.spawn(|| -> anyhow::Result<()> {
+                attempt_tx.send(())?;
+                store.retain(&BTreeSet::new())?;
+                done_tx.send(())?;
+                Ok(())
+            }));
+            attempt_rx.recv()?;
+            assert!(matches!(
+                done_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            Ok(file)
+        })?;
+        worker.unwrap().join().unwrap()?;
+        assert!(!directory.path().join(hex::encode([1; 32])).exists());
+        let mut body = String::new();
+        file.read_to_string(&mut body)?;
+        assert_eq!(body, "primary");
+        Ok(())
+    })
 }

@@ -15,6 +15,7 @@ const MINER_ACCEPT_TAP_FUNCTION_ID: u32 = 0x7de2f437;
 const MINER_CANCEL_COMMIT_DATA_FUNCTION_ID: u32 = 0x1619e4dc;
 const MINER_SET_COMMIT_DATA_FUNCTION_ID: u32 = 0x50c7c49a;
 const MINER_GET_REWARD_FUNCTION_ID: u32 = 0x3072364c;
+const SET_OWNER_PUBKEY_FUNCTION_ID: u32 = 0x3456a3c0;
 
 #[cfg(not(test))]
 const LOW_PRIORITY_EXTERNAL_MESSAGE_FUNCTION_IDS: &[u32] = &[
@@ -220,7 +221,8 @@ fn low_priority_wallet_transfer(
         let has_payload = decoded.tokens.iter().any(|token| {
             token.name == "payload"
                 && matches!(&token.value, TokenValue::Cell(cell)
-                    if cell.bit_length() != 0 || cell.references_count() != 0)
+                    if (cell.bit_length() != 0 || cell.references_count() != 0)
+                        && !is_set_owner_pubkey_payload(cell))
         });
         if !has_payload {
             return None;
@@ -234,6 +236,15 @@ fn low_priority_wallet_transfer(
             _ => None,
         })
     })
+}
+
+fn is_set_owner_pubkey_payload(cell: &tvm_types::Cell) -> bool {
+    cell.bit_length() == 544
+        && cell.references_count() == 0
+        && tvm_types::SliceData::load_cell(cell.clone())
+            .ok()
+            .and_then(|mut slice| slice.get_next_u32().ok())
+            == Some(SET_OWNER_PUBKEY_FUNCTION_ID)
 }
 
 fn is_root_pn_or_mirror(address: &tvm_block::MsgAddress) -> bool {
@@ -381,6 +392,17 @@ mod tests {
         with_payload: bool,
         signed: bool,
     ) -> tvm_block::Message {
+        let payload = with_payload.then(|| SliceData::from_raw(vec![0xaa], 8).into_cell());
+        wallet_transfer_message_with_payload(abi, method, destination, payload, signed)
+    }
+
+    fn wallet_transfer_message_with_payload(
+        abi: &tvm_abi::Contract,
+        method: &str,
+        destination: &str,
+        payload: Option<tvm_types::Cell>,
+        signed: bool,
+    ) -> tvm_block::Message {
         let function = abi.function(method).unwrap();
         let mut tokens = tvm_abi::token::Tokenizer::tokenize_all_params(
             function.input_params(),
@@ -391,10 +413,9 @@ mod tests {
             }),
         )
         .unwrap();
-        if with_payload {
-            // Priority depends on the destination, not on the payload's function ID.
+        if let Some(payload) = payload {
             tokens.iter_mut().find(|token| token.name == "payload").unwrap().value =
-                tvm_abi::TokenValue::Cell(SliceData::from_raw(vec![0xaa], 8).into_cell());
+                tvm_abi::TokenValue::Cell(payload);
         }
         let header = HashMap::from([
             ("pubkey".to_owned(), tvm_abi::TokenValue::PublicKey(Some([0x11; 32]))),
@@ -412,6 +433,56 @@ mod tests {
             function.encode_input(&header, &tokens, false, None, None).unwrap()
         };
         ext_in_message_with_body(SliceData::load_builder(body).unwrap())
+    }
+
+    #[test]
+    fn set_owner_pubkey_payload_requires_exact_shape_for_normal_priority() {
+        let mut bytes = vec![0; 68];
+        bytes[..4].copy_from_slice(&super::SET_OWNER_PUBKEY_FUNCTION_ID.to_be_bytes());
+        let exact = SliceData::from_raw(bytes.clone(), 544).into_cell();
+        let short = SliceData::from_raw(bytes.clone(), 543).into_cell();
+        bytes.push(0);
+        let long = SliceData::from_raw(bytes.clone(), 545).into_cell();
+        bytes[3] ^= 1;
+        let wrong_id = SliceData::from_raw(bytes, 544).into_cell();
+        let mut with_ref = tvm_types::BuilderData::new();
+        with_ref.append_raw(&[0x34, 0x56, 0xa3, 0xc0], 32).unwrap();
+        with_ref.append_raw(&[0; 64], 512).unwrap();
+        with_ref
+            .checked_append_reference(tvm_types::BuilderData::default().into_cell().unwrap())
+            .unwrap();
+        let with_ref = with_ref.into_cell().unwrap();
+
+        for abi in super::WALLET_CONTRACT_ABIS.iter() {
+            for method in ["sendTransaction", "submitTransaction"] {
+                for signed in [false, true] {
+                    for (payload, expected_low) in [
+                        (&exact, false),
+                        (&short, true),
+                        (&long, true),
+                        (&wrong_id, true),
+                        (&with_ref, true),
+                    ] {
+                        let message = wallet_transfer_message_with_payload(
+                            abi,
+                            method,
+                            &format!("0:{}", "ab".repeat(32)),
+                            Some(payload.clone()),
+                            signed,
+                        );
+                        for dapp_id in [None, Some(super::WALLET_DAPP_ID)] {
+                            assert_eq!(
+                                super::is_low_priority_external_message(&message, dapp_id),
+                                expected_low,
+                                "{method}, signed={signed}, bits={}, refs={}",
+                                payload.bit_length(),
+                                payload.references_count()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -501,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn mainnet_submit_transaction_with_payload_is_low_priority() {
+    fn mainnet_submit_transaction_with_set_owner_pubkey_is_normal_priority() {
         // Mainnet message d6ddbc7700ad63113efd4374d435877aec71c3a68e59d87cd0820ada507e7432.
         let boc = base64_decode(
             "te6ccgECBAEAAR0AAUWIAF0UGjF17wE33kR1m5Sb+nHVkM9NlxgSu23aHmxYtf68DAEB4Zk4gpWpmNtGee2khwoGY9N21cPGA76BSuGcQifdAM1H7BxMpqqpohLDDCuztCyGVUrPz8QqnB5TdeQuvTC8loTd3lWIJ/fPUWUgkgRTRuaXAIDMOP1HXdIC2KvA110tCUAAAGhNiuKbWrOYWVZfIn6gAgFzAAAAAGuXqQqAG2KxlBYoVnUcc/PsBAO0bu+IvDPEpbdSP7VhFBmF2TsgAAAAAAAAAAAAAAAAvrwgCgMAiDRWo8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAUHK+MCS+G4ygMLdn3yaYSIqXzAPtzCx7M/bfGGT3duN",
@@ -513,14 +584,16 @@ mod tests {
             message.hash().unwrap().to_hex_string(),
             "d6ddbc7700ad63113efd4374d435877aec71c3a68e59d87cd0820ada507e7432"
         );
-        let (method, destination) = super::low_priority_wallet_transfer(&message, None).unwrap();
-        assert_eq!(method, "submitTransaction");
-        assert_eq!(
-            destination.to_string(),
-            "0:db158ca0b142b3a8e39f9f60201da3777c45e19e252dba91fdab08a0cc2ec9d9"
-        );
-        assert!(super::is_low_priority_external_message(&message, None));
-        assert!(QueuedExtMessage::try_from_block(message).unwrap().is_low_priority());
+        let body = SliceData::load_cell(message.body().unwrap().into_cell()).unwrap();
+        let decoded = super::WALLET_CONTRACT_ABIS[0].decode_input(body, false, false).unwrap();
+        assert_eq!(decoded.function_name, "submitTransaction");
+        assert!(decoded.tokens.iter().any(|token| {
+            token.name == "payload"
+                && matches!(&token.value, tvm_abi::TokenValue::Cell(cell)
+                    if super::is_set_owner_pubkey_payload(cell))
+        }));
+        assert!(!super::is_low_priority_external_message(&message, None));
+        assert!(!QueuedExtMessage::try_from_block(message).unwrap().is_low_priority());
     }
 
     #[test]

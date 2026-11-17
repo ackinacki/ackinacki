@@ -509,7 +509,10 @@ fn snapshot_http_import_downloaders_do_not_wait_for_an_earlier_partition() -> an
                     &|| false,
                 )
             });
-            let expected = if single_worker { 1 } else { blobs.len() - 1 };
+            // Later account files progress while the first body is gated.
+            // Messages wait until all account downloads finish, so their cache
+            // leases cannot starve the importer of the missing account.
+            let expected = if single_worker { 1 } else { manifest.account_partition_roots.len() };
             server.wait(|| {
                 // A recorded request may still be waiting to enter its handler.
                 // Observe actual overlap before releasing the gated response.
@@ -517,6 +520,7 @@ fn snapshot_http_import_downloaders_do_not_wait_for_an_earlier_partition() -> an
                     && server.part_requests() >= expected
                     && server.state.peak.load(Ordering::Acquire)
                         >= if single_worker { 1 } else { 2 }
+                    && cache.path().join(&primary).exists()
                     && (single_worker || cache.path().join(&second).exists())
             });
             assert_eq!(server.part_requests(), expected);

@@ -97,12 +97,9 @@ impl ExecutionMessageLogStats {
             Ok((NetworkMessage::Ack(_), _)) => self.acks += 1,
             Ok((NetworkMessage::Nack(_), _)) => self.nacks += 1,
             Ok((NetworkMessage::BlockRequest { .. }, _)) => self.block_requests += 1,
-            Ok((
-                NetworkMessage::SyncFinalized(_)
-                | NetworkMessage::SyncFinalizedWithHeight(_)
-                | NetworkMessage::SyncFrom(_),
-                _,
-            )) => self.sync_messages += 1,
+            Ok((NetworkMessage::SyncFinalizedWithHeight(_) | NetworkMessage::SyncFrom(_), _)) => {
+                self.sync_messages += 1
+            }
             Ok((
                 NetworkMessage::NodeJoining(_) | NetworkMessage::NodeJoiningWithLastFinalized(_),
                 _,
@@ -510,14 +507,6 @@ where
                         {
                             return Ok(ExecutionResult::SynchronizationRequired);
                         }
-                    }
-                    NetworkMessage::SyncFinalized((sync_finalized, _)) => {
-                        tracing::debug!(
-                            "Received legacy SyncFinalized, ignoring: {:?} {:?} {:?}",
-                            sync_finalized.data().block_seq_no(),
-                            sync_finalized.data().block_identifier(),
-                            sync_finalized.data().thread_refs()
-                        );
                     }
                     NetworkMessage::SyncFinalizedWithHeight((sync_finalized, _)) => {
                         let duration_since_last_finalization =
